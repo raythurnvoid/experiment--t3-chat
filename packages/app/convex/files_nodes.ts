@@ -184,6 +184,7 @@ import {
 } from "../shared/files-search-query.ts";
 import {
 	files_archive_runs_db_check_fast,
+	files_archive_runs_db_check_plugin_pins,
 	files_archive_runs_db_start,
 	files_archive_runs_db_start_purge,
 	files_archive_runs_get_all_refused_nay,
@@ -3937,6 +3938,16 @@ export async function files_nodes_db_restore_named_nodes(
 		checkNodes: files_archive_runs_REQUEST_MAX_CHECK_NODES,
 		hasPaginated: false,
 	};
+	// Check a plugin's pins once for the whole request. Each job would read the same rows again in this
+	// same transaction, and with 100 deletes that costs about 1,200 database queries.
+	const pluginCheck =
+		args.plugin &&
+		(await files_archive_runs_db_check_plugin_pins(ctx, {
+			userAuth: args.userAuth,
+			membership,
+			plugin: args.plugin,
+			force: args.force ?? false,
+		}));
 	const jobs = [];
 	const refusals = [];
 	let previousJob = null;
@@ -3951,6 +3962,7 @@ export async function files_nodes_db_restore_named_nodes(
 			membership,
 			credentialId: args.credentialId,
 			plugin: args.plugin,
+			pluginCheck,
 			archiveOperationId,
 			rootNodeIds: [],
 			restoreRoots,

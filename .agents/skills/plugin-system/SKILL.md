@@ -213,7 +213,7 @@ it at once (rules in the `access-control` skill). Areas page eligible consents i
 Applied workspace View or Edit adds the open area (`areaNodeId: null`, path `/`)
 in that same page. File-only consent adds no parent access or area.
 Guests and scheduled runs are refused. `changedBy` is visible to every caller.
-Plugin Restore remains closed until its job contract is approved.
+Backend runs with `workspace.files.restore` restore from Trash; see "Plugin Restore" below.
 
 Accepted file stages and upload targets keep their original pair. Completion must
 match that pin. Missing or null pairs give no live authority, including plugin-data
@@ -234,6 +234,48 @@ Service upload targets also keep their original account ID. Background text
 conversion requires both original pins and checks the account's live trusted
 binding before adding file references. A revoked or replaced account leaves the
 accepted bytes as a stored file.
+
+### Plugin Restore
+
+`workspace.files.restore` lets a backend run restore items from Trash through
+`files/restore`. The route rules (checks, retries, messages, dry run) are in the
+[public-api skill](../public-api/SKILL.md#plugin-restore). The manifest must also ask for
+`workspace.files.write`, but write consent alone never restores. The run and the
+installation must both accept Restore. Items need no plugin label. Pages, scheduled
+runs and guests cannot restore.
+
+The run acts only as its file pair. Each item needs read and Edit through the person's
+file choices, with the app's landing rules. There is no Replace. A forced restore also
+needs `workspace.files.manage-read-only`.
+
+Each restore job keeps the plugin's pins in `files_archive_runs.plugin`: installation,
+file pair, plugin version, service account and `capabilitiesAcceptedAt`. Every step checks
+them before it writes (`db_get_plugin_write_context` in `files_archive_runs.ts`). The job
+stops with "The plugin that started this job was updated or removed, or it lost access to
+these files." when:
+
+- the installation is removed, disabled, upgraded, or accepts its capabilities again;
+- its service account changes;
+- the pair or the person's membership ends (a leave and re-join ends it too);
+- the installation no longer accepts Restore, or Read-only management for a forced job;
+- the person becomes a guest.
+
+A stopped job keeps what it already restored. It never acts as the person instead. A job
+never reads the run's token or source again, so it goes on after the run ends, and after
+an upload run's source goes to Trash. The request checks the source before it starts new
+work. Each step checks every item against the pair's choices at that moment, with one
+checker per step, so a choice that ended refuses the items it no longer covers.
+
+Known limits:
+
+- The fence stops old accepted jobs, not every old token. Each install raises
+  `capabilitiesAcceptedAt`, so after an upgrade and a downgrade back (version A, then B,
+  then A) an old job still stops. But a still-live run or page token of version A works
+  again, because its live check compares the version only.
+- A rebind back to the same service account lets a job go on, because the pin matches again.
+- Restoring an item out of a restricted folder needs Can manage on that folder
+  (`authorize_leaving_restricted_scope`). A pair never has Can manage, so this always
+  fails with a refusal.
 
 ## Plugin-labeled files (`workspace.files.own-write`)
 

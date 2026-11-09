@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api.js";
@@ -6,7 +7,8 @@ import { activities_db_start } from "./activities_db.ts";
 import { files_archive_runs_PLUGIN_RESTORE_MESSAGES } from "./files_archive_runs.ts";
 import { files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
-import { list_plugin_trash_areas_page, list_trash_page } from "./public_api_files_organize.ts";
+import { list_plugin_trash_areas_page, list_trash_page, restore_items } from "./public_api_files_organize.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	fixture,
 	add_member,
@@ -219,8 +221,66 @@ async function post(f: Fixture, token: string, route: "list" | "areas" | "restor
 			isDone?: boolean;
 			areas?: Array<{ areaNodeId: string | null; path: string }>;
 			items?: Array<{ nodeId: string; path: string; changedBy: string | null; locked: boolean }>;
+			jobIds?: Array<Id<"activities">>;
+			refused?: Array<{ nodeId?: string; path: string | null; message: string }>;
+			dryRun?: true;
+			complete?: boolean;
+			jobs?: Array<{
+				status: string;
+				errorMessage: string | null;
+				refused: Array<{ nodeId?: string; path: string | null; message: string }>;
+				renamed: Array<{ path: string | null; newPath: string | null }>;
+				hasMoreItems: boolean;
+			}>;
 		},
 	};
+}
+
+function calls_of(f: Fixture, runId: Id<"plugins_event_runs">) {
+	return f.t.run((ctx) =>
+		ctx.db
+			.query("plugins_event_run_calls")
+			.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+			.collect(),
+	);
+}
+
+async function file(f: Fixture, parentId: Id<"files_nodes"> | "root", path: string) {
+	const name = path.split("/").at(-1)!;
+	return await test_run_with_flush(f.t, (ctx) =>
+		ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			createdBy: f.db.userId,
+			updatedBy: f.db.userId,
+			parentId,
+			kind: "file",
+			name,
+			sortName: name,
+			path,
+			treePath: path,
+			pathDepth: path.split("/").length - 1,
+		}),
+	);
+}
+
+// More files than one request restores, so the restore goes on in scheduled steps.
+async function folder_with_files(f: Fixture, path: string) {
+	const folderId = await folder(f, path);
+	for (let index = 0; index < 40; index++) await file(f, folderId, `${path}/f${String(index).padStart(2, "0")}.md`);
+	return folderId;
+}
+
+async function to_trash(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
+	const archived = await archive(f, nodeIds);
+	expect(archived._nay).toBeUndefined();
+	if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+}
+
+async function count_restored(f: Fixture, treePath: string) {
+	const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
+	return nodes.filter((node) => node.treePath.startsWith(treePath) && node.archiveOperationId === null).length;
 }
 
 test.each(["token", "runToken"] as const)(
@@ -257,7 +317,7 @@ test.each(["token", "runToken"] as const)(
 		expect((await post(f, p[credential], "areas")).body.areas, "ordinary folders use folder mode").toEqual([]);
 		expect(
 			(await post(f, p[credential], "restore", { paths: ["/selected/a"] })).status,
-			"plugin Restore remains closed",
+			"read consent alone does not restore",
 		).toBe(403);
 		await finish_path_jobs(f);
 		const archived = await archive(f, [root]);
@@ -366,7 +426,7 @@ test.each(["token", "runToken"] as const)(
 		).toEqual([selectedChild]);
 		expect(
 			(await post(f, p[credential], "restore", { paths: ["/open-a"] })).status,
-			"workspace consent does not open plugin Restore",
+			"workspace consent without the Restore capability does not restore",
 		).toBe(403);
 		await f.t.run((ctx) =>
 			ctx.db.patch("plugins_file_consents", workspaceConsent, {
@@ -706,26 +766,19 @@ test("files/restore gives a plugin run the Restore scope only with Restore conse
 			await ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: capabilities });
 			await ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: capabilities });
 		});
-	const calls_of = (runId: Id<"plugins_event_runs">) =>
-		f.t.run((ctx) =>
-			ctx.db
-				.query("plugins_event_run_calls")
-				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
-				.collect(),
-		);
 
 	const restorer = await plugin(f);
 	await accept(restorer, ["workspace.files.read", "workspace.files.write", "workspace.files.restore"]);
 	expect(
 		await post(f, restorer.runToken, "restore", body),
 		"a run with Restore consent passes the scope checks",
-	).toMatchObject({ status: 403, body: { message: "Plugin Restore is not available yet." } });
-	expect(await calls_of(restorer.runId), "the plugin refusal closes its call").toEqual([
-		expect.objectContaining({
-			status: "failed",
-			responseStatus: 403,
-			errorMessage: "Plugin Restore is not available yet.",
-		}),
+	).toMatchObject({
+		status: 200,
+		// The run chose no files, so its pair cannot open the path.
+		body: { jobIds: [], refused: [{ path: "/restore-me", message: "Permission denied" }] },
+	});
+	expect(await calls_of(f, restorer.runId), "the plugin answer closes its call").toEqual([
+		expect.objectContaining({ status: "succeeded", responseStatus: 200 }),
 	]);
 	expect((await post(f, restorer.token, "restore", body)).status, "plugin pages cannot restore").toBe(403);
 	await f.t.run((ctx) =>
@@ -778,7 +831,7 @@ test("files/restore gives a plugin run the Restore scope only with Restore conse
 
 	for (const runId of [restorer.runId, uploader.runId, scheduled.runId]) {
 		expect(
-			(await calls_of(runId)).every((call) => call.status !== "started"),
+			(await calls_of(f, runId)).every((call) => call.status !== "started"),
 			"every Restore call is settled",
 		).toBe(true);
 	}
@@ -875,44 +928,6 @@ describe("files_nodes_db_restore_named_nodes", () => {
 				stopAtRefusal: false,
 			});
 		});
-	}
-
-	async function file(f: Fixture, parentId: Id<"files_nodes"> | "root", path: string) {
-		const name = path.split("/").at(-1)!;
-		return await test_run_with_flush(f.t, (ctx) =>
-			ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				createdBy: f.db.userId,
-				updatedBy: f.db.userId,
-				parentId,
-				kind: "file",
-				name,
-				sortName: name,
-				path,
-				treePath: path,
-				pathDepth: path.split("/").length - 1,
-			}),
-		);
-	}
-
-	// More files than one request restores, so the restore goes on in scheduled steps.
-	async function folder_with_files(f: Fixture, path: string) {
-		const folderId = await folder(f, path);
-		for (let index = 0; index < 40; index++) await file(f, folderId, `${path}/f${String(index).padStart(2, "0")}.md`);
-		return folderId;
-	}
-
-	async function to_trash(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
-		const archived = await archive(f, nodeIds);
-		expect(archived._nay).toBeUndefined();
-		if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
-	}
-
-	async function count_restored(f: Fixture, treePath: string) {
-		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		return nodes.filter((node) => node.treePath.startsWith(treePath) && node.archiveOperationId === null).length;
 	}
 
 	test("a folder choice restores every item of a multi-step job", async () => {
@@ -1130,5 +1145,587 @@ describe("files_nodes_db_restore_named_nodes", () => {
 			},
 		);
 		expect((await read_activity(f, job.activityId)).status).toBe("succeeded");
+	});
+});
+
+describe("files/restore for a plugin run", () => {
+	const RESTORE: plugins_Capability[] = ["workspace.files.read", "workspace.files.write", "workspace.files.restore"];
+
+	// A run whose installation and run both accept `capabilities`.
+	async function restorer(f: Fixture, options: { member?: boolean; capabilities?: plugins_Capability[] } = {}) {
+		const p = await plugin(f, { member: options.member });
+		await f.t.run(async (ctx) => {
+			const capabilities = options.capabilities ?? RESTORE;
+			await ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: capabilities });
+			await ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: capabilities });
+		});
+		return p;
+	}
+
+	// A later run of the same installation for the same person, with its own token.
+	async function second_run(f: Fixture, p: Awaited<ReturnType<typeof plugin>>) {
+		const runToken = `plr_${await crypto_sha256_hex(`${p.runId}:again`)}`;
+		const runId = await f.t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", p.installationId))!;
+			const { _id, _creationTime, ...run } = (await ctx.db.get("plugins_event_runs", p.runId))!;
+			const runId = await ctx.db.insert("plugins_event_runs", {
+				...run,
+				pluginVersionId: installation.pluginVersionId,
+				acceptedCapabilities: installation.acceptedCapabilities,
+				eventId: "trash-test-again",
+				apiTokenHash: await crypto_sha256_hex(runToken),
+				apiCallCount: 0,
+			});
+			await activities_db_start(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: p.userId,
+				source: {
+					kind: "plugin_run",
+					id: runId,
+					installationId: p.installationId,
+					pluginName: installation.pluginName,
+					event: run.event,
+				},
+				title: "Trash test again",
+				targets: [],
+				visibility: "shared",
+				feedVisible: false,
+				status: "running",
+				resultKind: "plugin_result",
+				deadlineAt: Date.now() + 60 * 60 * 1000,
+				now: Date.now(),
+			});
+			return runId;
+		});
+		return { ...p, runToken, runId };
+	}
+
+	async function job_of(f: Fixture, activityId: Id<"activities">) {
+		return { runId: (await read_activity(f, activityId)).source.id, activityId };
+	}
+
+	// Claim a call like the HTTP auth does, so a test can call the mutation with other inputs.
+	async function claim(f: Fixture, p: Awaited<ReturnType<typeof plugin>>, route = "/api/v1/files/restore") {
+		const claimed = await f.t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: p.runId,
+			kind: "api_request",
+			route,
+			requiredScope: route === "/api/v1/files/restore" ? "files:restore" : "files:list",
+		});
+		if (claimed._nay) throw new Error(claimed._nay.message);
+		return claimed._yay.callId;
+	}
+
+	async function admit(
+		f: Fixture,
+		p: Awaited<ReturnType<typeof plugin>>,
+		args: { callId: Id<"plugins_event_run_calls">; paths: string[]; tokenHash?: string },
+	) {
+		return await f.t
+			.mutation(internal.public_api_files_organize.restore_items, {
+				principal: {
+					kind: "plugin_run",
+					runId: p.runId,
+					callId: args.callId,
+					tokenHash: args.tokenHash ?? (await crypto_sha256_hex(p.runToken)),
+				},
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: p.userId,
+				paths: args.paths,
+				nodes: [],
+				onConflict: "keep_both",
+				requestId: crypto.randomUUID(),
+			})
+			.then(
+				(result) => ({ status: 200, jobIds: result.jobIds }),
+				(error: unknown) => {
+					if (!(error instanceof ConvexError)) throw error;
+					return { status: (error.data as { data: { status: number } }).data.status };
+				},
+			);
+	}
+
+	async function restore_runs(f: Fixture) {
+		return (await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).filter(
+			(run) => run.kind === "restore",
+		);
+	}
+
+	test("a run with Restore restores an unlabelled item and closes its call", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/unlabelled.md");
+		await to_trash(f, [item]);
+
+		const restored = await post(f, p.runToken, "restore", { paths: ["/unlabelled.md"], requestId: "one" });
+		expect(restored).toEqual({ status: 200, body: { jobIds: [expect.any(String)], isDone: true, refused: [] } });
+		expect((await read_node(f, item)).archiveOperationId, "the item is back").toBeNull();
+		const job = await job_of(f, restored.body.jobIds![0]!);
+		expect(await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)), "the job keeps its pins").toMatchObject(
+			{
+				plugin: { installationId: p.installationId, filePairId: p.pairId },
+				apiRequest: { requestId: `plugin:${p.installationId}:${p.pairId}:one` },
+			},
+		);
+		expect(await calls_of(f, p.runId)).toEqual([
+			expect.objectContaining({ route: "/api/v1/files/restore", status: "succeeded", responseStatus: 200 }),
+		]);
+	});
+
+	test("a file-only choice restores a root file but not a file whose folder the plugin cannot edit", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const rootFile = await file(f, "root", "/granted.md");
+		const parent = await folder(f, "/parent");
+		const childFile = await file(f, parent, "/parent/granted.md");
+		await select(f, p.pairId, rootFile, false, "write");
+		await select(f, p.pairId, childFile, false, "write");
+		await to_trash(f, [rootFile]);
+		await to_trash(f, [childFile]);
+
+		const nodes = [];
+		for (const nodeId of [rootFile, childFile]) {
+			nodes.push({ nodeId, archiveOperationId: (await read_node(f, nodeId)).archiveOperationId! });
+		}
+		expect(await post(f, p.runToken, "restore", { nodes, requestId: "file-only" })).toEqual({
+			status: 200,
+			body: {
+				jobIds: [expect.any(String)],
+				isDone: true,
+				refused: [{ nodeId: childFile, path: null, message: "Permission denied" }],
+			},
+		});
+		expect((await read_node(f, rootFile)).archiveOperationId, "the root file comes back in place").toBeNull();
+		expect((await read_node(f, childFile)).archiveOperationId, "its folder needs Edit").not.toBeNull();
+	});
+
+	test("a guest's run cannot restore", async () => {
+		const f = await fixture();
+		const p = await restorer(f, { member: true });
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/guest.md");
+		await to_trash(f, [item]);
+		await f.asOwner.mutation(api.access_control.set_user_role, {
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			userId: p.userId,
+			role: null,
+		});
+
+		expect(
+			await post(f, p.runToken, "restore", { paths: ["/guest.md"], requestId: "guest" }),
+			"guests have no Trash",
+		).toMatchObject({ status: 403, body: { message: "Permission denied" } });
+		expect((await read_node(f, item)).archiveOperationId).not.toBeNull();
+	});
+
+	test("a folder choice restores every item of a multi-step job", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const chosen = await folder(f, "/chosen");
+		await select(f, p.pairId, chosen, false, "write");
+		const big = await folder_with_files(f, "/chosen/big");
+		await to_trash(f, [big]);
+
+		const restored = await post(f, p.runToken, "restore", { paths: ["/chosen/big"], requestId: "big" });
+		expect(restored).toMatchObject({ status: 200, body: { jobIds: [expect.any(String)], isDone: false, refused: [] } });
+		const ended = await run_to_end(f, await job_of(f, restored.body.jobIds![0]!));
+		expect(ended.steps, "the job runs more than one step").toBeGreaterThan(1);
+		expect(ended.activity.status).toBe("succeeded");
+		expect(await count_restored(f, "/chosen/big/"), "every item comes back").toBe(41);
+	});
+
+	test("an upload run needs its source when the restore is accepted, not later", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const source = await file(f, "root", "/source.md");
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", p.runId, { event: "files.upload.completed", fileNodeId: source }),
+		);
+		const big = await folder_with_files(f, "/big");
+		const item = await file(f, "root", "/item.md");
+		await to_trash(f, [big]);
+		await to_trash(f, [item]);
+
+		const restored = await post(f, p.runToken, "restore", { paths: ["/big"], requestId: "big" });
+		expect(restored).toMatchObject({ status: 200, body: { isDone: false, refused: [] } });
+		await to_trash(f, [source]);
+		const ended = await run_to_end(f, await job_of(f, restored.body.jobIds![0]!));
+		expect(ended.activity.status, "an accepted job goes on without the source").toBe("succeeded");
+		expect(await count_restored(f, "/big/")).toBe(41);
+
+		// The HTTP auth checks the source too. Claim the call directly, so only the mutation's check can refuse.
+		expect(await admit(f, p, { callId: await claim(f, p), paths: ["/item.md"] }), "no new work").toEqual({
+			status: 401,
+		});
+		expect((await read_node(f, item)).archiveOperationId, "nothing is restored").not.toBeNull();
+		expect(await restore_runs(f), "no job and no receipt").toHaveLength(1);
+	});
+
+	test("the restore checks the token hash, the claimed call and Restore consent again", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/item.md");
+		await to_trash(f, [item]);
+		const withoutRestore: plugins_Capability[] = ["workspace.files.read", "workspace.files.write"];
+
+		// Consent can change after the HTTP auth checked it.
+		const runCallId = await claim(f, p);
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: withoutRestore }));
+		expect(await admit(f, p, { callId: runCallId, paths: ["/item.md"] }), "the run must still accept Restore").toEqual({
+			status: 403,
+		});
+		await f.t.run((ctx) => ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: RESTORE }));
+		const installationCallId = await claim(f, p);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: withoutRestore }),
+		);
+		expect(
+			await admit(f, p, { callId: installationCallId, paths: ["/item.md"] }),
+			"the installation must still accept Restore",
+		).toEqual({ status: 403 });
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: RESTORE }),
+		);
+
+		expect(
+			await admit(f, p, {
+				callId: await claim(f, p),
+				paths: ["/item.md"],
+				tokenHash: await crypto_sha256_hex("plr_wrong"),
+			}),
+			"a wrong token hash is refused",
+		).toEqual({ status: 401 });
+		expect(
+			await admit(f, p, { callId: await claim(f, p, "/api/v1/files/trash/list"), paths: ["/item.md"] }),
+			"a call claimed for another route is refused",
+		).toEqual({ status: 401 });
+		expect(await restore_runs(f)).toEqual([]);
+		expect(
+			(await admit(f, p, { callId: await claim(f, p), paths: ["/item.md"] })).status,
+			"the right token and call restore",
+		).toBe(200);
+	});
+
+	test("a later run gets the same jobs for the same requestId", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/item.md");
+		await to_trash(f, [item]);
+		const body = { paths: ["/item.md"], requestId: "again" };
+
+		const first = await post(f, p.runToken, "restore", body);
+		expect(first.body.jobIds).toHaveLength(1);
+		const later = await second_run(f, p);
+		expect(await post(f, later.runToken, "restore", body), "the retry names the same jobs").toEqual(first);
+		expect(await calls_of(f, later.runId)).toEqual([expect.objectContaining({ status: "succeeded" })]);
+	});
+
+	test("a changed body with the same requestId gets 409", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/item.md");
+		await to_trash(f, [item]);
+
+		expect((await post(f, p.runToken, "restore", { paths: ["/item.md"], requestId: "same" })).status).toBe(200);
+		expect(
+			await post(f, p.runToken, "restore", { paths: ["/item.md"], onConflict: "skip", requestId: "same" }),
+			"another body cannot reuse the requestId",
+		).toMatchObject({ status: 409 });
+	});
+
+	test("a retry after a new delete does not restore again", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const item = await file(f, "root", "/item.md");
+		await to_trash(f, [item]);
+		const body = { paths: ["/item.md"], requestId: "once" };
+
+		const first = await post(f, p.runToken, "restore", body);
+		await to_trash(f, [item]);
+		expect(await post(f, p.runToken, "restore", body), "the retry answers the first jobs").toEqual(first);
+		expect((await read_node(f, item)).archiveOperationId, "the new delete stays").not.toBeNull();
+	});
+
+	// A request that refused every item starts no job, so no job holds its receipt. Its retry runs again.
+	test("a request that refused every item saves nothing to retry", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+		const body = { paths: ["/later.md"], requestId: "all-refused" };
+
+		expect(await post(f, p.runToken, "restore", body), "a plugin hears that nothing is in the Trash").toEqual({
+			status: 200,
+			body: {
+				jobIds: [],
+				isDone: true,
+				refused: [{ path: "/later.md", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash }],
+			},
+		});
+		const item = await file(f, "root", "/later.md");
+		await to_trash(f, [item]);
+		expect(await post(f, p.runToken, "restore", body), "the retry runs again").toMatchObject({
+			status: 200,
+			body: { jobIds: [expect.any(String)], refused: [] },
+		});
+	});
+
+	test("after an upgrade drops Read-only management, an old forced request still answers", async () => {
+		const f = await fixture();
+		const p = await restorer(f, { capabilities: [...RESTORE, "workspace.files.manage-read-only"] });
+		await select(f, p.pairId, null, true, "write");
+		const readOnly = await folder(f, "/ro");
+		const item = await file(f, readOnly, "/ro/item.md");
+		await to_trash(f, [item]);
+		await lock({ f, nodeId: readOnly, locked: true });
+		const body = { paths: ["/ro/item.md"], force: true, requestId: "forced" };
+
+		const first = await post(f, p.runToken, "restore", body);
+		expect(first).toMatchObject({ status: 200, body: { jobIds: [expect.any(String)], refused: [] } });
+
+		// The new version does not ask for Read-only management. A run of it retries.
+		await f.t.run(async (ctx) => {
+			const installation = (await ctx.db.get("plugins_workspace_installations", p.installationId))!;
+			const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", installation.pluginVersionId))!;
+			await ctx.db.patch("plugins_workspace_installations", p.installationId, {
+				pluginVersionId: await ctx.db.insert("plugins_versions", { ...version, version: "2.0.0" }),
+				capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt + 1,
+				acceptedCapabilities: RESTORE,
+			});
+		});
+		const upgraded = await second_run(f, p);
+		expect(await post(f, upgraded.runToken, "restore", body), "the old forced request keeps its jobs").toEqual(first);
+		expect(
+			await post(f, upgraded.runToken, "restore", { ...body, requestId: "forced-again" }),
+			"a new forced request needs Read-only management",
+		).toMatchObject({ status: 403, body: { message: "Permission denied" } });
+	});
+
+	test("answers name only the paths the plugin sent and can read now", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const chosen = await folder(f, "/chosen");
+		const consentId = await select(f, p.pairId, chosen, false, "write");
+		const readOnly = await folder(f, "/chosen/ro");
+		const blocked = await file(f, readOnly, "/chosen/ro/blocked.md");
+		const kept = await file(f, chosen, "/chosen/kept.md");
+		const changed = await file(f, chosen, "/chosen/changed.md");
+		const secret = await file(f, "root", "/secret.md");
+		for (const nodeId of [blocked, kept, changed, secret]) await to_trash(f, [nodeId]);
+		await lock({ f, nodeId: readOnly, locked: true });
+
+		const byNodes = await post(f, p.runToken, "restore", {
+			nodes: [
+				{ nodeId: changed, archiveOperationId: "an-older-delete" },
+				{ nodeId: secret, archiveOperationId: (await read_node(f, secret)).archiveOperationId! },
+			],
+			requestId: "by-nodes",
+		});
+		expect(byNodes.body, "a node never gets a path").toEqual({
+			jobIds: [],
+			isDone: true,
+			refused: [
+				{ nodeId: changed, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.changed },
+				{ nodeId: secret, path: null, message: "Permission denied" },
+			],
+		});
+		expect(JSON.stringify(byNodes.body)).not.toMatch(/\/chosen|\/secret/u);
+
+		const body = { paths: ["/chosen/ro/blocked.md", "/chosen/kept.md", "/chosen/missing.md"], requestId: "by-paths" };
+		const first = await post(f, p.runToken, "restore", body);
+		expect(first.body, "a path is only the one the plugin sent").toEqual({
+			jobIds: [expect.any(String)],
+			isDone: true,
+			refused: [
+				{ path: "/chosen/missing.md", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash },
+				{
+					nodeId: blocked,
+					path: "/chosen/ro/blocked.md",
+					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only,
+				},
+			],
+		});
+
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_file_consents", consentId, { open: false, appliedLevel: null, state: "ended" }),
+		);
+		const retry = await post(f, p.runToken, "restore", body);
+		expect(retry.body, "a retry hides the paths the plugin cannot read now").toEqual({
+			jobIds: first.body.jobIds,
+			isDone: true,
+			refused: [
+				{ path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash },
+				{ nodeId: blocked, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only },
+			],
+		});
+		expect(JSON.stringify(retry.body)).not.toMatch(/\/chosen/u);
+	});
+
+	test("an item that another job is restoring answers busy only when the plugin can read it", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const area = await folder(f, "/area");
+		await select(f, p.pairId, area, false, "write");
+		const big = await folder_with_files(f, "/area/big");
+		const other = await file(f, "root", "/other.md");
+		// One delete, so both items wait for the same restore job.
+		await to_trash(f, [big, other]);
+
+		const restoring = await post(f, p.runToken, "restore", { paths: ["/area/big"], requestId: "big" });
+		const job = await job_of(f, restoring.body.jobIds![0]!);
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))?.phase).toBe("apply");
+		const child = (await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).find(
+			(node) => node.treePath.startsWith("/area/big/") && node.archiveOperationId !== null,
+		)!;
+
+		const operationId = child.archiveOperationId!;
+		expect(
+			await post(f, p.runToken, "restore", {
+				nodes: [
+					{ nodeId: child._id, archiveOperationId: operationId },
+					{ nodeId: other, archiveOperationId: operationId },
+				],
+				requestId: "during",
+			}),
+			"only the item the plugin can read says busy",
+		).toEqual({
+			status: 200,
+			body: {
+				jobIds: [],
+				isDone: true,
+				refused: [
+					{ nodeId: child._id, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy },
+					{ nodeId: other, path: null, message: "Permission denied" },
+				],
+			},
+		});
+	});
+
+	test("a dry run undoes everything and needs no file read capability", async () => {
+		const f = await fixture();
+		const p = await restorer(f, { capabilities: ["workspace.files.write", "workspace.files.restore"] });
+		await select(f, p.pairId, null, true, "write");
+		const clash = await file(f, "root", "/clash.md");
+		const big = await folder_with_files(f, "/big");
+		await to_trash(f, [clash]);
+		await to_trash(f, [big]);
+		await file(f, "root", "/clash.md");
+		const count_saved = () =>
+			f.t.run(async (ctx) => ({
+				runs: (await ctx.db.query("files_archive_runs").collect()).length,
+				activities: (await ctx.db.query("activities").collect()).length,
+				scheduled: (await ctx.db.system.query("_scheduled_functions").collect()).length,
+			}));
+		const before = await count_saved();
+
+		expect(await post(f, p.runToken, "restore", { paths: ["/clash.md"], dryRun: true })).toEqual({
+			status: 200,
+			body: {
+				dryRun: true,
+				complete: true,
+				refused: [],
+				jobs: [
+					expect.objectContaining({
+						status: "succeeded",
+						refused: [],
+						renamed: [{ path: "/clash.md", newPath: "/clash-2.md" }],
+						hasMoreItems: false,
+					}),
+				],
+			},
+		});
+		expect(await post(f, p.runToken, "restore", { paths: ["/big"], dryRun: true }), "a big delete").toMatchObject({
+			status: 200,
+			body: { complete: false },
+		});
+		expect(await count_saved(), "no job, Activity or step is saved").toEqual(before);
+		expect((await read_node(f, clash)).archiveOperationId).not.toBeNull();
+		expect(await count_restored(f, "/big/")).toBe(0);
+		expect(await calls_of(f, p.runId), "each dry run closes its call").toEqual([
+			expect.objectContaining({ status: "succeeded", responseStatus: 200 }),
+			expect.objectContaining({ status: "succeeded", responseStatus: 200 }),
+		]);
+	});
+
+	test("every claimed call is closed, also on early answers and errors", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		await select(f, p.pairId, null, true, "write");
+
+		expect((await post(f, p.runToken, "restore", { requestId: "no-items" })).status).toBe(400);
+		await f.t.run(async (ctx) => {
+			while (!(await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: p.userId })));
+		});
+		expect((await post(f, p.runToken, "restore", { paths: ["/a.md"], requestId: "limited" })).status).toBe(429);
+		await reset_rate_limits(f.t, [p.userId]);
+		test_spy_handler(restore_items, async () => {
+			throw new Error("Restore broke");
+		});
+		await f.t
+			.fetch("/api/v1/files/restore", {
+				method: "POST",
+				headers: { Authorization: `Bearer ${p.runToken}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ paths: ["/a.md"], requestId: "broken" }),
+			})
+			.catch(() => null);
+
+		expect(await calls_of(f, p.runId), "each call is closed with its answer").toEqual([
+			expect.objectContaining({ status: "failed", responseStatus: 400, errorCode: "invalid_input" }),
+			expect.objectContaining({ status: "failed", responseStatus: 429, errorCode: "rate_limited" }),
+			expect.objectContaining({ status: "failed", responseStatus: 500, errorCode: "internal_error" }),
+		]);
+	});
+
+	test("100 items for a member's pair fit in one answer", async () => {
+		const f = await fixture();
+		const p = await restorer(f, { member: true });
+		await select(f, p.pairId, null, true, "write");
+		// Each path comes from its own delete, so each one starts its own job.
+		const paths = [];
+		for (let index = 0; index < 100; index++) {
+			const name = `m${String(index).padStart(3, "0")}.md`;
+			await test_run_with_flush(f.t, (ctx) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: "root",
+					kind: "file",
+					name,
+					sortName: name,
+					path: `/${name}`,
+					treePath: `/${name}`,
+					pathDepth: 1,
+					archiveOperationId: crypto.randomUUID(),
+					archivedPath: `/${name}`,
+				}),
+			);
+			paths.push(`/${name}`);
+		}
+
+		let cost: ReturnType<typeof transaction_cost> | null = null;
+		test_spy_handler(restore_items, async (handler, ctx, args) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const result = await handler(ctx, args);
+			cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
+			expect_under_convex_limits(cost);
+			return result;
+		});
+		const response = await post(f, p.runToken, "restore", { paths, requestId: "most" });
+		expect(response).toMatchObject({ status: 200, body: { refused: [] } });
+		expect(response.body.jobIds).toHaveLength(100);
+		// The request checks the pins once, not once per job: about 1,400 queries instead of 3,200. Keep it
+		// under 2,048 like a member's key, so items in restricted folders still have room.
+		expect(cost!.databaseQueries, "a pair checks its pins once per request").toBeLessThan(2048);
 	});
 });

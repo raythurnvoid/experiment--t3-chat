@@ -118,6 +118,11 @@ Machine setters and arbitrary create-time flags also need the new grant:
 `files:read-only` for API keys, or `workspace.files.manage-read-only` for plugins.
 The former protection grant is not an alias. Old consent does not grant the new capability.
 
+A plugin's forced Restore needs `workspace.files.manage-read-only` on both the run and the
+installation. A new request checks it, and every step of a forced job checks the
+installation again. A retry of an old forced request starts no work, so it still answers
+after an upgrade removed the capability (see "Plugin Restore" in the `public-api` skill).
+
 Registered writer setup remains an access operation. Its first private setup can grant its exact
 account Can manage after the existing parent grant ceiling and service-account checks. Repeating
 ensure does not restore removed grants or overwrite manual sharing. Read-only creates no grant.

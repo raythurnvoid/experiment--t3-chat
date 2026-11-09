@@ -227,6 +227,10 @@ forced delete has not fixed the tops of a folder it keeps, and while a restore p
 part of a delete back. The restore deny covers every Trash item under the selected items,
 also while the restore waits for a name choice, which can last up to 24 hours. It stops a
 choice on the old top from reaching an item that the restore already moved out of it.
+A plugin's own Restore job is the one exception: its steps pass `restoreRunId`, so they can
+still check the items they put back. Every other reader stays denied, also a new request of
+the same plugin. That request then answers `busy` only when the plugin can read the item
+apart from the job (see "Plugin Restore" in the `public-api` skill).
 
 The selections load once per checker, up to 100 roots. A loop over many items must share
 one checker (`access_control_create_file_checker`), not call

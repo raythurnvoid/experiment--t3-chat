@@ -441,6 +441,36 @@ async function db_get_plugin_write_context(
 	return { writeContext, isLost: false };
 }
 
+/**
+ * Check a plugin run's pins before its Restore jobs start, as the person's current membership.
+ */
+export async function files_archive_runs_db_check_plugin_pins(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		plugin: NonNullable<RunFields["plugin"]>;
+		force: boolean;
+	},
+) {
+	return await db_get_plugin_write_context(ctx, {
+		run: {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			userId: args.userAuth.id,
+			force: args.force,
+		},
+		plugin: args.plugin,
+		membershipId: args.membership._id,
+		membershipLifetime: (
+			await organizations_membership_lifetimes_db_get(ctx, {
+				workspaceId: args.membership.workspaceId,
+				userId: args.userAuth.id,
+			})
+		)?.lifetime,
+	});
+}
+
 async function db_get_owned_run(
 	ctx: QueryCtx | MutationCtx,
 	args: { membershipId: Id<"organizations_workspaces_users">; runId: Id<"files_archive_runs"> },
@@ -3409,6 +3439,12 @@ export async function files_archive_runs_db_start(
 		 * pair at every step. Missing for the app and for an API key.
 		 */
 		plugin?: NonNullable<RunFields["plugin"]>;
+		/**
+		 * The result of `files_archive_runs_db_check_plugin_pins` for these pins and `force`, made earlier
+		 * in this same transaction. A request that starts one job per delete checks the pins once, because
+		 * every job would read the same rows again. Missing: the job checks them itself.
+		 */
+		pluginCheck?: Awaited<ReturnType<typeof files_archive_runs_db_check_plugin_pins>>;
 		force?: boolean;
 		archiveOperationId: string;
 		/**
@@ -3458,22 +3494,13 @@ export async function files_archive_runs_db_start(
 	// Read-only management in the installation's current capabilities.
 	const plugin =
 		args.plugin &&
-		(await db_get_plugin_write_context(ctx, {
-			run: {
-				organizationId: args.membership.organizationId,
-				workspaceId: args.membership.workspaceId,
-				userId: args.userAuth.id,
+		(args.pluginCheck ??
+			(await files_archive_runs_db_check_plugin_pins(ctx, {
+				userAuth: args.userAuth,
+				membership: args.membership,
+				plugin: args.plugin,
 				force,
-			},
-			plugin: args.plugin,
-			membershipId: args.membership._id,
-			membershipLifetime: (
-				await organizations_membership_lifetimes_db_get(ctx, {
-					workspaceId: args.membership.workspaceId,
-					userId: args.userAuth.id,
-				})
-			)?.lifetime,
-		}));
+			})));
 	if (plugin?.isLost) return Result({ _nay: { message: "Permission denied" } });
 	if (
 		force &&

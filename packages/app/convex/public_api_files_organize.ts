@@ -11,7 +11,7 @@ import type { IndexRange, RegisteredMutation, RegisteredQuery } from "convex/ser
 import { validate } from "convex-helpers/validators";
 import { z } from "zod";
 
-import { internalQuery, type ActionCtx } from "./_generated/server.js";
+import { internalQuery, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -23,14 +23,21 @@ import {
 	access_control_subject_validator,
 } from "./access_control.ts";
 import { activities_is_active } from "./activities_db.ts";
-import { files_archive_runs_db_find_saved_restore_left_node } from "./files_archive_runs.ts";
+import {
+	files_archive_runs_db_find_saved_restore_left_node,
+	files_archive_runs_PLUGIN_RESTORE_MESSAGES,
+} from "./files_archive_runs.ts";
 import { files_nodes_db_archive_named_nodes, files_nodes_db_restore_named_nodes } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { files_transfer_db_start_for_api } from "./files_transfer.ts";
 import { files_tree_db_get_share_principal_keys } from "./files_tree.ts";
 import { files_transfer_status_db_require_activity } from "./files_transfer_status.ts";
 import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
-import { public_api_db_revalidate_file_write_principal, public_api_get_invalid_name_message } from "./public_api.ts";
+import {
+	public_api_db_revalidate_file_write_principal,
+	public_api_db_revalidate_live_plugin_run,
+	public_api_get_invalid_name_message,
+} from "./public_api.ts";
 import { public_api_validate_canonical_folder_path } from "./public_api_plugin_files.ts";
 import {
 	public_api_authorize_request,
@@ -47,6 +54,7 @@ import { files_db_create_path_lookups, files_db_get_path_access } from "../serve
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import type { files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
@@ -1836,16 +1844,75 @@ const restore_failure_validator = z.object({
 });
 
 /**
+ * The error code that a plugin run's call keeps for each refusal status of `files/restore`.
+ */
+const RESTORE_ERROR_CODES = {
+	400: "invalid_input",
+	401: "unauthenticated",
+	403: "permission_denied",
+	409: "conflict",
+	429: "rate_limited",
+} as const;
+
+const restore_principal_validator = v.union(
+	v.object({ kind: v.literal("user_api_key"), credentialId: v.id("api_credentials") }),
+	/**
+	 * A plugin's backend run. The HTTP action passes the hash of the token it was given, never the
+	 * token, and the call that the request claimed. The mutation checks both again.
+	 */
+	v.object({
+		kind: v.literal("plugin_run"),
+		runId: v.id("plugins_event_runs"),
+		callId: v.id("plugins_event_run_calls"),
+		tokenHash: v.string(),
+	}),
+);
+
+/**
+ * The refusals a plugin's request saved, for a retry or a job reader. A plugin may see a path only
+ * when it sent it and can read the item now. A path selector that kept the item's id is checked
+ * again with `checker`. A path selector without an id gets a null path, because looking up an old
+ * refusal by its path could find another item. A node selector has no path.
+ */
+async function db_render_plugin_restore_refusals(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		refused: NonNullable<Doc<"files_archive_runs">["apiRequest"]>["refused"];
+		checker: ReturnType<typeof access_control_create_file_checker>;
+	},
+) {
+	return await Promise.all(
+		args.refused.map(async (refusal) => {
+			if (!("nodeId" in refusal)) return { path: null, message: refusal.message };
+			if (refusal.path === null) return refusal;
+			const nodeId = ctx.db.normalizeId("files_nodes", refusal.nodeId);
+			const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+			const isReadable =
+				node !== null &&
+				node.organizationId === args.organizationId &&
+				node.workspaceId === args.workspaceId &&
+				(await args.checker.can(node, "content.read"));
+			return { ...refusal, path: isReadable ? refusal.path : null };
+		}),
+	);
+}
+
+/**
  * Restore the named items from the Trash with the app's restore job. Each path names the archived item
  * at that path. Each node names one archived item by id, with the `archiveOperationId` the caller saw
  * in `files/trash/list`. The job brings back only each selected item and its descendants with the
  * same delete id, one job per delete. An item that is missing, locked, or not archived is refused
  * alone, and the other items are still restored.
+ *
+ * A plugin run acts as its file pair, with fixed refusal messages. Its replies and its saved request
+ * name only paths the plugin sent (see `db_render_plugin_restore_refusals`).
  */
 export const restore_items = internalMutation({
 	args: {
 		force: v.optional(v.boolean()),
-		credentialId: v.id("api_credentials"),
+		principal: restore_principal_validator,
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -1862,7 +1929,8 @@ export const restore_items = internalMutation({
 		isDone: v.boolean(),
 		refused: v.array(
 			v.union(
-				v.object({ path: v.string(), message: v.string() }),
+				// A plugin's retry gets a null path where it may not see the path now.
+				v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
 				v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
 			),
 		),
@@ -1876,27 +1944,111 @@ export const restore_items = internalMutation({
 					...(failArgs.retryAfterMs !== undefined ? { retryAfterMs: failArgs.retryAfterMs } : {}),
 				},
 			});
+		const now = Date.now();
+		const credentialId = args.principal.kind === "user_api_key" ? args.principal.credentialId : null;
 
-		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			principalRef: { kind: "user_api_key", credentialId: args.credentialId },
-			force: args.force === true,
-			// Each item is checked below, so a restore by nodes passes the root like `write-many` does.
-			path: args.paths[0] ?? "/",
-			eachPathChecked: true,
-			now: Date.now(),
-		});
-		if (revalidated._nay) {
-			throw fail({
-				message: revalidated._nay.message,
-				status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
+		let writeContext: files_nodes_WriteContext;
+		// A plugin run: the pins its jobs keep, and its own copy of the force check, which only a new
+		// job needs. Null for a key.
+		let plugin: {
+			pins: NonNullable<Doc<"files_archive_runs">["plugin"]>;
+			canForce: boolean;
+		} | null = null;
+		if (args.principal.kind === "plugin_run") {
+			const { principal } = args;
+			// Check the token, the run and the claimed call here, in the transaction that accepts the work.
+			// The HTTP action checked them before, but the run can end or the token can change since.
+			const pluginRun = await ctx.db.get("plugins_event_runs", principal.runId);
+			if (!pluginRun || pluginRun.apiTokenHash !== principal.tokenHash) {
+				throw fail({ message: "Unauthenticated", status: 401 });
+			}
+			const live = await public_api_db_revalidate_live_plugin_run(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				runId: pluginRun._id,
+				now,
+				requiredScope: "files:restore",
 			});
+			if (live._nay) {
+				throw fail({ message: live._nay.message, status: live._nay.message === "Unauthenticated" ? 401 : 403 });
+			}
+			const { installation, subject } = live._yay;
+			const call = await ctx.db.get("plugins_event_run_calls", principal.callId);
+			if (
+				!call ||
+				call.status !== "started" ||
+				call.kind !== "api_request" ||
+				call.route !== "/api/v1/files/restore" ||
+				call.runId !== pluginRun._id ||
+				call.organizationId !== pluginRun.organizationId ||
+				call.workspaceId !== pluginRun.workspaceId ||
+				call.installationId !== installation._id ||
+				call.pluginVersionId !== pluginRun.pluginVersionId ||
+				pluginRun.actorUserId !== args.userId
+			) {
+				throw fail({ message: "Unauthenticated", status: 401 });
+			}
+			// An upload run's authority ends with the file that started it. Check the source before new work.
+			// A job that was accepted never checks it again, so losing the source later does not stop it.
+			if (pluginRun.fileNodeId) {
+				const source = await files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId);
+				if (
+					!source ||
+					source.archiveOperationId !== null ||
+					source.organizationId !== args.organizationId ||
+					source.workspaceId !== args.workspaceId
+				) {
+					throw fail({ message: "Unauthenticated", status: 401 });
+				}
+			}
+			// The live check above validated the run's pair by its exact ids and membership lifetime. Both
+			// the run and the installation must still accept Restore.
+			if (
+				!pluginRun.acceptedCapabilities.includes("workspace.files.restore") ||
+				!installation.acceptedCapabilities.includes("workspace.files.restore")
+			) {
+				throw fail({ message: "Permission denied", status: 403 });
+			}
+			writeContext = {
+				subject,
+				actorUserId: args.userId,
+				resourceScope: { kind: "workspace" },
+				force: args.force === true,
+			};
+			plugin = {
+				pins: {
+					installationId: installation._id,
+					filePairId: subject.pairId,
+					pluginVersionId: installation.pluginVersionId,
+					serviceAccountId: pluginRun.serviceAccountId,
+					capabilitiesAcceptedAt: installation.capabilitiesAcceptedAt,
+				},
+				canForce:
+					pluginRun.acceptedCapabilities.includes("workspace.files.manage-read-only") &&
+					installation.acceptedCapabilities.includes("workspace.files.manage-read-only"),
+			};
+		} else {
+			const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				principalRef: { kind: "user_api_key", credentialId: args.principal.credentialId },
+				force: args.force === true,
+				// Each item is checked below, so a restore by nodes passes the root like `write-many` does.
+				path: args.paths[0] ?? "/",
+				eachPathChecked: true,
+				now,
+			});
+			if (revalidated._nay) {
+				throw fail({
+					message: revalidated._nay.message,
+					status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
+				});
+			}
+			// A key bound to a service account acts as the account here and at every step of the job, like
+			// `delete`. The person still owns the job, its Activity, and its rate buckets.
+			writeContext = revalidated._yay.writeContext;
 		}
-		// A key bound to a service account acts as the account here and at every step of the job, like
-		// `delete`. The person still owns the job, its Activity, and its rate buckets.
-		const { writeContext } = revalidated._yay;
 		const { subject } = writeContext;
 
 		const membership = await ctx.db
@@ -1912,10 +2064,30 @@ export const restore_items = internalMutation({
 		if (!membership) {
 			throw fail({ message: "Unauthenticated", status: 401 });
 		}
+		// Guests have no Trash, like on the plugin Trash doors. Check it once, not for each item.
+		if (
+			plugin &&
+			(
+				await access_control_db_authorize_membership(ctx, {
+					userAuth: { id: args.userId },
+					membership,
+					permission: "content.read",
+				})
+			)._nay
+		) {
+			throw fail({ message: "Permission denied", status: 403 });
+		}
 
 		// Look for an earlier run first: after a finished restore, the items are no longer archived. The
-		// key's id in the request id keeps it apart from the request ids of other keys.
-		const requestId = args.requestId === null ? null : `api:${args.credentialId}:${args.requestId}`;
+		// key's id in the request id keeps it apart from the request ids of other keys. A plugin's request id
+		// holds its installation and file pair, not its run, so a later run of the same plugin for the same
+		// person finds it.
+		const requestId =
+			args.requestId === null
+				? null
+				: plugin
+					? `plugin:${plugin.pins.installationId}:${plugin.pins.filePairId}:${args.requestId}`
+					: `api:${credentialId}:${args.requestId}`;
 		// Only opting into force changes the request identity. A paths request hashes the bare paths list,
 		// and a nodes request adds a "nodes" tag, so the two can never share a hash.
 		const inputHash = await crypto_sha256_hex(
@@ -1925,6 +2097,8 @@ export const restore_items = internalMutation({
 				...(args.force === true ? [true] : []),
 			]),
 		);
+		// One checker for the whole answer, so up to 100 items share its reads. Nothing here changes grants.
+		const checker = access_control_create_file_checker(ctx, { ...args, subject });
 		const previous =
 			requestId === null
 				? null
@@ -1949,8 +2123,17 @@ export const restore_items = internalMutation({
 				jobIds: previous.apiRequest.activityIds,
 				// History cleanup deletes a job 7 days after it ends.
 				isDone: activities.every((activity) => !activity || !activities_is_active(activity.status)),
-				refused: previous.apiRequest.refused,
+				// A retry starts no work, so it needs no check of force, targets or landing. A plugin sees again
+				// only the paths it may read now.
+				refused: plugin
+					? await db_render_plugin_restore_refusals(ctx, { ...args, refused: previous.apiRequest.refused, checker })
+					: previous.apiRequest.refused,
 			};
+		}
+		// A forced plugin restore needs Read-only management on the run and the installation. Only new work
+		// checks it, so an old forced request still answers its retry after an upgrade took the capability.
+		if (plugin && args.force === true && !plugin.canForce) {
+			throw fail({ message: "Permission denied", status: 403 });
 		}
 
 		// The same bucket as Restore in the app, so a key cannot restore faster than its person.
@@ -1961,6 +2144,10 @@ export const restore_items = internalMutation({
 
 		// Resolve each path or node to its archived item, as the key. Locked answers "Permission denied",
 		// never "Not found". Each item costs a few index reads, never a read of a whole folder.
+		//
+		// A plugin gets the fixed messages of `files_archive_runs_PLUGIN_RESTORE_MESSAGES` and only the
+		// paths it sent. A path it sent keeps the id of the one item found there when the plugin can read it,
+		// so a retry can check that item again. A node it sent never gets a path.
 		type Selector = { path: string } | { nodeId: string; path: string | null };
 		const refused: Array<Selector & { message: string }> = [];
 		const nodes: Doc<"files_nodes">[] = [];
@@ -1970,8 +2157,32 @@ export const restore_items = internalMutation({
 			const selectors = selectorsByOperationId.get(node.archiveOperationId!) ?? [];
 			selectorsByOperationId.set(node.archiveOperationId!, [...selectors, selector]);
 		};
-		// One checker for all selectors, so up to 100 items share its reads. Nothing here changes grants.
-		const checker = access_control_create_file_checker(ctx, { ...args, subject });
+		const notFoundMessage = plugin ? files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash : "Not found";
+		// While another job restores items of a delete, a plugin's folder choice cannot read them
+		// (`trash_place` in `access_control.ts`). Say "busy" then, like `files_archive_runs_db_start` does
+		// when a job of that delete runs. Only say it when the plugin can read the item apart from that job,
+		// so a locked item does not tell that it is being restored.
+		const busyCheckers = new Map<Id<"files_archive_runs">, typeof checker>();
+		const is_busy_for_plugin = async (node: Doc<"files_nodes">) => {
+			if (!plugin || node.archiveOperationId === null) return false;
+			const busyRun = await ctx.db
+				.query("files_archive_runs")
+				.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("archiveOperationId", node.archiveOperationId!)
+						.eq("active", true),
+				)
+				.first();
+			if (!busyRun) return false;
+			let busyChecker = busyCheckers.get(busyRun._id);
+			if (!busyChecker) {
+				busyChecker = access_control_create_file_checker(ctx, { ...args, subject, restoreRunId: busyRun._id });
+				busyCheckers.set(busyRun._id, busyChecker);
+			}
+			return await busyChecker.can(node, "content.read");
+		};
 		for (const path of args.paths) {
 			// Two reads are enough to tell one archived item from several.
 			const archived = await ctx.db
@@ -1996,7 +2207,7 @@ export const restore_items = internalMutation({
 							? "Permission denied"
 							: access.status === "found"
 								? "Not in the Trash"
-								: "Not found",
+								: notFoundMessage,
 				});
 				continue;
 			}
@@ -2007,7 +2218,13 @@ export const restore_items = internalMutation({
 				isReadable &&= await checker.can(fileNode, "content.read");
 			}
 			if (!isReadable) {
-				refused.push({ path, message: "Permission denied" });
+				refused.push({
+					path,
+					message:
+						archived.length === 1 && (await is_busy_for_plugin(archived[0]!))
+							? files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy
+							: "Permission denied",
+				});
 				continue;
 			}
 			// The same path was archived more than once, for example after a new item took the name.
@@ -2022,6 +2239,7 @@ export const restore_items = internalMutation({
 
 			// Per node, like Restore in the app. An archived node keeps the restricted scope it had.
 			const node = archived[0]!;
+			const selector: Selector = plugin ? { nodeId: node._id, path } : { path };
 			if (
 				!(await files_write_policy_db_has_write_context_permission(ctx, {
 					...args,
@@ -2029,12 +2247,14 @@ export const restore_items = internalMutation({
 					membership,
 					node,
 					permission: "content.write",
+					// A pair has access per chosen item, so its checks share the answer's checker.
+					checker: plugin ? checker : null,
 				}))
 			) {
-				refused.push({ path, message: "Permission denied" });
+				refused.push({ ...selector, message: "Permission denied" });
 				continue;
 			}
-			add_node(node, { path });
+			add_node(node, selector);
 		}
 		for (const selector of args.nodes) {
 			const nodeId = ctx.db.normalizeId("files_nodes", selector.nodeId);
@@ -2042,20 +2262,28 @@ export const restore_items = internalMutation({
 			// shows its new place and Trash stamp before its cleanup rewrites the node doc.
 			const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
 			if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
-				refused.push({ nodeId: selector.nodeId, path: null, message: "Not found" });
+				refused.push({ nodeId: selector.nodeId, path: null, message: notFoundMessage });
 				continue;
 			}
 			// Check access before the item's state, so a locked item does not tell whether it changed.
 			if (!(await checker.can(node, "content.read"))) {
-				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
+				refused.push({
+					nodeId: selector.nodeId,
+					path: null,
+					message:
+						node.archiveOperationId === selector.archiveOperationId && (await is_busy_for_plugin(node))
+							? files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy
+							: "Permission denied",
+				});
 				continue;
 			}
+			const path = plugin ? null : node.path;
 			// The item was restored, or restored and deleted again, since the caller listed it. Never restore
 			// another delete than the one the caller saw.
 			if (node.archiveOperationId !== selector.archiveOperationId) {
 				refused.push({
 					nodeId: selector.nodeId,
-					path: node.path,
+					path,
 					message: "This Trash item changed. List the Trash and pick it again.",
 				});
 				continue;
@@ -2067,12 +2295,13 @@ export const restore_items = internalMutation({
 					membership,
 					node,
 					permission: "content.write",
+					checker: plugin ? checker : null,
 				}))
 			) {
-				refused.push({ nodeId: selector.nodeId, path: node.path, message: "Permission denied" });
+				refused.push({ nodeId: selector.nodeId, path, message: "Permission denied" });
 				continue;
 			}
-			add_node(node, { nodeId: selector.nodeId, path: node.path });
+			add_node(node, { nodeId: selector.nodeId, path });
 		}
 		if (nodes.length === 0) {
 			return { jobIds: [], isDone: true, refused };
@@ -2082,7 +2311,8 @@ export const restore_items = internalMutation({
 			userAuth: { id: args.userId },
 			membership,
 			nodes,
-			credentialId: args.credentialId,
+			credentialId,
+			plugin: plugin?.pins,
 			force: args.force === true,
 			// Nobody can answer a question for an API job, so the choice is made up front.
 			applyToRemaining: { file: args.onConflict, folder: args.onConflict },
@@ -2126,7 +2356,7 @@ type restore_items_Result =
 export const preview_restore = internalMutation({
 	args: {
 		force: v.optional(v.boolean()),
-		credentialId: v.id("api_credentials"),
+		principal: restore_principal_validator,
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
@@ -2140,19 +2370,47 @@ export const preview_restore = internalMutation({
 			...args,
 			requestId: null,
 		})) as restore_items_Result;
-		const jobs = [];
-		for (const jobId of restored.jobIds) {
-			const job = (await ctx.runQuery(internal.public_api_files_organize.get_job, {
-				credentialId: args.credentialId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				jobId,
-				cursor: null,
-			})) as get_job_Result;
-			if (!job) throw should_never_happen("A restore job of this request is missing", { jobId });
-			// The job id names nothing after the rollback, so leave it out.
-			const { jobId: _jobId, refusedCursor, ...preview } = job;
-			jobs.push({ ...preview, hasMoreItems: refusedCursor !== null });
+		const jobs: RestorePreview["jobs"] = [];
+		// A plugin reads its jobs with the Restore authority that the nested restore just checked, so its
+		// preview needs no file read capability. It reads only the jobs that this restore returned.
+		if (args.principal.kind === "plugin_run") {
+			const pluginRun = await ctx.db.get("plugins_event_runs", args.principal.runId);
+			if (!pluginRun?.filePairId) {
+				throw should_never_happen("A restore preview has no plugin pair", { runId: args.principal.runId });
+			}
+			// Made after the restore's writes, so no answer comes from before them.
+			const checker = access_control_create_file_checker(ctx, {
+				...args,
+				subject: { kind: "plugin_pair", pairId: pluginRun.filePairId },
+			});
+			for (const jobId of restored.jobIds) {
+				const job = await db_get_plugin_restore_job(ctx, {
+					installationId: pluginRun.installationId,
+					filePairId: pluginRun.filePairId,
+					userId: args.userId,
+					workspaceId: args.workspaceId,
+					jobId,
+					afterOrder: -1,
+					checker,
+				});
+				if (!job) throw should_never_happen("A restore job of this request is missing", { jobId });
+				const { jobId: _jobId, nextOrder, ...preview } = job;
+				jobs.push({ ...preview, hasMoreItems: nextOrder !== null });
+			}
+		} else {
+			for (const jobId of restored.jobIds) {
+				const job = (await ctx.runQuery(internal.public_api_files_organize.get_job, {
+					credentialId: args.principal.credentialId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					jobId,
+					cursor: null,
+				})) as get_job_Result;
+				if (!job) throw should_never_happen("A restore job of this request is missing", { jobId });
+				// The job id names nothing after the rollback, so leave it out.
+				const { jobId: _jobId, refusedCursor, ...preview } = job;
+				jobs.push({ ...preview, hasMoreItems: refusedCursor !== null });
+			}
 		}
 		// Keep this throw. Returning would save the restore.
 		throw convex_error({
@@ -2165,7 +2423,12 @@ export const preview_restore = internalMutation({
 type RestorePreview = {
 	isDone: boolean;
 	refused: restore_items_Result["refused"];
-	jobs: Array<Omit<NonNullable<get_job_Result>, "jobId" | "refusedCursor"> & { hasMoreItems: boolean }>;
+	jobs: Array<
+		| (Omit<NonNullable<get_job_Result>, "jobId" | "refusedCursor"> & { hasMoreItems: boolean })
+		| (Omit<NonNullable<Awaited<ReturnType<typeof db_get_plugin_restore_job>>>, "jobId" | "nextOrder"> & {
+				hasMoreItems: boolean;
+		  })
+	>;
 };
 
 const restore_body_validator = z
@@ -2211,139 +2474,161 @@ export async function public_api_files_organize_http_restore(args: {
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const { principal, pluginCallId } = auth._yay;
+	const { principal, pluginCallId, presentedToken } = auth._yay;
 
-	// The shared auth passes a caller that holds any one of the scopes above. So an upload run with only
-	// `files:write` passes it too. Check the one scope each caller kind needs.
-	const scopes: readonly public_api_Scope[] = principal.scopes;
-	if (!scopes.includes(principal.kind === "plugin_run" ? "files:restore" : "files:write")) {
-		await public_api_settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: 403,
-			errorCode: "permission_denied",
-			errorMessage: "Permission denied",
-		});
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-	// TODO: plugin Restore jobs are not built yet. Until then, refuse a run with the Restore scope and close
-	// its call. The next change replaces this refusal with the plugin job.
-	if (principal.kind === "plugin_run") {
-		const message = "Plugin Restore is not available yet.";
-		await public_api_settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: 403,
-			errorCode: "permission_denied",
-			errorMessage: message,
-		});
-		return { status: 403, body: { message } } as const;
-	}
+	// A run fails if a claimed call stays open. So every answer below closes the call after the iife
+	// returns, and an unexpected error closes it before it goes on.
+	const response = await (async (/* iife */) => {
+		// The shared auth passes a caller that holds any one of the scopes above. So an upload run with only
+		// `files:write` passes it too. Check the one scope each caller kind needs.
+		const scopes: readonly public_api_Scope[] = principal.scopes;
+		if (!scopes.includes(principal.kind === "plugin_run" ? "files:restore" : "files:write")) {
+			return { status: 403, body: { message: "Permission denied" } } as const;
+		}
 
-	const body = await server_request_json_parse_and_validate(request, restore_body_validator);
-	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
-	}
-	const dryRun = body._yay.dryRun === true;
-	if ((body._yay.paths === undefined) === (body._yay.nodes === undefined)) {
-		return { status: 400, body: { message: "Send either paths or nodes." } } as const;
-	}
-	// A dry run saves nothing, so there is nothing to retry.
-	if (dryRun && body._yay.requestId !== undefined) {
-		return { status: 400, body: { message: "A dry run takes no requestId." } } as const;
-	}
-	if (!dryRun && body._yay.requestId === undefined) {
-		return { status: 400, body: { message: "requestId is required." } } as const;
-	}
-	// Count the items here, not in the schema, so the answer names the limit.
-	if ((body._yay.paths ?? body._yay.nodes ?? []).length > RESTORE_MAX_ITEMS) {
-		return {
-			status: 400,
-			body: { message: `Restore at most ${RESTORE_MAX_ITEMS} items at once. Split the list into several calls.` },
-		} as const;
-	}
-	const nodes = body._yay.nodes ?? [];
-	for (const [index, node] of nodes.entries()) {
-		if (nodes.findIndex((other) => other.nodeId === node.nodeId) !== index) {
-			return { status: 400, body: { message: "Duplicate node in batch", nodeId: node.nodeId } } as const;
+		const body = await server_request_json_parse_and_validate(request, restore_body_validator);
+		if (body._nay) {
+			return { status: 400, body: { message: body._nay.message } } as const;
 		}
-	}
-
-	const paths: string[] = [];
-	for (const rawPath of body._yay.paths ?? []) {
-		if (!rawPath.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+		const dryRun = body._yay.dryRun === true;
+		if ((body._yay.paths === undefined) === (body._yay.nodes === undefined)) {
+			return { status: 400, body: { message: "Send either paths or nodes." } } as const;
 		}
-		const normalized = server_path_normalize(rawPath);
-		if (normalized === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+		// A dry run saves nothing, so there is nothing to retry.
+		if (dryRun && body._yay.requestId !== undefined) {
+			return { status: 400, body: { message: "A dry run takes no requestId." } } as const;
 		}
-		if (paths.includes(normalized)) {
-			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+		if (!dryRun && body._yay.requestId === undefined) {
+			return { status: 400, body: { message: "requestId is required." } } as const;
 		}
-		paths.push(normalized);
-	}
-
-	// One token per call. The restore job also charges the person's tree-write bucket.
-	const rateLimit = await rate_limiter_limit_by_key(ctx, {
-		name: "public_api_files_write_bulk",
-		key: `${principal.kind}:${principal.principalKey}`,
-	});
-	if (rateLimit) {
-		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
-	}
-
-	const restoreArgs = {
-		credentialId: principal.credentialId,
-		force: body._yay.force === true,
-		organizationId: principal.organizationId,
-		workspaceId: principal.workspaceId,
-		userId: principal.userId,
-		paths,
-		nodes,
-		// Keep both never loses an item, and the app asks nothing for an API job.
-		onConflict: body._yay.onConflict ?? "keep_both",
-	};
-	let result: restore_items_Result;
-	try {
-		if (dryRun) {
-			await ctx.runMutation(internal.public_api_files_organize.preview_restore, restoreArgs);
-			throw should_never_happen("A restore preview returned instead of rolling back");
-		}
-		result = (await ctx.runMutation(internal.public_api_files_organize.restore_items, {
-			...restoreArgs,
-			requestId: body._yay.requestId!,
-		})) as restore_items_Result;
-	} catch (error) {
-		if (
-			dryRun &&
-			error instanceof ConvexError &&
-			z.object({ data: z.object({ kind: z.literal("restore_preview") }) }).safeParse(error.data).success
-		) {
-			// Only `preview_restore` throws this kind, and a mutation error crosses `runMutation` unchanged, so
-			// trust the `RestorePreview` shape here.
-			const { preview } = (error.data as { data: { preview: RestorePreview } }).data;
+		// Count the items here, not in the schema, so the answer names the limit.
+		if ((body._yay.paths ?? body._yay.nodes ?? []).length > RESTORE_MAX_ITEMS) {
 			return {
-				status: 200,
-				body: {
-					dryRun: true as const,
-					// False when a job did not end in the first step: its later results are unknown.
-					complete: preview.isDone,
-					refused: preview.refused,
-					jobs: preview.jobs,
-				},
-				headers: { "Cache-Control": "no-store" },
+				status: 400,
+				body: { message: `Restore at most ${RESTORE_MAX_ITEMS} items at once. Split the list into several calls.` },
 			} as const;
 		}
-		const failure =
-			error instanceof ConvexError
-				? z.object({ message: z.string(), data: restore_failure_validator }).safeParse(error.data)
-				: null;
-		if (!failure?.success) throw error;
-		const { status, retryAfterMs } = failure.data.data;
-		return { status, body: { message: failure.data.message, retryAfterMs } } as const;
+		const nodes = body._yay.nodes ?? [];
+		for (const [index, node] of nodes.entries()) {
+			if (nodes.findIndex((other) => other.nodeId === node.nodeId) !== index) {
+				return { status: 400, body: { message: "Duplicate node in batch", nodeId: node.nodeId } } as const;
+			}
+		}
+
+		const paths: string[] = [];
+		for (const rawPath of body._yay.paths ?? []) {
+			if (!rawPath.startsWith("/")) {
+				return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+			}
+			const normalized = server_path_normalize(rawPath);
+			if (normalized === "/") {
+				return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+			}
+			if (paths.includes(normalized)) {
+				return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+			}
+			paths.push(normalized);
+		}
+
+		// One token per call. The restore job also charges the person's tree-write bucket.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "public_api_files_write_bulk",
+			key: `${principal.kind}:${principal.principalKey}`,
+		});
+		if (rateLimit) {
+			return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+		}
+
+		if (principal.kind === "plugin_run" && !pluginCallId) {
+			throw should_never_happen("A plugin restore has no claimed call", { runId: principal.runId });
+		}
+		const restoreArgs = {
+			// The mutation checks the run's token and claimed call again, so pass the token's hash only.
+			principal:
+				principal.kind === "plugin_run"
+					? {
+							kind: "plugin_run" as const,
+							runId: principal.runId,
+							callId: pluginCallId!,
+							tokenHash: await crypto_sha256_hex(presentedToken),
+						}
+					: { kind: "user_api_key" as const, credentialId: principal.credentialId },
+			force: body._yay.force === true,
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			userId: public_api_visibility_user_id(principal),
+			paths,
+			nodes,
+			// Keep both never loses an item, and the app asks nothing for an API job.
+			onConflict: body._yay.onConflict ?? "keep_both",
+		};
+		let result: restore_items_Result;
+		try {
+			if (dryRun) {
+				await ctx.runMutation(internal.public_api_files_organize.preview_restore, restoreArgs);
+				throw should_never_happen("A restore preview returned instead of rolling back");
+			}
+			result = (await ctx.runMutation(internal.public_api_files_organize.restore_items, {
+				...restoreArgs,
+				requestId: body._yay.requestId!,
+			})) as restore_items_Result;
+		} catch (error) {
+			if (
+				dryRun &&
+				error instanceof ConvexError &&
+				z.object({ data: z.object({ kind: z.literal("restore_preview") }) }).safeParse(error.data).success
+			) {
+				// Only `preview_restore` throws this kind, and a mutation error crosses `runMutation` unchanged, so
+				// trust the `RestorePreview` shape here.
+				const { preview } = (error.data as { data: { preview: RestorePreview } }).data;
+				return {
+					status: 200,
+					body: {
+						dryRun: true as const,
+						// False when a job did not end in the first step: its later results are unknown.
+						complete: preview.isDone,
+						refused: preview.refused,
+						jobs: preview.jobs,
+					},
+					headers: { "Cache-Control": "no-store" },
+				} as const;
+			}
+			const failure =
+				error instanceof ConvexError
+					? z.object({ message: z.string(), data: restore_failure_validator }).safeParse(error.data)
+					: null;
+			if (!failure?.success) throw error;
+			const { status, retryAfterMs } = failure.data.data;
+			return { status, body: { message: failure.data.message, retryAfterMs } } as const;
+		}
+		return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+	})().catch(async (error: unknown) => {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: 500,
+			errorCode: "internal_error",
+			errorMessage: "Failed to restore",
+		});
+		throw error;
+	});
+
+	if (response.status === 200) {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "succeeded",
+			responseStatus: 200,
+		});
+	} else {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: response.status,
+			errorCode: RESTORE_ERROR_CODES[response.status],
+			errorMessage: response.body.message,
+		});
 	}
-	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+	return response;
 }
 
 // One selection page of the transfer job, so the whole selection is sent and sealed in one request.
@@ -2920,6 +3205,117 @@ type get_job_Result =
 	typeof get_job extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * Read a Restore job that a plugin started, for the same installation and file pair, like the app's job
+ * card. Another installation's, pair's or key's job gets null. The caller checked who asks. Today that
+ * is only the dry run of `files/restore`, for the jobs its own nested restore returned.
+ *
+ * A plugin gets fixed messages only. It gets a path only where its pair can read the item now, checked
+ * with the one `checker` of the whole answer. A row it cannot read stays, with null paths.
+ */
+async function db_get_plugin_restore_job(
+	ctx: QueryCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		filePairId: Id<"plugins_file_pairs">;
+		userId: Id<"users">;
+		workspaceId: Id<"organizations_workspaces">;
+		jobId: Id<"activities">;
+		/**
+		 * The `order` of the last outcome already read, or -1 for the first page.
+		 */
+		afterOrder: number;
+		checker: ReturnType<typeof access_control_create_file_checker>;
+	},
+) {
+	const { checker } = args;
+
+	const activity = await ctx.db.get("activities", args.jobId);
+	if (!activity || activity.source.kind !== "files_archive_run") return null;
+	const run = await ctx.db.get("files_archive_runs", activity.source.id);
+	if (
+		!run ||
+		run.kind !== "restore" ||
+		run.plugin?.installationId !== args.installationId ||
+		run.plugin.filePairId !== args.filePairId ||
+		run.userId !== args.userId ||
+		run.workspaceId !== args.workspaceId
+	)
+		return null;
+	const is_readable = async (node: Doc<"files_nodes"> | null) =>
+		node !== null && node.workspaceId === run.workspaceId && (await checker.can(node, "content.read"));
+
+	// Only a stopped job needs a recovery item. Read each selected id at its current saved path.
+	let leftNode = null;
+	if (args.afterOrder === -1 && activity.status !== "succeeded" && !activities_is_active(activity.status)) {
+		for (const root of run.restoreRoots) {
+			leftNode = await files_archive_runs_db_find_saved_restore_left_node(ctx, { run, root });
+			if (leftNode) break;
+		}
+	}
+
+	// A plugin's job writes `plugin_restore` rows only, a page at a time by order. Sort each row into
+	// skipped or renamed before hiding its paths, so a hidden Keep both still counts as a rename.
+	const items = await ctx.db
+		.query("files_archive_run_items")
+		.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", args.afterOrder))
+		.take(JOB_REFUSED_PAGE_SIZE);
+	const skipped = [];
+	const renamed = [];
+	for (const item of items) {
+		if (item.kind !== "plugin_restore") continue;
+		const isReadable = await is_readable(await files_saved_placement_db_get_node(ctx.db, item.nodeId));
+		if (item.newPath === null) {
+			skipped.push({
+				path: isReadable ? item.path : null,
+				message: "An item with this name is already there, so this item stays in the Trash.",
+			});
+		} else {
+			renamed.push({ path: isReadable ? item.path : null, newPath: isReadable ? item.newPath : null });
+		}
+	}
+
+	// The Activity's own message can name items. A plugin gets the fixed message of its code instead.
+	const messages: Record<string, string> = files_archive_runs_PLUGIN_RESTORE_MESSAGES;
+	const errorCode = activity.errorCode ?? "stopped";
+	return {
+		jobId: activity._id,
+		kind: "restore" as const,
+		status: activity.status,
+		progress: activity.progress,
+		errorMessage:
+			activity.errorMessage === null
+				? null
+				: Object.hasOwn(messages, errorCode)
+					? messages[errorCode]!
+					: files_archive_runs_PLUGIN_RESTORE_MESSAGES.stopped,
+		refused: [
+			// The items the request refused at the start come on the first page of its last job only.
+			...(args.afterOrder === -1 && run.apiRequest
+				? await db_render_plugin_restore_refusals(ctx, {
+						organizationId: run.organizationId,
+						workspaceId: run.workspaceId,
+						refused: run.apiRequest.refused,
+						checker,
+					})
+				: []),
+			...(leftNode
+				? [
+						{
+							path: (await is_readable(leftNode)) ? leftNode.path : null,
+							message:
+								"This item is still in the Trash. Restore it to bring it back with the items inside it that were moved to Trash with it.",
+						},
+					]
+				: []),
+			...skipped,
+		],
+		renamed,
+		// Set when more outcomes follow.
+		nextOrder: items.length === JOB_REFUSED_PAGE_SIZE ? items.at(-1)!.order : null,
+	};
+}
 
 const jobs_get_body_validator = z
 	.object({
