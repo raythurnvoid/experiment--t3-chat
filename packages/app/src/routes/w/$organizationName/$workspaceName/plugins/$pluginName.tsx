@@ -2088,6 +2088,11 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.";
 	}
 
+	// The plain rule writes "Workspace Files Restore". Say that it reaches any item, not only labelled ones.
+	if (value === "workspace.files.restore") {
+		return "Restore items from Trash, in the files and folders each member lets it edit.";
+	}
+
 	// The plain rule writes "Agent Mcp Connect", which does not say who calls what. The chat agent
 	// calls the outside servers listed on this screen.
 	if (value === "agent.mcp.connect") {

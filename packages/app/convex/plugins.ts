@@ -3987,7 +3987,9 @@ export const install_version = mutation({
 					status: "enabled",
 					configurationYaml,
 					acceptedCapabilities: pluginVersion.capabilities,
-					capabilitiesAcceptedAt: now,
+					// A plugin restore job saves this value and stops when it changes. An upgrade A -> B -> A in the
+					// same millisecond must still change it, so each install raises it by at least one.
+					capabilitiesAcceptedAt: Math.max(now, existingInstallation.capabilitiesAcceptedAt + 1),
 					acceptedOutboundOrigins: pluginVersion.outboundOrigins,
 					outboundOriginsAcceptedAt: now,
 					acceptedUiOutboundOrigins: pluginVersion.uiOutboundOrigins,

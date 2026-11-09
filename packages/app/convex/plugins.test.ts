@@ -570,6 +570,40 @@ describe("install_version service accounts", () => {
 	);
 });
 
+describe("install_version", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test("a second install in the same millisecond still raises capabilitiesAcceptedAt", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const version = await register_media_plugin({ t, userId: membership.userId, events: [] });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const install = async () => {
+			const installed = await asOwner.mutation(api.plugins.install_version, {
+				membershipId: membership.membershipId,
+				pluginVersionId: version.pluginVersionId,
+				...media_plugin_consent,
+			});
+			if (installed._nay) throw new Error(installed._nay.message);
+			return (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId)))!;
+		};
+
+		const first = await install();
+		const second = await install();
+		expect(second._id).toBe(first._id);
+		// Fake timers keep the clock still, so both installs run in the same millisecond. A plugin restore
+		// job saves this value to notice an upgrade A -> B -> A, so it must change even then.
+		expect(second.capabilitiesAcceptedAt, "each install raises the acceptance time").toBe(
+			first.capabilitiesAcceptedAt + 1,
+		);
+	});
+});
+
 describe("plugins Phase 0", () => {
 	async function install_plugin_with_upload_asset(
 		t: ReturnType<typeof test_convex>,

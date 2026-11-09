@@ -2204,14 +2204,41 @@ export async function public_api_files_organize_http_restore(args: {
 	const auth = await public_api_authorize_request({
 		ctx,
 		request,
-		requiredScope: "files:write" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key"],
+		requiredScope: ["files:write", "files:restore"],
+		allowedKinds: ["user_api_key", "plugin_run"],
 		route: path,
 	});
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const principal = auth._yay.principal;
+	const { principal, pluginCallId } = auth._yay;
+
+	// The shared auth passes a caller that holds any one of the scopes above. So an upload run with only
+	// `files:write` passes it too. Check the one scope each caller kind needs.
+	const scopes: readonly public_api_Scope[] = principal.scopes;
+	if (!scopes.includes(principal.kind === "plugin_run" ? "files:restore" : "files:write")) {
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
+		});
+		return { status: 403, body: { message: "Permission denied" } } as const;
+	}
+	// TODO: plugin Restore jobs are not built yet. Until then, refuse a run with the Restore scope and close
+	// its call. The next change replaces this refusal with the plugin job.
+	if (principal.kind === "plugin_run") {
+		const message = "Plugin Restore is not available yet.";
+		await public_api_settle_plugin_call_best_effort(ctx, {
+			callId: pluginCallId,
+			status: "failed",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: message,
+		});
+		return { status: 403, body: { message } } as const;
+	}
 
 	const body = await server_request_json_parse_and_validate(request, restore_body_validator);
 	if (body._nay) {

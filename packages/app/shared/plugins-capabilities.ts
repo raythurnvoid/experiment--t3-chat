@@ -17,6 +17,9 @@ export const plugins_CAPABILITIES = [
 	// The exact plugin-name metadata value selects each existing node. Members may edit the label;
 	// actor permissions and current locks still apply.
 	"workspace.files.own-write",
+	// Consent line: backend runs may restore items from Trash where the member's file choices allow Edit.
+	// The items need no plugin label. Kept apart from write, so write consent alone never restores.
+	"workspace.files.restore",
 	// Consent line: backend runs may add read-only external data through this installation's mounts.
 	// Members with workspace read access may read it through the chat agent. The owner pays for stored files.
 	"workspace.volumes.write",

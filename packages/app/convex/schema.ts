@@ -6855,6 +6855,24 @@ const app_convex_schema = defineSchema({
 		 */
 		credentialId: v.optional(v.id("api_credentials")),
 		/**
+		 * Set when a plugin run started this restore. Missing means the app or an API key started the job.
+		 * A plugin job has no `credentialId`. The job keeps the installation, version, account, and member
+		 * file pair it started with. It never moves to a new pair or version.
+		 */
+		plugin: v.optional(
+			v.object({
+				installationId: v.id("plugins_workspace_installations"),
+				filePairId: v.id("plugins_file_pairs"),
+				pluginVersionId: v.id("plugins_versions"),
+				serviceAccountId: v.id("access_control_service_accounts"),
+				/**
+				 * The installation's `capabilitiesAcceptedAt` when the job started. Every install or upgrade
+				 * raises it, so an upgrade A -> B -> A still stops the job.
+				 */
+				capabilitiesAcceptedAt: v.number(),
+			}),
+		),
+		/**
 		 * Purge: Delete permanently. It deletes archived items and everything inside them for good.
 		 */
 		kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
@@ -7050,9 +7068,9 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
-	 * One item that a restore started by an API key renamed with Keep both, or skipped because an item
-	 * with its name was there. Nobody saw the clash, so `files/jobs/get` lists these a page at a time. A
-	 * restore started in the app writes none, because it asks the person at each clash.
+	 * One item that a restore started by an API key or a plugin renamed with Keep both, or skipped because
+	 * an item with its name was there. Nobody saw the clash, so `files/jobs/get` lists these a page at a
+	 * time. A restore started in the app writes none, because it asks the person at each clash.
 	 */
 	files_archive_run_items: defineTable(
 		v.union(
@@ -7060,6 +7078,18 @@ const app_convex_schema = defineSchema({
 				runId: v.id("files_archive_runs"),
 				order: v.number(),
 				kind: v.literal("restore"),
+				path: v.string(),
+				newPath: v.union(v.string(), v.null()),
+			}),
+			/**
+			 * The same outcome for a plugin's restore. `nodeId` lets the job reader check the plugin's
+			 * current access to the item before it shows the paths. `newPath` is null for a skip.
+			 */
+			v.object({
+				runId: v.id("files_archive_runs"),
+				order: v.number(),
+				kind: v.literal("plugin_restore"),
+				nodeId: v.id("files_nodes"),
 				path: v.string(),
 				newPath: v.union(v.string(), v.null()),
 			}),

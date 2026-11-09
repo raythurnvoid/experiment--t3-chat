@@ -4012,7 +4012,7 @@ export const list_outcomes = query({
 			.paginate(args.paginationOpts);
 		const page = await Promise.all(
 			result.page.map(async (item) => {
-				if (item.kind === "restore")
+				if (item.kind === "restore" || item.kind === "plugin_restore")
 					throw should_never_happen("Forced archive has a restore outcome", { itemId: item._id });
 				const node = await ctx.db.get("files_nodes", item.nodeId);
 				const readable =

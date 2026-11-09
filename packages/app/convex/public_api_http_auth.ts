@@ -35,6 +35,8 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:permissions": null,
 	// The public flag is checked on the actual file, like policy management.
 	"files:publish": null,
+	// Only plugin runs hold this scope. Restore checks each item for the run's file pair.
+	"files:restore": null,
 	// AI conversations belong to their creator, including guests.
 	"ai_chat:read": null,
 	// Volume writes check the exact installation in their transaction.

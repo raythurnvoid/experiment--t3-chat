@@ -1938,6 +1938,7 @@ export const consume_run_api_call = internalMutation({
 				v.literal("files:download" satisfies public_api_Scope),
 				v.literal("files:permissions" satisfies public_api_Scope),
 				v.literal("files:publish" satisfies public_api_Scope),
+				v.literal("files:restore" satisfies public_api_Scope),
 				v.literal("ai_chat:read" satisfies public_api_Scope),
 				v.literal("volumes:write" satisfies public_api_Scope),
 				v.literal("runs:follow_up" satisfies public_api_Scope),
@@ -1984,6 +1985,9 @@ export const consume_run_api_call = internalMutation({
 
 		if (pluginRun.event === SCHEDULE_EVENT_TYPE) {
 			const requiredScope = args.requiredScope;
+			// Restore asks for `files:write` or `files:restore`. Give it the same clear refusal as the Trash lists.
+			if (args.route === "/api/v1/files/restore")
+				return Result({ _nay: { name: "permission_denied", message: "Scheduled plugin runs cannot use Trash yet." } });
 			if (
 				requiredScope !== "runs:follow_up" &&
 				requiredScope !== "files:list" &&

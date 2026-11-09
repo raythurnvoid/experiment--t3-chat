@@ -1840,6 +1840,15 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "The workspace.files.own-write capability requires the workspace.files.write capability" },
 		});
 	}
+	// Restore writes files too, so keep the base write capability visible in the consent.
+	if (
+		capabilities.has("workspace.files.restore" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: { message: "The workspace.files.restore capability requires the workspace.files.write capability" },
+		});
+	}
 	if (
 		parsed.data.userWritableCollections !== undefined &&
 		!capabilities.has("plugin.data.user-write" satisfies plugins_Capability)

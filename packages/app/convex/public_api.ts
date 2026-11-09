@@ -281,6 +281,7 @@ const plugin_run_scopes_validator = v.array(
 		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
+		v.literal("files:restore" satisfies public_api_Scope),
 		v.literal("volumes:write" satisfies public_api_Scope),
 		v.literal("runs:follow_up" satisfies public_api_Scope),
 		v.literal("secrets:read" satisfies public_api_Scope),
@@ -1680,6 +1681,11 @@ export const resolve_principal = internalQuery({
 				!scopes.includes("files:write")
 			) {
 				scopes.push("files:write");
+			}
+			// Restore is its own consent, so `files:write` alone never restores. Scheduled runs have no
+			// Trash access, so they never get it.
+			if (!scheduledAssignment && acceptedCapabilities.includes("workspace.files.restore")) {
+				scopes.push("files:restore");
 			}
 
 			const consentScopes: readonly public_api_Scope[] = scheduledAssignment?._yay?.grant.runAs?.scopes ?? [];

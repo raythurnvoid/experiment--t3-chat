@@ -2059,6 +2059,7 @@ describe("plugins_Capability", () => {
 			"workspace.files.manage-read-only": ["workspace.files.write"],
 			"plugin.service.connect": ["plugin.data.read", "workspace.members.read", "workspace.files.write"],
 			"workspace.files.own-write": ["workspace.files.write"],
+			"workspace.files.restore": ["workspace.files.write"],
 		} satisfies Partial<Record<plugins_Capability, plugins_Capability[]>>;
 
 		const sdkTypes = readFileSync(`${process.cwd()}/../bonobo-plugin-sdk/index.d.ts`, "utf8");
@@ -2084,6 +2085,7 @@ describe("plugins_Capability", () => {
 			"workspace.files.manage-read-only": true,
 			"plugin.service.connect": true,
 			"workspace.files.own-write": true,
+			"workspace.files.restore": true,
 		});
 	});
 });

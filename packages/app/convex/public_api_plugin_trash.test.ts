@@ -17,6 +17,7 @@ import {
 import { expect_under_convex_limits, transaction_cost } from "./files_pending_overlay_limits.setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import type { plugins_Capability } from "../shared/plugins.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -683,6 +684,110 @@ test.each(["list", "areas"] as const)(
 		expect((await post(f, noCapability.token, route)).status, "file read capability is required").toBe(403);
 	},
 );
+
+test("files/restore gives a plugin run the Restore scope only with Restore consent", async () => {
+	const f = await fixture();
+	const body = { paths: ["/restore-me"], requestId: "scope-matrix" };
+	const accept = (p: Awaited<ReturnType<typeof plugin>>, capabilities: plugins_Capability[]) =>
+		f.t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: capabilities });
+			await ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: capabilities });
+		});
+	const calls_of = (runId: Id<"plugins_event_runs">) =>
+		f.t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+
+	const restorer = await plugin(f);
+	await accept(restorer, ["workspace.files.read", "workspace.files.write", "workspace.files.restore"]);
+	expect(
+		await post(f, restorer.runToken, "restore", body),
+		"a run with Restore consent passes the scope checks",
+	).toMatchObject({ status: 403, body: { message: "Plugin Restore is not available yet." } });
+	expect(await calls_of(restorer.runId), "the plugin refusal closes its call").toEqual([
+		expect.objectContaining({
+			status: "failed",
+			responseStatus: 403,
+			errorMessage: "Plugin Restore is not available yet.",
+		}),
+	]);
+	expect((await post(f, restorer.token, "restore", body)).status, "plugin pages cannot restore").toBe(403);
+	await f.t.run((ctx) =>
+		ctx.db.patch("plugins_workspace_installations", restorer.installationId, {
+			acceptedCapabilities: ["workspace.files.read", "workspace.files.write"],
+		}),
+	);
+	expect(await post(f, restorer.runToken, "restore", body), "the installation must accept Restore too").toMatchObject({
+		status: 403,
+		body: { message: "Permission denied" },
+	});
+
+	// An upload run gets `files:write` for its sibling outputs. That scope must not open Restore.
+	const uploader = await plugin(f);
+	const sourceId = await test_run_with_flush(f.t, (ctx) =>
+		ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: f.db.organizationId,
+			workspaceId: f.db.workspaceId,
+			createdBy: f.db.userId,
+			updatedBy: f.db.userId,
+			parentId: "root",
+			kind: "file",
+			name: "source.md",
+			sortName: "source.md",
+			path: "/source.md",
+			treePath: "/source.md",
+			pathDepth: 1,
+		}),
+	);
+	await f.t.run((ctx) =>
+		ctx.db.patch("plugins_event_runs", uploader.runId, { event: "files.upload.completed", fileNodeId: sourceId }),
+	);
+	expect(
+		await post(f, uploader.runToken, "restore", body),
+		"an upload run's files:write does not restore",
+	).toMatchObject({ status: 403, body: { message: "Permission denied" } });
+
+	const scheduled = await plugin(f, { scheduled: true });
+	await accept(scheduled, [
+		"workspace.files.read",
+		"workspace.files.write",
+		"workspace.files.restore",
+		"plugin.schedule.run",
+	]);
+	expect(
+		await post(f, scheduled.runToken, "restore", body),
+		"a scheduled run cannot restore even with Restore consent",
+	).toMatchObject({ status: 403, body: { message: "Scheduled plugin runs cannot use Trash yet." } });
+
+	for (const runId of [restorer.runId, uploader.runId, scheduled.runId]) {
+		expect(
+			(await calls_of(runId)).every((call) => call.status !== "started"),
+			"every Restore call is settled",
+		).toBe(true);
+	}
+
+	// A key keeps its `files:write` rule.
+	await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-restore-scope-owner" }));
+	vi.advanceTimersByTime(60_000);
+	const key = await f.asOwner.mutation(api.public_api.api_credential_create, {
+		serviceAccountId: null,
+		membershipId: f.db.membershipId,
+		name: "Restore key",
+		scopes: ["files:list", "files:write"],
+	});
+	if (key._nay) throw new Error(key._nay.message);
+	const trashed = await folder(f, "/restore-me");
+	const archived = await archive(f, [trashed]);
+	expect(archived._nay).toBeUndefined();
+	if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+	expect((await post(f, key._yay.credential, "restore", body)).status, "a key with files:write still restores").toBe(
+		200,
+	);
+});
 
 test("a restricted child stays locked inside a selected folder", async () => {
 	const f = await fixture();
