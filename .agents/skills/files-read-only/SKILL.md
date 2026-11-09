@@ -271,6 +271,19 @@ items under each selected root's current path. An item of the same delete still 
 after an earlier restore stopped halfway, keeps its old top. So a reader of the top must check that
 the top is in Trash with the same delete and that its path is above the item.
 
+A restore that ends early (Stop, a refusal, a lost key or membership, a timeout) first finishes the
+path repair it owes, then gives the Trash entries above (`db_end_restore`). The apply gives a folder
+its new path or area, then walks the items inside it in later steps. So the stopped job's queue can
+still hold folders whose items keep the old path and area. The ending walks each such folder by
+parent id, like the apply, and skips a folder whose path and area did not change. Each item gets its
+folder's path and area. Each item left in Trash gets its top and, when it is alone, its Trash entry.
+The ending brings back nothing more and keeps every delete stamp and the Restore counts. It keeps
+its op until this ends, so queued jobs still wait. A refusal inside a page first saves that page,
+so folders the page already changed keep their queue rows. The same rule holds for app, key and
+plugin jobs. No app flow has shown the missing repair yet; this is a safeguard (decided
+2026-11-09). Known limit: workspace deletion (`files_archive_runs_db_delete_run_batch`) ends the job
+at once and drops the repair. So does user deletion while the job's op waits in the queue.
+
 - The item stays in place when its live parent still has the Trash parent path, or when it was at
   the root and still is.
 - It joins its parent's restore when another restore brings the parent back, or when somebody moved

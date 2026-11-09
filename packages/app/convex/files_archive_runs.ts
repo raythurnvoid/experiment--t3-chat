@@ -2572,25 +2572,30 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 								restoredParent: args.restoredParents.get(folder._id) ?? row.restoredParent,
 							})
 						: null);
-				if (refusal) return refusal;
-				if (folder.archiveOperationId === null) {
-					// Somebody may have made an item with this name after the folder came back. The job then
-					// pauses. This child stays first in `pending`, and its row runs before the folders this page
-					// restored. A clash in one of them would ask first and drop the choice for this child.
-					const outcome = await db_land_node({ ctx, ...args, node: child, landing: folder });
-					if (outcome) {
-						await files_subtree_ops_db_save_page(ctx, {
-							row,
-							cursor: next.cursor,
-							isDone: next.isDone,
-							pending: next.children.slice(index).map((pendingChild) => pendingChild._id),
-							folderIds,
-							isRowFirst: true,
-							restoredParents: args.restoredParents,
-						});
-						return outcome;
-					}
-				} else {
+				// Somebody may have made an item with this name after the folder came back. The job then
+				// pauses. This child stays first in `pending`, and its row runs before the folders this page
+				// restored. A clash in one of them would ask first and drop the choice for this child.
+				//
+				// A refusal stops the job, so save the page for it too. The folders this page already
+				// changed need their rows: the ending steps repair the items inside them (`db_end_restore`).
+				const outcome =
+					refusal ??
+					(folder.archiveOperationId === null
+						? await db_land_node({ ctx, ...args, node: child, landing: folder })
+						: null);
+				if (outcome) {
+					await files_subtree_ops_db_save_page(ctx, {
+						row,
+						cursor: next.cursor,
+						isDone: next.isDone,
+						pending: next.children.slice(index).map((pendingChild) => pendingChild._id),
+						folderIds,
+						isRowFirst: true,
+						restoredParents: args.restoredParents,
+					});
+					return outcome;
+				}
+				if (folder.archiveOperationId !== null) {
 					await files_nodes_db_archive_node(ctx, {
 						node: child,
 						archiveOperationId: folder.archiveOperationId,
@@ -2635,10 +2640,19 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
  * same delete, because the folder came back or was never deleted, is now in Trash on its own. Give it
  * a Trash entry, and make it the top of the items inside it.
  *
- * Read each selected root's items with the same index the apply uses, one native page per step. The
- * walk changes nothing else, so it needs no membership.
+ * First finish the repair the apply still owes. The apply gives a folder its new path or scope, then
+ * walks the items inside it in later steps. So when the job stops, the queue can still hold folders
+ * whose items keep the old path and scope. No app flow has shown this yet. This repair is a safeguard,
+ * so a stopped job never leaves wrong paths behind. It only fixes paths, scopes, tops and Trash
+ * entries. It brings back nothing more and keeps every delete stamp.
+ *
+ * Then read each selected root's items with the same index the apply uses, one native page per step.
+ * The walk changes nothing else, so it needs no membership.
  */
-async function db_end_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
+async function db_end_restore(
+	ctx: MutationCtx,
+	args: StepArgs,
+): Promise<Extract<StepOutcome, { kind: "continue" | "done" }>> {
 	const { run } = args;
 
 	// A Move changes tree paths, so a saved cursor could skip items. Start again from the first root.
@@ -2647,7 +2661,8 @@ async function db_end_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOut
 
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
 	// The items of the operation keep their Trash paths, and a folder sorts before the items inside it.
-	// So a folder gets its new top before its items read it.
+	// So a folder gets its new top before its items read it. The repair below walks a folder before its
+	// items too. It also visits items of older deletes, so compare with the item's own delete.
 	const set_top_and_entry = async (node: Doc<"files_nodes">) => {
 		let parent: Doc<"files_nodes"> | null | undefined = null;
 		if (node.parentId !== files_ROOT_ID) {
@@ -2657,7 +2672,7 @@ async function db_end_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOut
 				parents.set(node.parentId, parent);
 			}
 		}
-		const isAlone = parent?.archiveOperationId !== run.archiveOperationId;
+		const isAlone = parent?.archiveOperationId !== node.archiveOperationId;
 		const top = isAlone ? node._id : parent!.archiveTopNodeId!;
 		// An earlier root in this step may have cached this folder as a parent. Drop it, so the items
 		// inside read the new top.
@@ -2667,6 +2682,57 @@ async function db_end_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOut
 		}
 		if (isAlone) await files_trash_entries_db_insert(ctx, node);
 	};
+
+	// Each done row is a folder whose items may still have its old path and scope. A row that is not
+	// done is a top item the apply did not reach. It stays in Trash as it is, so drop its row. When the
+	// queue is empty, never pull more top items like the apply does.
+	let count = 0;
+	while (true) {
+		if (args.budget.nodes <= 0 || (count > 0 && (await files_subtree_ops_db_is_near_limits(ctx)))) {
+			return { kind: "continue" };
+		}
+
+		const row = await files_subtree_ops_db_first_node(ctx, args.opId);
+		if (!row) break;
+		// Count the row too, like the apply.
+		count += 1;
+
+		const folder = row.nodeDone ? await ctx.db.get("files_nodes", row.nodeId) : null;
+		if (!folder) {
+			await ctx.db.delete("files_subtree_op_nodes", row._id);
+			continue;
+		}
+		const next = await files_subtree_ops_db_next_children(ctx, { row, folder, budget: args.budget });
+		if (!next) return { kind: "continue" };
+		const folderIds = [];
+		let pending: Array<Id<"files_nodes">> = [];
+		for (const [index, child] of next.children.entries()) {
+			if (index > 0 && (args.budget.nodes <= 0 || (await files_subtree_ops_db_is_near_limits(ctx)))) {
+				pending = next.children.slice(index).map((pendingChild) => pendingChild._id);
+				break;
+			}
+			count += 1;
+
+			// Change only the path and scope. A folder that kept them keeps the paths inside too, so skip
+			// its walk, like the apply.
+			if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
+				args.budget.nodes -= 1;
+				args.writeState.isWritten = true;
+				if (child.kind === "folder") folderIds.push(child._id);
+			}
+			// Read the child again, so a new Trash entry gets its new area. An item of this delete may now
+			// be outside every selected root's path, so the walk below would not find it.
+			if (child.archiveOperationId !== null) await set_top_and_entry((await ctx.db.get("files_nodes", child._id))!);
+		}
+		await files_subtree_ops_db_save_page(ctx, {
+			row,
+			cursor: next.cursor,
+			isDone: next.isDone,
+			pending,
+			folderIds,
+			isRowFirst: false,
+		});
+	}
 
 	while (true) {
 		const ending = run.ending!;
@@ -2790,7 +2856,13 @@ async function db_step(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 		if (outcome.kind === "done") args.progress.total = args.progress.discovered;
 		return outcome;
 	}
-	if (args.run.kind === "restore" && args.run.ending) return await db_end_restore(ctx, args);
+	// An ending step never fails or cancels (see the return type of `db_end_restore`). A failed or
+	// canceled outcome would finish the job at once and drop its repair and Trash entries.
+	if (args.run.kind === "restore" && args.run.ending) {
+		const outcome = await db_end_restore(ctx, args);
+		if (args.writeState.isWritten) await files_media_validation_db_advance_version(ctx, args.run);
+		return outcome;
+	}
 	if (args.run.phase === "discover") {
 		const discovered = await db_discover_restore(ctx, args);
 		if (discovered.kind !== "done") return discovered;
@@ -2854,8 +2926,9 @@ async function db_finish_run(
 /**
  * End a job before its walk is done. A restore or a forced archive that already changed items can
  * leave items in Trash on their own that have no Trash entry yet. Such a job first runs more steps that
- * only give those items entries (`ending`). Its Activity shows "stopping" meanwhile. Then it finishes
- * with the status and error given here.
+ * only give those items entries (`ending`). A restore's ending steps first finish the path and scope
+ * repair its queue still holds. Its Activity shows "stopping" meanwhile. Then it finishes with the
+ * status and error given here.
  *
  * It finishes at once in these cases. The job changed nothing yet: its op does not run, or it is not in
  * its apply phase. It is not a restore or forced archive. Or it is already ending, for example when
@@ -2952,7 +3025,7 @@ async function db_settle_step(
 			return;
 		}
 		case "done": {
-			// A job that ended early gave its Trash entries. Finish it the way it ended.
+			// A job that ended early finished its repair and gave its Trash entries. Finish it the way it ended.
 			if (args.run.ending) {
 				await db_finish_run({
 					ctx,
@@ -3767,7 +3840,7 @@ export async function files_archive_runs_db_request_stop(
 ) {
 	const run = await ctx.db.get("files_archive_runs", args.runId);
 	if (!run?.active) return;
-	// The job is already ending. Its steps only give Trash entries now, so let them finish.
+	// The job is already ending. Its steps only finish repair and give Trash entries now, so let them finish.
 	if (args.reason === "user" && run.ending) return;
 
 	if (args.reason === "timeout") {
@@ -3776,7 +3849,8 @@ export async function files_archive_runs_db_request_stop(
 			const opId = (await db_require_op(ctx, run._id))._id;
 			// Before the apply phase the job changed nothing, so a step that keeps failing ends it. An apply
 			// must go on: items it did not reach would stay active, with their links, inside the archived folder.
-			// A job that is ending must finish its steps too, or its items would be missing from Trash.
+			// A job that is ending must finish its steps too, or its items would be missing from Trash or keep
+			// old paths.
 			if (
 				!run.ending &&
 				!run.pathIndexWaiting &&
@@ -4120,7 +4194,7 @@ export async function files_archive_runs_db_delete_run_batch(
 
 	// Stop first, so a step that is already scheduled writes nothing. A purge that deletes a node does
 	// not stop at once, and neither does a job that still gives Trash entries. This deletion cannot wait,
-	// so end it here.
+	// so end it here. Known limit: a restore then drops the path repair it still owes (`db_end_restore`).
 	await files_archive_runs_db_request_stop(ctx, { runId: run._id, reason: "user", now: Date.now() });
 	if ((await ctx.db.get("files_archive_runs", run._id))?.active) {
 		await db_finish_run({

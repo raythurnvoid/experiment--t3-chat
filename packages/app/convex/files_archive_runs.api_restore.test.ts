@@ -2,11 +2,17 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
+import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
 import { restore_items } from "./public_api_files_organize.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { test_db_hold_move_slot, test_mocks, test_rename_node, test_spy_handler } from "./setup.test.ts";
-import { files_archive_operation_id_new } from "../shared/files.ts";
+import {
+	test_db_hold_move_slot,
+	test_finish_saved_scope_jobs,
+	test_mocks,
+	test_rename_node,
+	test_spy_handler,
+} from "./setup.test.ts";
+import { files_archive_operation_id_new, files_is_ancestor_field } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { test_run_with_flush } from "./setup.test.ts";
@@ -15,7 +21,9 @@ import {
 	add_member,
 	seed_tree,
 	seed_same_path,
+	expect_consistent,
 	read_activity,
+	step,
 	run_to_end,
 	archive,
 	archive_to_end,
@@ -705,6 +713,181 @@ describe("files/restore", () => {
 		).toMatchObject({ status: 200, body: { isDone: true, refused: [] } });
 		expect(await read_node(f, leftId)).toMatchObject({ archiveOperationId: null, name: "clash-2.md" });
 	});
+
+	test.each(["app", "key"] as const)(
+		"%s restore that stops partway finishes the path repair it owes, then ends",
+		async (mode) => {
+			const f = await fixture();
+			const member = await add_member(f);
+			// 40 folders with a file each, more than one apply step changes. The member edits the restricted
+			// `d1` through a share.
+			const tree = await seed_tree(f, { name: "top", folderCount: 40, filesPerFolder: 1 });
+			const restrictedId = tree.folderIds[1]!;
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: restrictedId,
+			});
+			await test_finish_saved_scope_jobs(f.t);
+			expect(
+				(
+					await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+						membershipId: f.db.membershipId,
+						nodeId: restrictedId,
+						principal: { kind: "user", userId: member.userId },
+						level: "write",
+					})
+				)._nay,
+			).toBeUndefined();
+			// Older deletes inside: a file, and a folder with its file. They keep their own stamps.
+			for (const nodeId of [tree.fileIds[5]!, tree.folderIds[7]!]) {
+				const archived = await archive(f, [nodeId]);
+				if (archived._yay) await run_to_end(f, archived._yay);
+			}
+			await archive_to_end(f, tree.topId);
+			// A new `/top` makes the restore bring the old one back as `/top-2`.
+			await folder(f, "/top");
+
+			let job: { runId: Id<"files_archive_runs">; activityId: Id<"activities"> };
+			if (mode === "app") {
+				job = (
+					await member.asUser.mutation(api.files_nodes.unarchive_nodes, {
+						membershipId: member.membershipId,
+						nodeIds: [tree.topId],
+					})
+				)._yay!;
+			} else {
+				await f.t.run((ctx) =>
+					quotas_db_ensure(ctx, {
+						quotaName: "active_api_credentials",
+						userId: member.userId,
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						now: Date.now(),
+					}),
+				);
+				const key = await create_key({ asUser: member.asUser, membershipId: member.membershipId });
+				const response = await post(f, "/api/v1/files/restore", key.credential, {
+					paths: ["/top"],
+					requestId: "repair",
+				});
+				const activityId = (response.body.jobIds as Array<Id<"activities">>)[0]!;
+				job = { runId: (await read_activity(f, activityId)).source.id as Id<"files_archive_runs">, activityId };
+			}
+			// The request checked `d1`. Now the member loses its share, so the apply brings back `d0` and then
+			// refuses `d1` in the same page.
+			await f.t.run(async (ctx) => {
+				for (const grant of await ctx.db.query("access_control_permission_grants").collect()) {
+					if (grant.resourceId === String(restrictedId) && grant.userId === member.userId)
+						await ctx.db.delete("access_control_permission_grants", grant._id);
+				}
+			});
+			for (let count = 0; (await read_activity(f, job.activityId)).status !== "stopping"; count++) {
+				if (count === 5) throw new Error("The restore did not stop");
+				if ((await read_activity(f, job.activityId)).status === "awaiting_input") {
+					const run = (await f.t.run((ctx) => ctx.db.get("files_archive_runs", job.runId)))!;
+					expect(
+						await member.asUser.mutation(api.files_archive_runs.resolve_conflicts, {
+							membershipId: member.membershipId,
+							runId: job.runId,
+							revision: run.revision,
+							choice: "keep_both",
+							applyToRemaining: { file: null, folder: null },
+						}),
+					).toEqual({ _yay: null });
+				}
+				await step(f, job.runId);
+			}
+			expect(await read_node(f, tree.folderIds[0]!)).toMatchObject({ archiveOperationId: null, path: "/top-2/d0" });
+			expect((await read_node(f, restrictedId)).archiveOperationId).not.toBeNull();
+
+			const read_all = () =>
+				f.t.run(async (ctx) => ({
+					nodes: await ctx.db.query("files_nodes").collect(),
+					entryNodeIds: (await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
+					op: await ctx.db
+						.query("files_subtree_ops")
+						.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", job.runId))
+						.unique(),
+					mediaRevision: (await ctx.db.query("files_media_validation_versions").first())?.revision ?? 0,
+				}));
+			const atStop = { ...(await read_all()), progress: (await read_activity(f, job.activityId)).progress };
+
+			// The repair has more items than one step changes. The job keeps its op, so queued jobs still wait.
+			await step(f, job.runId);
+			expect((await read_all()).op, "the op stays until the repair ends").not.toBeNull();
+			// Stop again, as a person and as the deadline. The job goes on with its repair.
+			expect(
+				await member.asUser.mutation(api.activities.request_stop, {
+					membershipId: member.membershipId,
+					activityId: job.activityId,
+				}),
+			).toEqual({ _yay: null });
+			await f.t.run((ctx) =>
+				files_archive_runs_db_request_stop(ctx, { runId: job.runId, reason: "timeout", now: Date.now() }),
+			);
+			for (let count = 0; (await read_activity(f, job.activityId)).status === "stopping"; count++) {
+				if (count === 10) throw new Error("The ending did not finish");
+				await step(f, job.runId);
+			}
+			const ended = await read_activity(f, job.activityId);
+			expect(ended.status).toBe("failed");
+			await test_finish_saved_scope_jobs(f.t);
+			const atEnd = await read_all();
+			expect(atEnd.op).toBeNull();
+
+			const nodeById = new Map(atEnd.nodes.map((node) => [node._id, node]));
+			const parent_of = (node: (typeof atEnd.nodes)[number]) =>
+				node.parentId === "root" ? null : nodeById.get(node.parentId)!;
+			expect(
+				atEnd.nodes.flatMap((node) => {
+					const parent = parent_of(node);
+					const scopeId = node.isRestrictedScopeRoot ? node._id : (parent?.restrictedScopeNodeId ?? null);
+					return node.path === `${parent?.path ?? ""}/${node.name}` && node.restrictedScopeNodeId === scopeId
+						? []
+						: [node.path];
+				}),
+				"every item gets the path and area of its folder",
+			).toEqual([]);
+			expect(
+				atEnd.nodes.flatMap((node) => {
+					if (node.archiveOperationId === null) return [];
+					const parent = parent_of(node);
+					const isAlone = parent?.archiveOperationId !== node.archiveOperationId;
+					const top = isAlone ? node._id : parent!.archiveTopNodeId;
+					return node.archiveTopNodeId === top && atEnd.entryNodeIds.includes(node._id) === isAlone ? [] : [node.path];
+				}),
+				"each item left in Trash has the right top, and a Trash entry when it is alone",
+			).toEqual([]);
+			// Paths, areas and tops are derived from the folder, and so are the `ancestor1..12` path fields.
+			const derivedFields = new Set([
+				"path",
+				"treePath",
+				"pathDepth",
+				"restrictedScopeNodeId",
+				"parentScopeNodeId",
+				"extendedScopeNodeId",
+				"parentExtendedScopeNodeId",
+				"isPublic",
+				"archiveTopNodeId",
+			]);
+			const without_derived = (nodes: typeof atEnd.nodes) =>
+				nodes.map((node) =>
+					Object.fromEntries(
+						Object.entries(node).filter(([field]) => !derivedFields.has(field) && !files_is_ancestor_field(field)),
+					),
+				);
+			expect(
+				without_derived(atEnd.nodes),
+				"the repair keeps every delete stamp and changes only paths, areas and tops",
+			).toEqual(without_derived(atStop.nodes));
+			expect(ended.progress, "nothing more comes back after the stop").toEqual(atStop.progress);
+			expect(atEnd.mediaRevision, "the repair moves the media validation version").toBeGreaterThan(
+				atStop.mediaRevision,
+			);
+			// Side docs follow their node.
+			await expect_consistent(f);
+		},
+	);
 
 	test("a retry answers the same jobs after history cleanup deleted the first job", async () => {
 		const f = await fixture();

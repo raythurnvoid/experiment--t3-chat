@@ -1147,7 +1147,8 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   area and delete id. So a parent change never needs a repair of its children. A restore or forced
   delete that ends early (Stop, timeout, a step that keeps failing, a lost membership, user
   deletion) first runs steps that give entries to the items it left in Trash (`run.ending`, Activity
-  "stopping"), then ends the way it was ended. Reason: derived entries needed child repairs and a Trash
+  "stopping"), then ends the way it was ended. A restore first finishes the path repair it still owes
+  (`../files-read-only/SKILL.md#trash-and-restore`). Reason: derived entries needed child repairs and a Trash
   pause after every parent change.
 - The same rule holds for `archiveTopNodeId`, the top item of a node's delete: the node itself when
   its folder is not in Trash with the same delete id, else the folder's top. It is missing on active
