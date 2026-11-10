@@ -6524,16 +6524,8 @@ const app_convex_schema = defineSchema({
 					parentId: files_saved_placement_fields.parentId,
 					name: v.string(),
 					path: v.string(),
-					/**
-					 * Legacy delete id. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
-					 */
-					archiveOperationId: v.optional(v.union(v.string(), v.null())),
 				}),
 				parentPath: v.string(),
-				/**
-				 * Legacy delete id. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
-				 */
-				parentArchiveOperationId: v.optional(v.union(v.string(), v.null())),
 			}),
 		),
 		targetParent: files_pending_parent_validator,
@@ -9308,10 +9300,6 @@ const app_convex_schema = defineSchema({
 			v.object({
 				kind: v.literal("files_subtree_op"),
 				id: v.id("files_subtree_ops"),
-				/**
-				 * Legacy op kind. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
-				 */
-				opKind: v.optional(v.union(v.literal("move"), v.literal("scope"))),
 			}),
 			/**
 			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small

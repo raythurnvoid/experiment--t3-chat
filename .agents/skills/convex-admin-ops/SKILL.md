@@ -24,7 +24,7 @@ Before a live Convex operation, load the domain skill that owns the behavior bei
 
 # Windows CLI Invocation
 
-Run Convex commands from `packages/app` through Vite Plus and the installed Node CLI. This direct invocation preserves JSON arguments on this machine:
+Run Convex commands from `packages/app` through Vite Plus and the installed Node CLI. Check JSON argument handling with a read-only call first:
 
 ```powershell
 Push-Location "$(git rev-parse --show-toplevel)\packages\app"
@@ -33,6 +33,11 @@ Pop-Location
 ```
 
 Do not route JSON args through `pnpm.CMD`, `convex.ps1`, or a nested `powershell -Command`; those paths have stripped JSON quotes on this machine. If Convex reports unquoted keys or values, the function did not run. Fix the direct Node argument and verify it with a read-only function before retrying a write.
+
+PowerShell 5.1 can also lose quotes when `vp env exec` forwards that string. Then use a scratch
+Node script that calls `spawnSync(process.execPath, [cliPath, "run", ..., JSON.stringify(args)])`
+with `cwd` set to `packages/app` and no shell. Run the script through `vp env exec node`.
+This keeps the JSON as one argument. Seen 2026-11-11 with a migration status read.
 
 `--inline-query` takes a handler **body** that uses `ctx` and ends in `return`, for example `const s = await ctx.db.query("x").first(); return s?.revision;`. Do not pass a function like `async (ctx) => ...`: the CLI then returns the function itself, which fails with `AsyncFunction "[Function]" is not a supported Convex type`, or prints nothing and exits 0. A multi-line body also fails through `pnpm exec` with `batch file arguments are invalid`; pass it with the direct-node form above, for example from a small Node runner that reads the body from a file and calls `spawnSync(process.execPath, [".../convex/bin/main.js", "run", "--inline-query", body])`. Seen 2026-10-25.
 
