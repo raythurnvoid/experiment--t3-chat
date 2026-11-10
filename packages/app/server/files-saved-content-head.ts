@@ -75,8 +75,6 @@ export function files_saved_content_apply_header(
 		contentTooLargeByteSize: head.contentTooLargeByteSize,
 		contentShapeMismatchAt: head.contentShapeMismatchAt,
 		contentYjsStateTooLargeByteSize: head.contentYjsStateTooLargeByteSize,
-		contentFrontmatterTooLargeFieldCount: head.contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount: head.contentFrontmatterTooLargeIndexDocumentCount,
 		// Archive and Restore can change the file time without changing its bytes.
 		updatedAt: Math.max(node.updatedAt, head.updatedAt),
 		updatedBy: head.updatedAt > node.updatedAt ? head.updatedBy : node.updatedBy,

@@ -1554,8 +1554,6 @@ export const test_mocks = {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
 				extendedScopeNodeId: null,

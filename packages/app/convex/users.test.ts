@@ -229,8 +229,6 @@ async function users_test_seed_page(
 		contentTooLargeByteSize: null,
 		contentShapeMismatchAt: null,
 		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
 		extendedScopeNodeId: null,
 		isRestrictedScopeRoot: false,

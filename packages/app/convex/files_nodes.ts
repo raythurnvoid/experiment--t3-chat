@@ -7730,16 +7730,12 @@ export async function yjs_reserve_and_increment_last_sequence(
 			nextCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
 			nextBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES
 		) {
-			// A settle marker (too-large text or over-cap frontmatter) means materialization
-			// completes without advancing the committed content, so the counters can never
+			// A settle marker (too-large text) means materialization completes without
+			// advancing the committed content, so the counters can never
 			// shrink and "retry in a moment" would be permanently false. The repair path is the
 			// only exit in that state, so return the repair message instead of enqueueing a
 			// materialization that would settle again without freeing budget.
-			if (
-				fileNode.contentTooLargeByteSize !== null ||
-				fileNode.contentFrontmatterTooLargeFieldCount !== null ||
-				fileNode.contentFrontmatterTooLargeIndexDocumentCount !== null
-			) {
+			if (fileNode.contentTooLargeByteSize !== null) {
 				return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 			}
 			await enqueue_file_content_materialization(ctx, {

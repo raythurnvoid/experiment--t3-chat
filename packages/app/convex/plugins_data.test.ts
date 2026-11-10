@@ -783,8 +783,6 @@ async function start_plugin_run(args: {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
 			archiveOperationId: null,
 		});

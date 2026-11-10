@@ -1313,12 +1313,12 @@ A fixture sized to blow the JS stack in a unit test can parse fine in a deployed
 Measured 2026-08-18 with flow-style YAML frontmatter (`a: {b: {b: …`): Node throws
 `RangeError: Maximum call stack size exceeded` at about 1000 nesting levels, and so does
 convex-test, because it runs on Node. The real deployment read 1000 levels without complaining and
-only threw somewhere before 5000. The upload published with `contentFrontmatterTooLargeFieldCount:
-1001`, which looks like a passing check but proves the opposite of what the run was meant to prove.
+only threw somewhere before 5000. The upload published and recorded 1001 frontmatter fields, which looks like a passing check but
+proves the opposite of what the run was meant to prove.
 
 So when a browser check needs a deployed function to hit a recursion limit, escalate the depth
 against the deployment and read the durable state, instead of reusing the depth that failed in the
-test. Reading `convex data files_nodes` for the marker fields separated the two outcomes here; the
+test. Reading the stored data with `convex data` separated the two outcomes here; the
 `convex logs` warning line named the exact code path.
 
 ## `create_text_node` takes a path relative to `parentId`, so a full path nests a copy of the folder

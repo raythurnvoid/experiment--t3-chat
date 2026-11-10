@@ -656,8 +656,6 @@ export async function files_move_content_db_finish(ctx: MutationCtx, args: files
 				contentTooLargeByteSize: after.contentTooLargeByteSize,
 				contentShapeMismatchAt: after.contentShapeMismatchAt,
 				contentYjsStateTooLargeByteSize: after.contentYjsStateTooLargeByteSize,
-				contentFrontmatterTooLargeFieldCount: after.contentFrontmatterTooLargeFieldCount,
-				contentFrontmatterTooLargeIndexDocumentCount: after.contentFrontmatterTooLargeIndexDocumentCount,
 				updatedAt: after.updatedAt,
 				updatedBy: after.updatedBy,
 			});

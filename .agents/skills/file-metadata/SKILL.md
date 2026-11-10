@@ -61,8 +61,7 @@ frontmatter and metadata indexes in pages. A later write replaces only the waiti
 active build can finish. Search and metadata table readers keep the last complete published view.
 The user sees no indexing status. `plugin-name` selection reads the full map, never the delayed index.
 Upload conversion in `r2.ts` works like Save. It stores the exact text and requests indexing, so the
-worker indexes all of the frontmatter in pages, also over-cap frontmatter. It never sets the
-`contentFrontmatterTooLarge*` marker pair.
+worker indexes all of the frontmatter in pages, also over-cap frontmatter.
 
 Index publication shares the workspace queue with Move and Review. Its slot covers tagging the old
 docs, installing the candidate, selecting one complete view and cleanup. All writes pass through
@@ -210,8 +209,6 @@ the index worker in `files_index.ts`, and the pending-update preflight in `files
 - Whole-text Save does not refuse a file because its frontmatter needs many index docs. Its worker
   writes those docs in pages. Existing inline creation and pending preflight paths keep their own
   guards until they use the paged writer. Do not copy those guards into the Save worker.
-- Never set the `contentFrontmatterTooLarge*` marker pair for it. Those markers mean over-cap and
-  carry counts; an unreadable file has no counts to show.
 - Keep `_nay` separate from the `doc.errors` case, which returns empty metadata. Broken YAML really
   has no metadata. An unreadable parse may have hidden good metadata, and that is worth a log.
 

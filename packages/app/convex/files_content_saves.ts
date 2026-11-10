@@ -161,8 +161,6 @@ export const begin = internalMutation({
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			updatedAt: now,
 			updatedBy: args.userId,
 		});
@@ -347,8 +345,6 @@ export const publish = internalMutation({
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			updatedBy: request.userId,
 			updatedAt: now,
 		});

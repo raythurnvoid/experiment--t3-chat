@@ -178,8 +178,6 @@ async function create_volume_fixture() {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,

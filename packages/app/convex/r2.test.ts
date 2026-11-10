@@ -2069,11 +2069,9 @@ describe("r2 asset content", () => {
 		});
 
 		// The node publishes editable. Like Save, the background index worker indexes all of the
-		// frontmatter in pages, so the over-cap marker pair stays clear.
+		// frontmatter in pages.
 		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
-		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
 		expect(
 			docs.metadataDocs.filter((doc) => doc.docKind === "field" && doc.fieldPath.startsWith("frontmatter.")),
@@ -2178,8 +2176,6 @@ describe("r2 asset content", () => {
 		// The 601 index documents are over the old upload cap. The paged worker indexes them all.
 		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
-		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
 		const tagDocs = docs.metadataDocs.filter((doc) => doc.fieldPath === "frontmatter.tags");
 		expect(tagDocs.length).toBeGreaterThan(files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS);
@@ -2484,8 +2480,6 @@ describe("r2 asset content", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				readOnly: false,
 				readOnlyDecisionId: null,
@@ -2831,8 +2825,6 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				readOnly: false,
 				readOnlyDecisionId: null,
@@ -3138,8 +3130,6 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				readOnly: false,
 				readOnlyDecisionId: null,
@@ -3512,8 +3502,6 @@ describe("content pipeline crash orphans", () => {
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
 					readOnly: false,
 					readOnlyDecisionId: null,
@@ -3637,8 +3625,6 @@ describe("content pipeline crash orphans", () => {
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
 					readOnly: false,
 					readOnlyDecisionId: null,

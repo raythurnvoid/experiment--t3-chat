@@ -1131,8 +1131,6 @@ describe("FileNodeView private targets", () => {
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 				},
 				path: NODE.path,
 				pendingUpdate: null,

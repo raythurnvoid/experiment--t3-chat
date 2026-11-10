@@ -4188,8 +4188,6 @@ export async function files_nodes_db_fill_text_node_content(
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 			}),
 		]);
 
@@ -4376,8 +4374,6 @@ export const finalize_file_content_materialization = internalMutation({
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 				}),
 				ctx.db.patch("files_yjs_docs_last_sequences", header.yjsLastSequenceDoc._id, {
 					unmaterializedUpdateCount: header.yjsLastSequenceDoc.lastSequence === args.sequence
@@ -5242,8 +5238,6 @@ export async function files_nodes_db_commit_text_replacement(
 			ctx.db.patch("files_nodes", fileNode._id, {
 				assetId: args.versionSnapshotAssetId,
 				contentByteSize: args.textSize,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				updatedBy: args.userId,
 				updatedAt: now,
 			}),
@@ -5601,8 +5595,6 @@ async function db_install_file_content_replacement(
 		contentTooLargeByteSize: null,
 		contentShapeMismatchAt: null,
 		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
 		updatedBy: user._id,
 		updatedAt: now,
 	});
@@ -7088,9 +7080,8 @@ export const restore_snapshot_r2 = action({
 // #endregion snapshots
 
 // #region yjs repair
-// Operator recovery for a file whose materialization refused durably (shape mismatch, a Yjs
-// state past the 4 MiB cap, or over-cap frontmatter whose update budget tripped). Replaces the
-// whole Yjs history with one fresh compact document
+// Operator recovery for a file whose materialization refused durably (shape mismatch, or a Yjs
+// state past the 4 MiB cap). Replaces the whole Yjs history with one fresh compact document
 // built from the file's visible text, and every committed representation with it, atomically.
 // Runbook: export the Yjs snapshot/update assets first; run through the convex-admin-ops skill;
 // editors for the node must close/reload before writes resume.
@@ -7195,16 +7186,10 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
-		// The frontmatter markers qualify too: a frontmatter-marked file whose update budget
-		// tripped can no longer accept the fitting edit that would clear the marker, and its
-		// visible text is under the text cap, so a latest_state repair is lossless. The
-		// too-large-text marker stays out on purpose — its visible text is over the cap, so its
+		// The too-large-text marker stays out on purpose. Its visible text is over the cap, so its
 		// documented exit is `last_committed` with the acknowledgement flag.
 		const hasDurableMarker =
-			fileNode.contentShapeMismatchAt !== null ||
-			fileNode.contentYjsStateTooLargeByteSize !== null ||
-			fileNode.contentFrontmatterTooLargeFieldCount !== null ||
-			fileNode.contentFrontmatterTooLargeIndexDocumentCount !== null;
+			fileNode.contentShapeMismatchAt !== null || fileNode.contentYjsStateTooLargeByteSize !== null;
 
 		// The default source requires the matching durable marker: without one, normal
 		// materialization still owns the file and a repair would race it.
@@ -7473,12 +7458,9 @@ export const finalize_file_yjs_repair = internalMutation({
 		) {
 			return Result({ _nay: { message: "Stale repair: the lineage advanced" } });
 		}
-		// Same eligibility as the action: the frontmatter markers qualify for latest_state.
+		// Same eligibility as the action.
 		const hasDurableMarker =
-			state.fileNode.contentShapeMismatchAt !== null ||
-			state.fileNode.contentYjsStateTooLargeByteSize !== null ||
-			state.fileNode.contentFrontmatterTooLargeFieldCount !== null ||
-			state.fileNode.contentFrontmatterTooLargeIndexDocumentCount !== null;
+			state.fileNode.contentShapeMismatchAt !== null || state.fileNode.contentYjsStateTooLargeByteSize !== null;
 		if (args.source === "latest_state" && !hasDurableMarker) {
 			return Result({ _nay: { message: "File carries no durable repair marker" } });
 		}
@@ -7521,7 +7503,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		});
 
 		// Repair commits source first. The worker indexes all parsed frontmatter fields
-		// in small steps, including files that carried an old field-count marker.
+		// in small steps.
 		const repairRootKind = state.fileNode.textKind;
 		const frontmatter = repairRootKind === "rich_text" ? files_metadata_preflight_frontmatter(args.text) : null;
 		// Bad frontmatter does not prevent source repair. The index worker skips its metadata.
@@ -7574,8 +7556,6 @@ export const finalize_file_yjs_repair = internalMutation({
 					contentTooLargeByteSize: null,
 					contentShapeMismatchAt: null,
 					contentYjsStateTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 					updatedBy: args.authorUserId,
 					updatedAt: now,
 				}),
@@ -7957,7 +7937,7 @@ export const set_file_non_collaborative = mutation({
 			fileNode.contentYjsStateTooLargeByteSize !== null ||
 			fileNode.contentTooLargeByteSize !== null;
 		// A non-recoverable marked file can never materialize on its own again, so telling the user
-		// to wait would be a lie. The frontmatter pair stays out: a later fitting edit can clear it.
+		// to wait would be a lie.
 		// The settle marker `contentTooLargeByteSize` counts here too, unlike in the repair gate
 		// above: its own settlement deleted the jobs, so nothing will ever close the gap.
 		if (yjsLastSequenceDoc.lastSequence > yjsSnapshotDoc.sequence && !hasNonRecoverableMarker) {
@@ -7968,7 +7948,6 @@ export const set_file_non_collaborative = mutation({
 
 		const now = Date.now();
 		const logOwnerId = (await files_saved_content_db_get_head(ctx.db, fileNode))!.yjsContentHeadId!;
-		const discardsUnmaterializedState = yjsLastSequenceDoc.lastSequence > yjsSnapshotDoc.sequence;
 		await Promise.all([
 			ctx.db.delete("files_yjs_snapshots", yjsSnapshotDoc._id),
 			ctx.db.delete("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id),
@@ -7979,9 +7958,7 @@ export const set_file_non_collaborative = mutation({
 			// Three markers go too, because all three describe the document that is being deleted.
 			// `contentTooLargeByteSize` is set when the text INSIDE the document grew past the cap,
 			// so the committed text this toggle keeps is the older one that still fit. Leaving the
-			// marker would show a permanent "too large" banner on a file that is now small. The
-			// frontmatter pair stays when it describes the committed text. Clear it when this
-			// toggle discards a marked newer document and keeps an older committed snapshot.
+			// marker would show a permanent "too large" banner on a file that is now small.
 			ctx.db.patch("files_nodes", args.nodeId, {
 				collaborationEnabled: false,
 				pendingContentVersion: fileNode.pendingContentVersion + 1,
@@ -7990,12 +7967,6 @@ export const set_file_non_collaborative = mutation({
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
 				contentTooLargeByteSize: null,
-				...(discardsUnmaterializedState
-					? {
-							contentFrontmatterTooLargeFieldCount: null,
-							contentFrontmatterTooLargeIndexDocumentCount: null,
-						}
-					: {}),
 				updatedBy: userAuth.id,
 				updatedAt: now,
 			}),
@@ -8515,8 +8486,6 @@ export const finalize_file_collaboration_enable = internalMutation({
 					assetId: args.contentSnapshotAssetId,
 					contentByteSize: args.textSize,
 					contentTooLargeByteSize: null,
-					contentFrontmatterTooLargeFieldCount: null,
-					contentFrontmatterTooLargeIndexDocumentCount: null,
 					updatedBy: user._id,
 					updatedAt: now,
 				}),

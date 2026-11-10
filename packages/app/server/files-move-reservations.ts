@@ -670,7 +670,7 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			if (savedHeadId && !membershipChanged) {
 				const fields = ["contentHeadId", "assetId", "statsId", "contentByteSize", "pendingContentVersion",
 					"contentTooLargeByteSize", "contentShapeMismatchAt", "contentYjsStateTooLargeByteSize",
-					"contentFrontmatterTooLargeFieldCount", "contentFrontmatterTooLargeIndexDocumentCount", "updatedAt", "updatedBy"];
+					"updatedAt", "updatedBy"];
 				if (table === "files_nodes" && patch?.contentHeadId === savedHeadId &&
 					Object.keys(patch).every((field) => fields.includes(field))) continue;
 			}
@@ -699,8 +699,6 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						"contentTooLargeByteSize",
 						"contentShapeMismatchAt",
 						"contentYjsStateTooLargeByteSize",
-						"contentFrontmatterTooLargeFieldCount",
-						"contentFrontmatterTooLargeIndexDocumentCount",
 						"updatedAt",
 						"updatedBy",
 					];

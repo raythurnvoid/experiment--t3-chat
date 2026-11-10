@@ -188,8 +188,6 @@ import {
 import {
 	files_metadata_catalog_lower,
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
-	files_metadata_MAX_FRONTMATTER_FIELDS,
-	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 	files_metadata_METADATA_FIELD_PREFIX,
 } from "../../../../shared/files-metadata.ts";
 import {
@@ -1016,9 +1014,6 @@ type FileNodeViewTopFloating_ClassNames =
 	| "FileNodeViewTopFloating-content-too-large"
 	| "FileNodeViewTopFloating-content-too-large-icon"
 	| "FileNodeViewTopFloating-content-too-large-message"
-	| "FileNodeViewTopFloating-frontmatter-too-large"
-	| "FileNodeViewTopFloating-frontmatter-too-large-icon"
-	| "FileNodeViewTopFloating-frontmatter-too-large-message"
 	| "FileNodeViewTopFloating-read-only"
 	| "FileNodeViewTopFloating-read-only-icon"
 	| "FileNodeViewTopFloating-read-only-message";
@@ -1027,7 +1022,6 @@ type FileNodeViewTopFloating_Props = {
 	nodeId: app_convex_Id<"files_nodes"> | null;
 	/** Byte size recorded by `files_nodes.contentTooLargeByteSize`, or `null` while the content fits. */
 	contentTooLargeByteSize: number | null;
-	frontmatterTooLarge: { fieldCount: number; indexDocumentCount: number } | null;
 	readOnlyMessage: string | null;
 	pendingSlot: React.ReactNode;
 };
@@ -1036,7 +1030,7 @@ type FileNodeViewTopFloating_Props = {
 // warnings and the pending-updates controls, split by separators like the toolbar. Subscribes to
 // one node's activities slice, so the parent view never re-renders on feed traffic.
 const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: FileNodeViewTopFloating_Props) {
-	const { nodeId, contentTooLargeByteSize, frontmatterTooLarge, readOnlyMessage, pendingSlot } = props;
+	const { nodeId, contentTooLargeByteSize, readOnlyMessage, pendingSlot } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const convex = useConvex();
 	const activities = useFileNodeActivities({ membershipId, nodeId });
@@ -1070,11 +1064,8 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	// the file needs to hear whether the number is going down.
 	const contentTooLargeMessage =
 		contentTooLargeByteSize == null ? null : file_editor_get_content_too_large_message(contentTooLargeByteSize);
-	const frontmatterTooLargeMessage = frontmatterTooLarge
-		? `Frontmatter is not indexed: ${frontmatterTooLarge.fieldCount} fields and ${frontmatterTooLarge.indexDocumentCount} index entries. The limits are ${files_metadata_MAX_FRONTMATTER_FIELDS} fields and ${files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS} index entries.`
-		: null;
 
-	if (!activity && !contentTooLargeMessage && !frontmatterTooLargeMessage && !readOnlyMessage && !pendingSlot) {
+	if (!activity && !contentTooLargeMessage && !readOnlyMessage && !pendingSlot) {
 		return null;
 	}
 
@@ -1154,29 +1145,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					</span>
 				</div>
 			) : null}
-			{(readOnlyMessage || activity || contentTooLargeMessage) && frontmatterTooLargeMessage ? (
-				<MySeparator orientation="vertical" />
-			) : null}
-			{frontmatterTooLargeMessage ? (
-				<div className={"FileNodeViewTopFloating-frontmatter-too-large" satisfies FileNodeViewTopFloating_ClassNames}>
-					<MyIcon
-						className={
-							"FileNodeViewTopFloating-frontmatter-too-large-icon" satisfies FileNodeViewTopFloating_ClassNames
-						}
-					>
-						<CircleAlert />
-					</MyIcon>
-					<span
-						className={
-							"FileNodeViewTopFloating-frontmatter-too-large-message" satisfies FileNodeViewTopFloating_ClassNames
-						}
-						title={frontmatterTooLargeMessage}
-					>
-						{frontmatterTooLargeMessage}
-					</span>
-				</div>
-			) : null}
-			{(readOnlyMessage || activity || contentTooLargeMessage || frontmatterTooLargeMessage) && pendingSlot ? (
+			{(readOnlyMessage || activity || contentTooLargeMessage) && pendingSlot ? (
 				<MySeparator orientation="vertical" />
 			) : null}
 			{pendingSlot}
@@ -6652,15 +6621,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		<FileNodeViewTopFloating
 			nodeId={resolvedNode?.kind === "file" ? resolvedNode._id : null}
 			contentTooLargeByteSize={resolvedNode?.contentTooLargeByteSize ?? null}
-			frontmatterTooLarge={
-				resolvedNode?.contentFrontmatterTooLargeFieldCount != null &&
-				resolvedNode.contentFrontmatterTooLargeIndexDocumentCount !== null
-					? {
-							fieldCount: resolvedNode.contentFrontmatterTooLargeFieldCount,
-							indexDocumentCount: resolvedNode.contentFrontmatterTooLargeIndexDocumentCount,
-						}
-					: null
-			}
 			readOnlyMessage={readOnlyMessage}
 			pendingSlot={
 				hasPendingUpdates ? (

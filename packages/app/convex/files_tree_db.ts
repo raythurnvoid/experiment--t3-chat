@@ -61,10 +61,6 @@ export const files_node_public_doc_fields = {
 	contentTooLargeByteSize: doc(app_convex_schema, "files_nodes").fields.contentTooLargeByteSize,
 	contentShapeMismatchAt: doc(app_convex_schema, "files_nodes").fields.contentShapeMismatchAt,
 	contentYjsStateTooLargeByteSize: doc(app_convex_schema, "files_nodes").fields.contentYjsStateTooLargeByteSize,
-	contentFrontmatterTooLargeFieldCount: doc(app_convex_schema, "files_nodes").fields
-		.contentFrontmatterTooLargeFieldCount,
-	contentFrontmatterTooLargeIndexDocumentCount: doc(app_convex_schema, "files_nodes").fields
-		.contentFrontmatterTooLargeIndexDocumentCount,
 	restrictedScopeNodeId: doc(app_convex_schema, "files_nodes").fields.restrictedScopeNodeId,
 	readOnly: doc(app_convex_schema, "files_nodes").fields.readOnly,
 	// Leave readOnlyDecisionId out. Only server copy/Restore receipts use it.
@@ -126,6 +122,9 @@ export function files_tree_db_get_public_node_fields(
 		archivedPathLength: _archivedPathLength,
 		archivedPath: _archivedPath,
 		purgeRunId: _purgeRunId,
+		// Old docs still hold these fields until their migration runs. Drop these lines with the schema fields.
+		contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.

@@ -3214,18 +3214,13 @@ async function db_check_file_write_revision(
 	) {
 		return Result({ _nay: { name: "file_needs_repair", message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 	}
-	// The Yjs reserve gate also refuses a file whose text or frontmatter is too large to save, once its
-	// unsaved editor updates fill the budget. The background save can never free that budget. Refuse it
-	// here, so no answer about the text comes first.
+	// The Yjs reserve gate also refuses a file whose text is too large to save, once its unsaved editor
+	// updates fill the budget. The background save can never free that budget. Refuse it here, so no
+	// answer about the text comes first.
 	//
 	// Check only the update count. The byte budget needs the size of the write's own update, so only the
 	// gate can check it.
-	if (
-		files_node_has_editable_yjs_state(args.node) &&
-		(args.node.contentTooLargeByteSize !== null ||
-			args.node.contentFrontmatterTooLargeFieldCount !== null ||
-			args.node.contentFrontmatterTooLargeIndexDocumentCount !== null)
-	) {
+	if (files_node_has_editable_yjs_state(args.node) && args.node.contentTooLargeByteSize !== null) {
 		const sequence = await files_saved_placement_db_get_sequence(ctx.db, args.node);
 		if (sequence && sequence.unmaterializedUpdateCount >= files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT) {
 			return Result({ _nay: { name: "file_needs_repair", message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });

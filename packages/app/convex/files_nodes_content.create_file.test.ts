@@ -166,8 +166,6 @@ describe("create_file_node", () => {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 		});
 		expect(state.chunks).toHaveLength(1);
 		expect(state.plainChunks).toHaveLength(1);

@@ -269,9 +269,9 @@ The wait runner reads the message before and after `waitForSelector`, and logs `
 4. Assert the message names the size, the limit and how much to remove, that it is ellipsized with the full text in `title`, and that the icon uses the red token. Do not screenshot it: the floating surface never settles for Playwright's stability check and both page and element screenshots time out.
 5. Clear it the real way: type a few characters in the editor, then wait for `waitForSelector(…, { state: "detached" })`. Materialization runs through the workpool, so allow up to ~90s; it cleared in ~14s in practice. Remove the typed characters afterwards if the file is not disposable.
 
-### Frontmatter Indexing Warning QA
+### Over-Cap Frontmatter Upload QA
 
-Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Move the fixture to Trash after the check.
+Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and the shared top status shows no frontmatter warning: the background index worker indexes all 129 fields. The node must not show the stored-file card or enter a conversion retry loop. Move the fixture to Trash after the check.
 
 ### Monaco Model Leak QA
 

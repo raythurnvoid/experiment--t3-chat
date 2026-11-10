@@ -105,8 +105,6 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	contentTooLargeByteSize: null,
 	contentShapeMismatchAt: null,
 	contentYjsStateTooLargeByteSize: null,
-	contentFrontmatterTooLargeFieldCount: null,
-	contentFrontmatterTooLargeIndexDocumentCount: null,
 	restrictedScopeNodeId: null,
 	parentId: "",
 	updatedBy: "",

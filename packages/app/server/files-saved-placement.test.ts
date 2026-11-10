@@ -88,8 +88,6 @@ describe("saved placement foundation", () => {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			updatedAt: f.after.updatedAt,
 		});
 	});

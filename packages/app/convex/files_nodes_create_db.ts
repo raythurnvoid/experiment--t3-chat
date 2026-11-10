@@ -346,8 +346,6 @@ function node_insert_fields(args: {
 		contentTooLargeByteSize: null,
 		contentShapeMismatchAt: null,
 		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: args.restrictedScopeNodeId,
 		// A new node inherits its parent's scope, so it is never its own restricted root.
 		isRestrictedScopeRoot: false,

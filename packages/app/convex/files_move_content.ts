@@ -816,8 +816,6 @@ async function db_seal(
 		contentTooLargeByteSize: original?.contentTooLargeByteSize ?? null,
 		contentShapeMismatchAt: original?.contentShapeMismatchAt ?? null,
 		contentYjsStateTooLargeByteSize: original?.contentYjsStateTooLargeByteSize ?? null,
-		contentFrontmatterTooLargeFieldCount: original?.contentFrontmatterTooLargeFieldCount ?? null,
-		contentFrontmatterTooLargeIndexDocumentCount: original?.contentFrontmatterTooLargeIndexDocumentCount ?? null,
 		// Only new content changes the modified time. A Move of the same file keeps it.
 		...(changed ? { updatedAt: cohort.operationTime, updatedBy: cohort.userId } : {}),
 	});

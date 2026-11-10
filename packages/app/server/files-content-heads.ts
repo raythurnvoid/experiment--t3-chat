@@ -45,8 +45,6 @@ const HEADER_FIELDS = [
 	"contentTooLargeByteSize",
 	"contentShapeMismatchAt",
 	"contentYjsStateTooLargeByteSize",
-	"contentFrontmatterTooLargeFieldCount",
-	"contentFrontmatterTooLargeIndexDocumentCount",
 	"updatedAt",
 	"updatedBy",
 ] as const;
@@ -92,8 +90,6 @@ function header(node: Doc<"files_nodes"> | Doc<"files_saved_places">) {
 		contentTooLargeByteSize: node.contentTooLargeByteSize,
 		contentShapeMismatchAt: node.contentShapeMismatchAt,
 		contentYjsStateTooLargeByteSize: node.contentYjsStateTooLargeByteSize,
-		contentFrontmatterTooLargeFieldCount: node.contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount: node.contentFrontmatterTooLargeIndexDocumentCount,
 		updatedAt: node.updatedAt,
 		updatedBy: node.updatedBy,
 	};

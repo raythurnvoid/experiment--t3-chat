@@ -138,6 +138,9 @@ function placement_header(node: Doc<"files_nodes">) {
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
 		purgeRunId: _purgeRunId,
+		// Old docs still hold these fields until their migration runs. Drop these lines with the schema fields.
+		contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
 		...header
 	} = node;
 	return header;
@@ -154,6 +157,9 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		organizationId: _org,
 		workspaceId: _workspace,
 		contentId: _content,
+		// Old docs still hold these fields until their migration runs. Drop these lines with the schema fields.
+		contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
 		...header
 	} = place;
 	// Explicit optional fields clear values from the other view.
@@ -833,8 +839,6 @@ async function db_allocate_private(
 		contentTooLargeByteSize: null,
 		contentShapeMismatchAt: null,
 		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
 		isRestrictedScopeRoot: false,
 		extendedScopeNodeId: null,
@@ -1169,8 +1173,6 @@ async function db_rename_parents(
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
@@ -2441,8 +2443,6 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			contentTooLargeByteSize: _contentTooLargeByteSize,
 			contentShapeMismatchAt: _contentShapeMismatchAt,
 			contentYjsStateTooLargeByteSize: _contentYjsStateTooLargeByteSize,
-			contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
-			contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
 			updatedAt,
 			updatedBy,
 			...location

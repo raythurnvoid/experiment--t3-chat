@@ -102,8 +102,6 @@ const createTreeItem = (args: {
 		contentTooLargeByteSize: null,
 		contentShapeMismatchAt: null,
 		contentYjsStateTooLargeByteSize: null,
-		contentFrontmatterTooLargeFieldCount: null,
-		contentFrontmatterTooLargeIndexDocumentCount: null,
 		createdBy: "test-user" as Id<"users">,
 		updatedAt: 0,
 		updatedBy: "test-user" as Id<"users">,

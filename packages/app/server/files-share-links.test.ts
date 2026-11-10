@@ -73,8 +73,6 @@ test("a before-only token stays readable until the switch and then grants nothin
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 		});
 	});
 	await f.publish();

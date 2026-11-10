@@ -147,8 +147,6 @@ describe("prepare_file_pending_update_for_agent upload in flight", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,

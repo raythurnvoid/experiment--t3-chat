@@ -168,8 +168,6 @@ export async function test_create_saved_placement_fixture(args?: {
 		contentTooLargeByteSize: 1,
 		contentShapeMismatchAt: 2,
 		contentYjsStateTooLargeByteSize: 3,
-		contentFrontmatterTooLargeFieldCount: 4,
-		contentFrontmatterTooLargeIndexDocumentCount: 5,
 	};
 	const recordId = await t.run(async (ctx) => {
 		const beforePlaceId = await ctx.db.insert("files_saved_places", before);

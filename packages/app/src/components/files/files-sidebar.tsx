@@ -8051,8 +8051,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: (args.restrictedScopeNodeId ?? null) as app_convex_Id<"files_nodes"> | null,
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: args.updatedAt ?? 1,

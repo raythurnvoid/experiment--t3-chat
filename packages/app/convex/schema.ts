@@ -575,8 +575,9 @@ const files_saved_placement_fields = {
 	contentTooLargeByteSize: v.union(v.number(), v.null()),
 	contentShapeMismatchAt: v.union(v.number(), v.null()),
 	contentYjsStateTooLargeByteSize: v.union(v.number(), v.null()),
-	contentFrontmatterTooLargeFieldCount: v.union(v.number(), v.null()),
-	contentFrontmatterTooLargeIndexDocumentCount: v.union(v.number(), v.null()),
+	// Being removed, like the `files_nodes` fields. Old docs keep them until the migration ends.
+	contentFrontmatterTooLargeFieldCount: v.optional(v.union(v.number(), v.null())),
+	contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.union(v.number(), v.null())),
 	publishedFromPrivateNodeId: v.optional(v.id("files_pending_nodes")),
 };
 
@@ -5007,6 +5008,7 @@ const app_convex_schema = defineSchema({
 		contentTooLargeByteSize: files_saved_placement_fields.contentTooLargeByteSize,
 		contentShapeMismatchAt: files_saved_placement_fields.contentShapeMismatchAt,
 		contentYjsStateTooLargeByteSize: files_saved_placement_fields.contentYjsStateTooLargeByteSize,
+		// Being removed. Old heads keep these fields until the migration ends.
 		contentFrontmatterTooLargeFieldCount: files_saved_placement_fields.contentFrontmatterTooLargeFieldCount,
 		contentFrontmatterTooLargeIndexDocumentCount:
 			files_saved_placement_fields.contentFrontmatterTooLargeIndexDocumentCount,
@@ -5234,18 +5236,14 @@ const app_convex_schema = defineSchema({
 		 */
 		contentYjsStateTooLargeByteSize: v.union(v.number(), v.null()),
 		/**
-		 * Frontmatter field count of the last materialization that refused because the count was
-		 * over `files_metadata_MAX_FRONTMATTER_FIELDS`. While set, the committed content stays at
-		 * the last sequence that fit. Cleared when the user reduces the metadata and a later
-		 * materialization succeeds.
+		 * Being removed. No code reads or sets it. Old docs keep it until the
+		 * `run_remove_frontmatter_markers` migration ends. Then delete this field.
 		 */
-		contentFrontmatterTooLargeFieldCount: v.union(v.number(), v.null()),
+		contentFrontmatterTooLargeFieldCount: v.optional(v.union(v.number(), v.null())),
 		/**
-		 * Frontmatter index-document count of the last materialization that refused because the
-		 * count was over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS`. Same lifecycle as
-		 * `contentFrontmatterTooLargeFieldCount`.
+		 * Being removed, like `contentFrontmatterTooLargeFieldCount`. Delete it with that field.
 		 */
-		contentFrontmatterTooLargeIndexDocumentCount: v.union(v.number(), v.null()),
+		contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.union(v.number(), v.null())),
 		// Access and protection
 		/**
 		 * The nearest restricted folder above this node, or this node itself when it is the restricted

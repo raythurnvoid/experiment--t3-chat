@@ -35,7 +35,6 @@ import {
 	files_yjs_doc_get_text,
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
-import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../shared/files-yjs.ts";
 import { delay } from "../shared/async-utils.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
@@ -588,8 +587,7 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 	});
 	const r2Writes = test_setup_r2_capture();
 
-	// Seed without a push (the rate limiter allows two pushes per test window and this test
-	// needs both for the over-cap and the fitting content).
+	// Seed without a push, so the over-cap content is the only push.
 	const nodeId = await test_create_saved_text_file(t, {
 		membershipId: db.membershipId,
 		path: "/frontmatter-cap.md",
@@ -657,8 +655,6 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 		return { fileNode, jobs, assetCount };
 	});
 
-	expect(afterReject.fileNode?.contentFrontmatterTooLargeFieldCount).toBeNull();
-	expect(afterReject.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 	expect(afterReject.jobs).toHaveLength(0);
 	expect(afterReject.fileNode?.assetId).not.toBe(beforePush.assetId);
 	expect(afterReject.assetCount).toBeGreaterThan(beforePush.assetCount);
@@ -670,46 +666,7 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 			.eq("sourceKind", "committed").eq("fileNodeId", nodeId)).collect());
 	expect(indexed.filter((doc) => doc.docKind === "value"), "every frontmatter value is indexed")
 		.toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-
-	// The next fitting content clears both marker halves at finalization. Build it as a diff on
-	// the live document's own lineage: pushing a fresh doc's whole state would MERGE with the
-	// over-cap frontmatter instead of replacing it.
-	const fittingDoc = files_yjs_doc_clone({ yjsDoc: overCapYjsDoc });
-	const fitted = files_yjs_doc_update_from_text({
-		mut_yjsDoc: fittingDoc,
-		text: "# Small again\n",
-		rootKind: "rich_text",
-	});
-	if (fitted._nay) {
-		throw new Error(fitted._nay.message);
-	}
-	const fittingDiff = files_yjs_compute_diff_update_from_yjs_doc({ yjsDoc: fittingDoc, yjsBeforeDoc: overCapYjsDoc });
-	if (!fittingDiff) {
-		throw new Error("Expected the fitting content to produce a diff update");
-	}
-	const fittingPush = await asUser.mutation(api.files_nodes.yjs_push_update, {
-		membershipId: db.membershipId,
-		nodeId,
-		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
-		update: files_u8_to_array_buffer(fittingDiff),
-		sessionId: "frontmatter-cap-session",
-	});
 	overCapYjsDoc.destroy();
-	fittingDoc.destroy();
-	if (fittingPush._nay) {
-		throw new Error(fittingPush._nay.message);
-	}
-	const rematerialized = await t.action(internal.files_nodes_content.materialize_file_content, {
-		organizationId: db.organizationId,
-		workspaceId: db.workspaceId,
-		nodeId,
-		userId: db.userId,
-		targetSequence: fittingPush._yay.newSequence,
-	});
-	expect(rematerialized._nay).toBeUndefined();
-	const cleared = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
-	expect(cleared?.contentFrontmatterTooLargeFieldCount).toBeNull();
-	expect(cleared?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 });
 
 test("materialize_file_content clears the too-large mark once the content fits again", async () => {
@@ -1264,8 +1221,6 @@ async function test_insert_committed_external_markdown(args: {
 			contentTooLargeByteSize: null,
 			contentShapeMismatchAt: null,
 			contentYjsStateTooLargeByteSize: null,
-			contentFrontmatterTooLargeFieldCount: null,
-			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
 			extendedScopeNodeId: null,
 			isRestrictedScopeRoot: false,
@@ -1579,8 +1534,6 @@ describe("non-collaborative files", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
@@ -3005,7 +2958,7 @@ describe("non-collaborative files", () => {
 		expect(onAllowed._nay).toBeUndefined();
 	});
 
-	test("turning collaboration off waits for temporary frontmatter recovery but not a durable marker", async () => {
+	test("turning collaboration off waits for unsaved text but not a durable marker", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -3047,22 +3000,6 @@ describe("non-collaborative files", () => {
 			acknowledgeDropCollaborativeHistory: true,
 		});
 		expect(stillSaving._nay?.message).toBe("This file is still saving. Try again in a moment.");
-
-		// The frontmatter pair is temporary. A later fitting edit can clear it, so the toggle must
-		// still wait for the newer text to materialize instead of silently dropping that text.
-		await t.run(async (ctx) => {
-			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
-			await ctx.db.patch("files_nodes", nodeId, {
-				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-				contentFrontmatterTooLargeIndexDocumentCount: 1,
-			});
-		});
-		const frontmatterCanRecover = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
-			membershipId: db.membershipId,
-			nodeId,
-			acknowledgeDropCollaborativeHistory: true,
-		});
-		expect(frontmatterCanRecover._nay?.message).toBe("This file is still saving. Try again in a moment.");
 		expect(await count_materialization_jobs()).toBe(1);
 
 		// A durable marker means materialization can never catch up on its own, so waiting would be
@@ -3086,12 +3023,10 @@ describe("non-collaborative files", () => {
 		// it, and nothing tracks that key afterwards.
 		expect(await count_materialization_jobs()).toBe(0);
 
-		// The Yjs and frontmatter markers are cleared with the newer document state they describe.
+		// The Yjs marker is cleared with the newer document state it describes.
 		// The committed text is the last materialized text, exactly as the dialog promised.
 		const after = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
 		expect(after?.contentYjsStateTooLargeByteSize).toBeNull();
-		expect(after?.contentFrontmatterTooLargeFieldCount).toBeNull();
-		expect(after?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 		expect(after?.collaborationEnabled).toBe(false);
 		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: db.organizationId,

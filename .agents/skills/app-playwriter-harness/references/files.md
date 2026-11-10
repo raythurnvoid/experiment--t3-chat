@@ -214,7 +214,7 @@ vp env exec node -e "require('node:fs').writeFileSync('../experiment--t3-chat-+p
 
 That is ~5.4 MB. Any text upload over `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes) keeps the stored blob: the conversion checks the declared asset size before its GET, so it settles without fetching the bucket bytes at all.
 
-The two frontmatter fixtures prove conversion, not refusal: an over-cap frontmatter `.md` still converts to an editable rich-text document — it commits WITHOUT the metadata index and with the `contentFrontmatterTooLarge*` marker pair set. `qa-frontmatter-overcap.md` trips the 128-field cap; `qa-frontmatter-values-overcap.md` trips the 512 index-document cap through one 600-value array. Uploading either requires the upload frontmatter preflight in `convex/r2.ts` (landed 2026-08-10) to be deployed. Without it the conversion throws in the infinite-retry workpool: the upload never publishes and every retry re-uploads both R2 objects. Check the deployment before uploading them.
+The two frontmatter fixtures prove conversion, not refusal: an over-cap frontmatter `.md` still converts to an editable rich-text document, and the background index worker indexes all of its frontmatter in pages. `qa-frontmatter-overcap.md` trips the 128-field cap; `qa-frontmatter-values-overcap.md` trips the 512 index-document cap through one 600-value array. Uploading either requires the upload frontmatter preflight in `convex/r2.ts` (landed 2026-08-10) to be deployed. Without it the conversion throws in the infinite-retry workpool: the upload never publishes and every retry re-uploads both R2 objects. Check the deployment before uploading them.
 
 ### Shared Stored Upload Rules
 

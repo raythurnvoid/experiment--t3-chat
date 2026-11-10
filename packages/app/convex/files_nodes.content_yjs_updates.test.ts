@@ -57,7 +57,6 @@ import { delay } from "../shared/async-utils.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import type { Id } from "./_generated/dataModel.js";
-import { files_metadata_MAX_FRONTMATTER_FIELDS } from "../shared/files-metadata.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -809,8 +808,6 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				contentTooLargeByteSize: null,
 				contentShapeMismatchAt: null,
 				contentYjsStateTooLargeByteSize: null,
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
 				extendedScopeNodeId: null,
 				isRestrictedScopeRoot: false,
@@ -2744,8 +2741,7 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 			// A settled materialization: while the marker is set, compaction completes without
 			// advancing the committed content, so the counters can never shrink.
 			await ctx.db.patch("files_nodes", nodeId, {
-				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-				contentFrontmatterTooLargeIndexDocumentCount: files_metadata_MAX_FRONTMATTER_FIELDS + 2,
+				contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
 			});
 		});
 		const jobCountBefore = await t.run(
@@ -2782,26 +2778,6 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 				).length,
 		);
 		expect(jobCountAfter).toBe(jobCountBefore);
-
-		// The too-large-text marker takes the same honest branch.
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, {
-				contentFrontmatterTooLargeFieldCount: null,
-				contentFrontmatterTooLargeIndexDocumentCount: null,
-				contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
-			});
-		});
-		const tooLargeResult = await t.run(async (ctx) =>
-			yjs_reserve_and_increment_last_sequence(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				nodeId,
-				expectedYjsLastSequenceId: (await ctx.db.get("files_nodes", nodeId))!.yjsLastSequenceId!,
-				userId: db.userId,
-				updateByteLength: 10,
-			}),
-		);
-		expect(tooLargeResult._nay?.message).toBe("File is not accepting new edits until an operator repairs it");
 	});
 
 	test("rejects empty and over-cap rows for the trusted writers too", async () => {
@@ -3797,225 +3773,6 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		}
 		const repairDeletionJob = (await read_deletion_jobs(t)).find((job) => job.r2Key === preRepairAssets.yjsR2Key);
 		expect(repairDeletionJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
-	});
-
-	// Seed a file whose frontmatter marker settled: create, materialize once (so the Yjs snapshot
-	// bytes exist in mocked R2), then seed the old marker for a migration-era repair.
-	async function seed_frontmatter_marked_file(args: {
-		t: ReturnType<typeof test_convex>;
-		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
-		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>;
-		path: string;
-	}) {
-		const { t, asUser, db, path } = args;
-
-		const nodeId = await test_create_saved_text_file(t, {
-			membershipId: db.membershipId,
-			path,
-		});
-		const seededMaterialize = await t.action(internal.files_nodes_content.materialize_file_content, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			userId: db.userId,
-			targetSequence: 0,
-		});
-		if (seededMaterialize._nay) {
-			throw new Error(seededMaterialize._nay.message);
-		}
-
-		const overCapMarkdown = `---\n${Array.from({ length: files_metadata_MAX_FRONTMATTER_FIELDS + 1 }, (_, index) => `field_${index}: ${index}`).join("\n")}\n---\n\n# Body\n`;
-		const overCapYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: overCapMarkdown });
-		if ("_nay" in overCapYjsDoc) {
-			throw new Error(overCapYjsDoc._nay.message);
-		}
-		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
-			membershipId: db.membershipId,
-			nodeId,
-			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
-			update: files_u8_to_array_buffer(encodeStateAsUpdate(overCapYjsDoc)),
-			sessionId: "frontmatter-repair-session",
-		});
-		if (pushResult._nay) {
-			throw new Error(pushResult._nay.message);
-		}
-		const settled = await t.action(internal.files_nodes_content.materialize_file_content, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			userId: db.userId,
-			targetSequence: pushResult._yay.newSequence,
-		});
-		expect(settled._nay).toBeUndefined();
-		// This marker can remain on data saved before background indexing was introduced.
-		await t.run(async (ctx) => {
-			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
-			await ctx.db.patch("files_nodes", nodeId, {
-				contentFrontmatterTooLargeFieldCount: files_metadata_MAX_FRONTMATTER_FIELDS + 1,
-				contentFrontmatterTooLargeIndexDocumentCount: (files_metadata_MAX_FRONTMATTER_FIELDS + 1) * 2,
-			});
-		});
-
-		return { nodeId, overCapYjsDoc };
-	}
-
-	test("a frontmatter-marked file repairs from latest_state and indexes all fields", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Frontmatter Repair User",
-		});
-		test_setup_r2_capture();
-
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({
-			t,
-			asUser,
-			db,
-			path: "/repair-frontmatter-over.md",
-		});
-		overCapYjsDoc.destroy();
-
-		// The frontmatter marker alone qualifies for the default source: no acknowledgement flag.
-		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			authorUserId: db.userId,
-		});
-		if (repaired._nay) {
-			throw new Error(repaired._nay.message);
-		}
-		expect(repaired._yay.lineageGeneration).toBe(1);
-		await test_finish_file_index(t, nodeId);
-
-		await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			if (!files_node_has_editable_yjs_state(node)) {
-				throw new Error("Expected the repaired node to stay editable");
-			}
-			expect(node.contentFrontmatterTooLargeFieldCount).toBeNull();
-			expect(node.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
-
-			// The deadlock is resolved: the counters reset, so the user can push the fitting edit.
-			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
-			expect(lastSequenceDoc?.lineageGeneration).toBe(1);
-			expect(lastSequenceDoc?.unmaterializedUpdateCount).toBe(0);
-			expect(lastSequenceDoc?.unmaterializedUpdateBytes).toBe(0);
-
-			// Both the complete text and every metadata value survive repair.
-			const chunks = await ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
-				)
-				.collect();
-			expect(chunks.map((chunk) => chunk.plainTextChunk).join("")).toContain("Body");
-			const metadataDocs = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", nodeId),
-				)
-				.collect();
-			expect(metadataDocs.filter((doc) => doc.docKind === "value"))
-				.toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
-		});
-	});
-
-	test("a frontmatter-marked file whose newest text fits repairs from latest_state and clears the marker pair", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Frontmatter Repair Fits User",
-		});
-		test_setup_r2_capture();
-
-		const { nodeId, overCapYjsDoc } = await seed_frontmatter_marked_file({
-			t,
-			asUser,
-			db,
-			path: "/repair-frontmatter-fits.md",
-		});
-
-		// The user reduced the frontmatter, but the marker still stands because the fitting
-		// push's materialization has not run (convex-test never runs scheduled functions; in
-		// production this is the budget-tripped state where that materialization cannot help).
-		const fittingDoc = files_yjs_doc_clone({ yjsDoc: overCapYjsDoc });
-		const fitted = files_yjs_doc_update_from_text({
-			mut_yjsDoc: fittingDoc,
-			text: "---\ntitle: Kept\n---\n\n# Small again\n",
-			rootKind: "rich_text",
-		});
-		if (fitted._nay) {
-			throw new Error(fitted._nay.message);
-		}
-		const fittingDiff = files_yjs_compute_diff_update_from_yjs_doc({ yjsDoc: fittingDoc, yjsBeforeDoc: overCapYjsDoc });
-		if (!fittingDiff) {
-			throw new Error("Expected the fitting content to produce a diff update");
-		}
-		const fittingPush = await asUser.mutation(api.files_nodes.yjs_push_update, {
-			membershipId: db.membershipId,
-			nodeId,
-			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
-			update: files_u8_to_array_buffer(fittingDiff),
-			sessionId: "frontmatter-repair-session",
-		});
-		overCapYjsDoc.destroy();
-		fittingDoc.destroy();
-		if (fittingPush._nay) {
-			throw new Error(fittingPush._nay.message);
-		}
-
-		const repaired = await t.action(internal.files_nodes_content.repair_file_yjs_state_from_visible_text, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			authorUserId: db.userId,
-		});
-		if (repaired._nay) {
-			throw new Error(repaired._nay.message);
-		}
-
-		await test_finish_file_index(t, nodeId);
-		await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			// The repaired text's frontmatter fits, so the marker pair clears and the metadata
-			// index is rebuilt.
-			expect(node?.contentFrontmatterTooLargeFieldCount).toBeNull();
-			expect(node?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
-			// The repair points the node at a new content snapshot, so its byte size must follow it.
-			const contentAsset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-			expect(contentAsset?.size).toBeGreaterThan(0);
-			expect(node?.contentByteSize).toBe(contentAsset?.size);
-			const metadataDocs = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q
-						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", nodeId),
-				)
-				.collect();
-			expect(metadataDocs.some((doc) => doc.fieldPath.includes("title"))).toBe(true);
-
-			const chunks = await ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
-				)
-				.collect();
-			expect(chunks.map((chunk) => chunk.plainTextChunk).join("")).toContain("Small again");
-		});
 	});
 
 	test("finalize_file_yjs_repair syncs the updater sort doc", async () => {

@@ -175,9 +175,8 @@ Load `../files-editable-text/SKILL.md` first; it owns the marker and door model.
 
 Symptoms map to durable marker fields on the `files_nodes` doc:
 
-- The agent or a reader reports a marker-qualified message (shape mismatch, state too large, content too large) instead of "the file does not exist". Check the node doc for `contentShapeMismatchAt`, `contentYjsStateTooLargeByteSize`, `contentFrontmatterTooLargeFieldCount` / `contentFrontmatterTooLargeIndexDocumentCount`, and the settle marker `contentTooLargeByteSize`.
+- The agent or a reader reports a marker-qualified message (shape mismatch, state too large, content too large) instead of "the file does not exist". Check the node doc for `contentShapeMismatchAt`, `contentYjsStateTooLargeByteSize`, and the settle marker `contentTooLargeByteSize`.
 - Saves refuse with the repair message while `contentShapeMismatchAt` or `contentYjsStateTooLargeByteSize` is set, and also when an update-budget trip hits a settle-marked file (a settled materialization cannot shrink the counters, so "retry in a moment" would be a lie).
-- The frontmatter marker pair alone does not block writes: committed content stays at the last sequence that fit, and the user's next fitting edit clears the pair. An over-cap-frontmatter `.md` UPLOAD is born with the pair set (`convex/r2.ts` commits the chunks with the metadata index skipped instead of retrying forever); that node is published and editable, not stuck.
 
 The ONLY recovery for the durable markers is the operator repair:
 
@@ -195,13 +194,13 @@ vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codeg
 Rules the action enforces (do not fight them):
 
 - Exact author: `authorUserId` must be an active member of the node's tenant. It is recorded as the author of the repair's new version; an outside id would forge history.
-- The default `source: "latest_state"` requires a durable marker on the node (the four fields above; `contentTooLargeByteSize` deliberately does NOT qualify — its visible text is over the cap). It reconstructs the current document under the repair-only 16 MiB cap (`files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES`), with a pre-GET size refusal on the snapshot asset before any download.
+- The default `source: "latest_state"` requires a durable marker on the node (`contentShapeMismatchAt` or `contentYjsStateTooLargeByteSize`; `contentTooLargeByteSize` deliberately does NOT qualify — its visible text is over the cap). It reconstructs the current document under the repair-only 16 MiB cap (`files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES`), with a pre-GET size refusal on the snapshot asset before any download.
 - `source: "last_committed"` discards unmaterialized updates and rebuilds from the committed content. It requires `acknowledgeDiscardUnmaterialized: true` and never happens automatically. Export the Yjs snapshot/update assets first when the discarded edits may matter.
 - The finalize mutation is staleness-gated: any concurrent write or lineage change between the action's read and the commit makes the repair stale instead of merging onto it. Rerun on a stale refusal.
 
-What a successful repair does: replaces the whole Yjs history with one fresh compact document built from the visible text, swaps every committed representation atomically, clears the markers, resets the update counters, and increments `lineageGeneration` — pending proposals built against the old history become visibly stale instead of merging. The OLD content asset stays under normal snapshot retention (its `files_snapshots` history doc still owns it); only the superseded Yjs snapshot asset is removed, by a bounded continuation. If the repair text still carries over-cap frontmatter, the repair keeps the frontmatter marker pair set with fresh counts and skips the metadata index; everything else still repairs.
+What a successful repair does: replaces the whole Yjs history with one fresh compact document built from the visible text, swaps every committed representation atomically, clears the markers, resets the update counters, and increments `lineageGeneration` — pending proposals built against the old history become visibly stale instead of merging. The OLD content asset stays under normal snapshot retention (its `files_snapshots` history doc still owns it); only the superseded Yjs snapshot asset is removed, by a bounded continuation.
 
-After the repair, editors that had the file open must CLOSE or RELOAD the file before writes resume — their in-memory document belongs to the replaced lineage. Readback: confirm the repaired marker fields are null on the node doc and `lineageGeneration` increased on the `files_yjs_docs_last_sequences` doc. The frontmatter pair stays set when the repaired text still exceeds its limits.
+After the repair, editors that had the file open must CLOSE or RELOAD the file before writes resume — their in-memory document belongs to the replaced lineage. Readback: confirm the repaired marker fields are null on the node doc and `lineageGeneration` increased on the `files_yjs_docs_last_sequences` doc.
 
 # Remove A Registered Plugin
 
