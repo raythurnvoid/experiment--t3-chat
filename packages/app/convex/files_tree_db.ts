@@ -122,9 +122,6 @@ export function files_tree_db_get_public_node_fields(
 		archivedPathLength: _archivedPathLength,
 		archivedPath: _archivedPath,
 		purgeRunId: _purgeRunId,
-		// Old docs still hold these fields until their migration runs. Drop these lines with the schema fields.
-		contentFrontmatterTooLargeFieldCount: _contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount: _contentFrontmatterTooLargeIndexDocumentCount,
 		...fields
 	} = fileNode;
 	// Leave `ancestor1..12` out too. Only the name search index reads them.

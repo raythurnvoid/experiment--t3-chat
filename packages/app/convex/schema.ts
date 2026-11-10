@@ -575,9 +575,6 @@ const files_saved_placement_fields = {
 	contentTooLargeByteSize: v.union(v.number(), v.null()),
 	contentShapeMismatchAt: v.union(v.number(), v.null()),
 	contentYjsStateTooLargeByteSize: v.union(v.number(), v.null()),
-	// Being removed, like the `files_nodes` fields. Old docs keep them until the migration ends.
-	contentFrontmatterTooLargeFieldCount: v.optional(v.union(v.number(), v.null())),
-	contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.union(v.number(), v.null())),
 	publishedFromPrivateNodeId: v.optional(v.id("files_pending_nodes")),
 };
 
@@ -5008,10 +5005,6 @@ const app_convex_schema = defineSchema({
 		contentTooLargeByteSize: files_saved_placement_fields.contentTooLargeByteSize,
 		contentShapeMismatchAt: files_saved_placement_fields.contentShapeMismatchAt,
 		contentYjsStateTooLargeByteSize: files_saved_placement_fields.contentYjsStateTooLargeByteSize,
-		// Being removed. Old heads keep these fields until the migration ends.
-		contentFrontmatterTooLargeFieldCount: files_saved_placement_fields.contentFrontmatterTooLargeFieldCount,
-		contentFrontmatterTooLargeIndexDocumentCount:
-			files_saved_placement_fields.contentFrontmatterTooLargeIndexDocumentCount,
 		updatedAt: files_saved_placement_fields.updatedAt,
 		updatedBy: files_saved_placement_fields.updatedBy,
 		snapshotAssetId: v.union(v.id("files_r2_assets"), v.null()),
@@ -5235,15 +5228,6 @@ const app_convex_schema = defineSchema({
 		 * repair rebuilds the state. Cleared by the next materialization that succeeds.
 		 */
 		contentYjsStateTooLargeByteSize: v.union(v.number(), v.null()),
-		/**
-		 * Being removed. No code reads or sets it. Old docs keep it until the
-		 * `run_remove_frontmatter_markers` migration ends. Then delete this field.
-		 */
-		contentFrontmatterTooLargeFieldCount: v.optional(v.union(v.number(), v.null())),
-		/**
-		 * Being removed, like `contentFrontmatterTooLargeFieldCount`. Delete it with that field.
-		 */
-		contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.union(v.number(), v.null())),
 		// Access and protection
 		/**
 		 * The nearest restricted folder above this node, or this node itself when it is the restricted
