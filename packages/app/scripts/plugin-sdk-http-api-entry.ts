@@ -66,6 +66,8 @@ export const bonobo_http_api =
 			| "/api/v1/files/list"
 			| "/api/v1/files/trash/list"
 			| "/api/v1/files/trash/areas"
+			| "/api/v1/files/restore"
+			| "/api/v1/files/jobs/get"
 			| "/api/v1/files/read"
 			| "/api/v1/files/write"
 			| "/api/v1/files/touch"

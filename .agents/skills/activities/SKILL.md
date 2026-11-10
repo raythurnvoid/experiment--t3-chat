@@ -31,6 +31,11 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   key in `files_archive_runs.credentialId`. Its background steps treat a revoked key like a lost
   membership, with their own message. The person still sees the job card in the app. Through the API,
   only that key reads the job with `files/jobs/get` (public-api skill, "Organize routes").
+- A restore started by a plugin run through `files/restore` stores the plugin's pins in
+  `files_archive_runs.plugin` instead of a key. Each step checks them, and a failed check stops the
+  job with its own message, like a lost key. The person still sees the job card. Through the API,
+  runs and pages of the same installation and pair read it with `files/jobs/get` (public-api skill,
+  "Plugin job status").
 - A restore started by `files/restore` keeps its run and Activity even when it ends inside the
   request, so a retry with the same request id can find it. Nobody can answer a clash question for it,
   so it fails with the reason where an app restore would wait for a choice.

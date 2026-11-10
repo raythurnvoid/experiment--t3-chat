@@ -3048,7 +3048,8 @@ export const get_job = internalQuery({
 						message: part === "failed" ? (item.errorMessage ?? "Failed") : "Permission denied",
 					})),
 				],
-				renamed: [],
+				// Move and copy never rename. Type the empty list, or the SDK's generated types print `never[]`.
+				renamed: [] as Array<{ path: string; newPath: string }>,
 				refusedCursor,
 			};
 		}

@@ -262,7 +262,7 @@ Trash saves the path in `archivedPath` at the first stamp. A later stamp, rename
 item does not change it, and Restore clears it. Decided 2026-11-01: following the old parent folder
 gave too many edge cases, for example a parent that is in Trash too.
 
-A restore that ends early (Stop, a refusal, a lost key or membership, a timeout) first finishes the
+A restore that ends early (Stop, a refusal, a lost key, plugin or membership, a timeout) first finishes the
 path repair it owes, then gives the Trash entries above (`db_end_restore`). The apply gives a folder
 its new path or area, then walks the items inside it in later steps. So the stopped job's queue can
 still hold folders whose items keep the old path and area. The ending walks each such folder by
@@ -319,7 +319,8 @@ A public API restore dry run (`files/restore` with `dryRun: true`) runs this sam
 rolls it back. So for the steps it runs, it answers with the same Read-only refusals a real restore
 would give, and it saves nothing. See the `public-api` skill.
 
-Restore name clashes keep Keep both, Skip, and Replace. Replace always refuses a Read-only occupant,
+Restore name clashes keep Keep both, Skip, and Replace. Keys and plugin runs get only Keep both and
+Skip, and their jobs never wait for an answer. Replace always refuses a Read-only occupant,
 even for a forced request. It keeps its existing empty-folder rules and bounded checks of content in Trash.
 Separate Trash operations remain separate. Landing an item in another folder still needs write
 access there and restricted-scope exit permissions.

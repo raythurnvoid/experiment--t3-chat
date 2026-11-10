@@ -32,8 +32,10 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  *   Declaring it also requires `workspace.files.write`.
  * - `workspace.files.restore` — backend runs that are not scheduled get the `files:restore` scope
  *   for `/api/v1/files/restore`. It reaches items in Trash where the member's file choices allow
- *   Edit; the items need no plugin label. Plugin Restore is not open yet: the route still refuses it.
- *   Declaring it also requires `workspace.files.write`.
+ *   Edit; the items need no plugin label. Each job keeps the run's installation and file pair, goes on
+ *   after the run ends, and stops when the plugin is updated, removed, or loses access. Read a job with
+ *   `/api/v1/files/jobs/get`, which needs `workspace.files.read`. Declaring it also requires
+ *   `workspace.files.write`.
  * - `workspace.volumes.write` — backend runs may write their installation's external Mounts
  *   through `/api/v1/volumes/*`. Mounts are read-only for workspace readers and the chat agent.
  * - `plugin.data.read` — backend runs, UI pages and file views, and eligible registered service grants
