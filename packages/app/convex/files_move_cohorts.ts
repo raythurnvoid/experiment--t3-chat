@@ -161,7 +161,6 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		...header,
 		archivedPathLength: place.archivedPathLength,
 		archivedPath: place.archivedPath,
-		archiveTopNodeId: place.archiveTopNodeId,
 		parentScopeNodeId: place.parentScopeNodeId,
 		extendedScopeNodeId: place.extendedScopeNodeId,
 		parentExtendedScopeNodeId: place.parentExtendedScopeNodeId,
@@ -1176,9 +1175,7 @@ async function db_rename_parents(
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
 			archiveOperationId: cursor.parentArchiveOperationId,
-			...(cursor.parentArchiveOperationId !== null
-				? { archivedPath: path, archiveTopNodeId: parent!.archiveTopNodeId }
-				: {}),
+			...(cursor.parentArchiveOperationId !== null ? { archivedPath: path } : {}),
 			readOnly: false,
 			readOnlyDecisionId: null,
 			createdBy: cohort.userId,
@@ -1796,14 +1793,6 @@ async function db_headers(
 						: undefined,
 		// Same rule for the Trash path: a later Move above an archived item does not change it.
 		archivedPath: afterArchive === null ? undefined : old && old.archiveOperationId !== null ? old.archivedPath : path,
-		// Like a delete job: the folder's top when the folder is in Trash with the same delete, else the
-		// item itself. The parent's header is planned first, so it has its top already.
-		archiveTopNodeId:
-			afterArchive === null
-				? undefined
-				: parent?.archiveOperationId === afterArchive
-					? parent.archiveTopNodeId
-					: physical._id,
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		// Like `mv`, a Move or Rename keeps the item's modified time. An Archive or Restore here is a real
 		// change. A content change sets its own time when its content is sealed.

@@ -144,7 +144,6 @@ function apply_place(node: Doc<"files_nodes">, place: Doc<"files_saved_places">)
 		archiveOperationId: place.archiveOperationId,
 		archivedPathLength: place.archivedPathLength,
 		archivedPath: place.archivedPath,
-		archiveTopNodeId: place.archiveTopNodeId,
 		restrictedScopeNodeId: place.restrictedScopeNodeId,
 		isRestrictedScopeRoot: place.isRestrictedScopeRoot,
 		parentScopeNodeId: place.parentScopeNodeId,

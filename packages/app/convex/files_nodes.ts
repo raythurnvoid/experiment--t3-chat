@@ -3154,11 +3154,6 @@ export async function files_nodes_db_archive_node(
 	args: {
 		node: Doc<"files_nodes">;
 		archiveOperationId: string;
-		/**
-		 * The top item of this delete (`files_nodes.archiveTopNodeId`). It is the folder's top when the
-		 * folder is in Trash with the same `archiveOperationId`. Else it is the node itself.
-		 */
-		archiveTopNodeId: Id<"files_nodes">;
 		updatedBy: Id<"users">;
 		now: number;
 		/**
@@ -3195,7 +3190,6 @@ export async function files_nodes_db_archive_node(
 				: args.node.archivedPathLength,
 		// Restore lands the item where it was when it first moved to Trash.
 		archivedPath: args.node.archiveOperationId === null ? args.node.path : args.node.archivedPath,
-		archiveTopNodeId: args.archiveTopNodeId,
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
@@ -3241,7 +3235,6 @@ export async function files_nodes_db_restore_node(
 		archiveOperationId: null,
 		archivedPathLength: undefined,
 		archivedPath: undefined,
-		archiveTopNodeId: undefined,
 		parentId,
 		name: args.name,
 		sortName: files_sort_text_key(args.name),
@@ -3307,28 +3300,20 @@ export async function files_nodes_db_archive_nodes(args: {
 	}
 
 	// A named folder comes with all its descendants, so only a node whose parent is not named is in
-	// Trash on its own. Decide it from the ids, not from the parallel stamps below. The top of a node is
-	// the highest named folder above it, with only named folders between them, else the node itself.
-	const namedNodes = new Map(fileNodes.map((fileNode) => [fileNode._id, fileNode]));
-	const get_top = (fileNode: Doc<"files_nodes">) => {
-		let top = fileNode;
-		while (top.parentId !== files_ROOT_ID && namedNodes.has(top.parentId)) top = namedNodes.get(top.parentId)!;
-		return top._id;
-	};
+	// Trash on its own. Decide it from the ids, not from the parallel stamps below.
+	const namedIds = new Set(fileNodes.map((fileNode) => fileNode._id));
 	// Up to a few hundred nodes and no limit check between them, so their docs follow in jobs.
 	await Promise.all(
-		fileNodes.map((fileNode) => {
-			const top = get_top(fileNode);
-			return files_nodes_db_archive_node(ctx, {
+		fileNodes.map((fileNode) =>
+			files_nodes_db_archive_node(ctx, {
 				node: fileNode,
 				archiveOperationId,
-				archiveTopNodeId: top,
 				updatedBy: args.updatedBy,
 				now: args.now,
 				savedScope: "job",
-				trashEntry: top === fileNode._id,
-			});
-		}),
+				trashEntry: fileNode.parentId === files_ROOT_ID || !namedIds.has(fileNode.parentId),
+			}),
+		),
 	);
 
 	// Advance each workspace once, after its parallel Archive writes finish.

@@ -1150,17 +1150,6 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   "stopping"), then ends the way it was ended. A restore first finishes the path repair it still owes
   (`../files-read-only/SKILL.md#trash-and-restore`). Reason: derived entries needed child repairs and a Trash
   pause after every parent change.
-- The same rule holds for `archiveTopNodeId`, the top item of a node's delete: the node itself when
-  its folder is not in Trash with the same delete id, else the folder's top. It is missing on active
-  nodes. The step that stamps a node writes it, and Restore clears it. A Move job already writes
-  every item it moves, and sets each one's top with the same rule. An area change or a later delete
-  never changes it, so neither rewrites the items inside a folder. Only two steps change it for items
-  they did not just stamp, and only for items of their own delete: a forced delete that keeps a
-  folder, and a restore that ends early (rules in `../files-read-only/SKILL.md`).
-  Decided 2026-11-07: do not store a list of all of a node's folders instead. A field that every item
-  below a moved folder must rewrite is the wrong direction. A restore that stopped halfway can leave
-  an item at an older path with its old top, so a reader checks that the top is in Trash with the
-  same delete and above the item (`../files-read-only/SKILL.md`).
 - Do not infer entries by skipping path ranges: different items in Trash may have matching or
   overlapping paths. Do not force unique names in Trash to serve a read.
 - A row shows the name, its folder, date moved to Trash and "Changed by" (`updatedBy`). Its menu:

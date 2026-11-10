@@ -2158,31 +2158,6 @@ export const restore_items = internalMutation({
 			selectorsByOperationId.set(node.archiveOperationId!, [...selectors, selector]);
 		};
 		const notFoundMessage = plugin ? files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash : "Not found";
-		// While another job restores items of a delete, a plugin's folder choice cannot read them
-		// (`trash_place` in `access_control.ts`). Say "busy" then, like `files_archive_runs_db_start` does
-		// when a job of that delete runs. Only say it when the plugin can read the item apart from that job,
-		// so a locked item does not tell that it is being restored.
-		const busyCheckers = new Map<Id<"files_archive_runs">, typeof checker>();
-		const is_busy_for_plugin = async (node: Doc<"files_nodes">) => {
-			if (!plugin || node.archiveOperationId === null) return false;
-			const busyRun = await ctx.db
-				.query("files_archive_runs")
-				.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("archiveOperationId", node.archiveOperationId!)
-						.eq("active", true),
-				)
-				.first();
-			if (!busyRun) return false;
-			let busyChecker = busyCheckers.get(busyRun._id);
-			if (!busyChecker) {
-				busyChecker = access_control_create_file_checker(ctx, { ...args, subject, restoreRunId: busyRun._id });
-				busyCheckers.set(busyRun._id, busyChecker);
-			}
-			return await busyChecker.can(node, "content.read");
-		};
 		for (const path of args.paths) {
 			// Two reads are enough to tell one archived item from several.
 			const archived = await ctx.db
@@ -2218,13 +2193,7 @@ export const restore_items = internalMutation({
 				isReadable &&= await checker.can(fileNode, "content.read");
 			}
 			if (!isReadable) {
-				refused.push({
-					path,
-					message:
-						archived.length === 1 && (await is_busy_for_plugin(archived[0]!))
-							? files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy
-							: "Permission denied",
-				});
+				refused.push({ path, message: "Permission denied" });
 				continue;
 			}
 			// The same path was archived more than once, for example after a new item took the name.
@@ -2267,14 +2236,7 @@ export const restore_items = internalMutation({
 			}
 			// Check access before the item's state, so a locked item does not tell whether it changed.
 			if (!(await checker.can(node, "content.read"))) {
-				refused.push({
-					nodeId: selector.nodeId,
-					path: null,
-					message:
-						node.archiveOperationId === selector.archiveOperationId && (await is_busy_for_plugin(node))
-							? files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy
-							: "Permission denied",
-				});
+				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
 				continue;
 			}
 			const path = plugin ? null : node.path;

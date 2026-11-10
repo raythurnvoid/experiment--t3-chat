@@ -166,7 +166,7 @@ describe("archive_nodes", () => {
 		expect((await create())._nay).toBeUndefined();
 	});
 
-	test("a rename in Trash keeps the deleted folder as the top of the item and of the folder it makes", async () => {
+	test("a rename in Trash makes its new folder in Trash with the same delete", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "gone", folderCount: 1, filesPerFolder: 1 });
 		await archive_to_end(f, tree.topId);
@@ -178,9 +178,7 @@ describe("archive_nodes", () => {
 		});
 		expect(renamed._nay).toBeUndefined();
 		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/gone/d0/sub/moved.md");
-		// The new folder `sub` is in Trash with the same delete, so it and the item take the folder's top.
 		await expect_consistent(f);
-		expect((await read_node(f, tree.fileIds[0]!)).archiveTopNodeId).toBe(tree.topId);
 	});
 
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {
@@ -268,11 +266,11 @@ describe("archive_nodes", () => {
 });
 
 describe("files_nodes_db_archive_nodes", () => {
-	test("a folder named with everything inside it is the top of every item", async () => {
+	test("a folder named with everything inside it has the only Trash entry", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "named", folderCount: 1, filesPerFolder: 1 });
 
-		// Name the items before their folders, so the top is not just the first id.
+		// Name the items before their folders, so the entry is not just on the first id.
 		await f.t.run((ctx) =>
 			files_nodes_db_archive_nodes({
 				ctx,
@@ -282,10 +280,9 @@ describe("files_nodes_db_archive_nodes", () => {
 			}),
 		);
 
-		const nodes = (await read_state(f)).nodes.filter((node) => node.path.startsWith("/named"));
-		expect(
-			nodes.map((node) => node.archiveTopNodeId),
-			"the top folder is the top of itself, its folder and its file",
-		).toEqual([tree.topId, tree.topId, tree.topId]);
+		const entryNodeIds = await f.t.run(async (ctx) =>
+			(await ctx.db.query("files_trash_entries").collect()).map((entry) => entry.nodeId),
+		);
+		expect(entryNodeIds, "only the top folder is in Trash on its own").toEqual([tree.topId]);
 	});
 });

@@ -1601,9 +1601,10 @@ describe("files/restore for a plugin run", () => {
 			body: {
 				jobIds: [],
 				isDone: true,
+				// Access refusals come first. "Busy" comes from the job start, which runs after them.
 				refused: [
-					{ nodeId: child._id, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy },
 					{ nodeId: other, path: null, message: "Permission denied" },
+					{ nodeId: child._id, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy },
 				],
 			},
 		});

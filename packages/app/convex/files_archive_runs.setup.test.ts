@@ -172,21 +172,20 @@ export async function seed_same_path(
 		});
 		const fileIds = [];
 		for (let index = 0; index < args.count; index++) {
-			const fileId = await ctx.db.insert("files_nodes", {
-				...fields,
-				parentId: topId,
-				name: "same.md",
-				sortName: files_sort_text_key("same.md"),
-				kind: "file",
-				path: `/${args.name}/same.md`,
-				treePath: `/${args.name}/same.md`,
-				pathDepth: 2,
-				archiveOperationId: args.archiveOperationId ?? crypto.randomUUID(),
-				archivedPath: `/${args.name}/same.md`,
-			});
-			// The folder is active, so each file is the top of its own delete.
-			await ctx.db.patch("files_nodes", fileId, { archiveTopNodeId: fileId });
-			fileIds.push(fileId);
+			fileIds.push(
+				await ctx.db.insert("files_nodes", {
+					...fields,
+					parentId: topId,
+					name: "same.md",
+					sortName: files_sort_text_key("same.md"),
+					kind: "file",
+					path: `/${args.name}/same.md`,
+					treePath: `/${args.name}/same.md`,
+					pathDepth: 2,
+					archiveOperationId: args.archiveOperationId ?? crypto.randomUUID(),
+					archivedPath: `/${args.name}/same.md`,
+				}),
+			);
 		}
 		return { topId, fileIds };
 	});
@@ -206,25 +205,23 @@ export async function read_state(f: Fixture) {
 
 /**
  * The rules the job must keep after every step: each side doc says the same as its node unless the
- * node's saved scope job still runs, no active node sits inside an archived folder, no two active
- * nodes share a folder and a name, and each Trash item has the right top. An archive
+ * node's saved scope job still runs, no active node sits inside an archived folder, and no two
+ * active nodes share a folder and a name. An archive
  * stamps a folder before its children, so while an archive op runs, its folders may still hold active
- * children. A running delete or restore may still write tops.
+ * children.
  */
 export async function expect_consistent(f: Fixture) {
 	const state = await read_state(f);
-	const runningOps = await f.t.run(async (ctx) => {
-		const ops = [];
-		for (const op of await ctx.db.query("files_subtree_ops").collect()) {
-			if (op.kind === "archive" || op.kind === "restore") {
-				const run = (await ctx.db.get("files_archive_runs", op.archiveRunId))!;
-				ops.push({ kind: op.kind, archiveOperationId: run.archiveOperationId });
-			}
-		}
-		return ops;
-	});
 	const runningArchiveOperationIds = new Set(
-		runningOps.filter((op) => op.kind === "archive").map((op) => op.archiveOperationId),
+		await f.t.run(async (ctx) => {
+			const operationIds = [];
+			for (const op of await ctx.db.query("files_subtree_ops").collect()) {
+				if (op.kind === "archive") {
+					operationIds.push((await ctx.db.get("files_archive_runs", op.archiveRunId))!.archiveOperationId);
+				}
+			}
+			return operationIds;
+		}),
 	);
 	const nodeById = new Map(state.nodes.map((node) => [node._id, node]));
 
@@ -249,22 +246,6 @@ export async function expect_consistent(f: Fixture) {
 		);
 	});
 	expect(activeInsideArchived.map((node) => node.path)).toEqual([]);
-
-	// A Trash item's top is its folder's top when the folder is in Trash with the same delete, else the
-	// item itself. Active items have none. A running delete or restore of that delete may still write tops.
-	const runningOperationIds = new Set(runningOps.map((op) => op.archiveOperationId));
-	const wrongTops = state.nodes.flatMap((node) => {
-		if (node.archiveOperationId !== null && runningOperationIds.has(node.archiveOperationId)) return [];
-		const parent = node.parentId === "root" ? null : nodeById.get(node.parentId)!;
-		const expected =
-			node.archiveOperationId === null
-				? undefined
-				: parent?.archiveOperationId === node.archiveOperationId
-					? parent.archiveTopNodeId
-					: node._id;
-		return node.archiveTopNodeId === expected ? [] : [{ path: node.path, top: node.archiveTopNodeId, expected }];
-	});
-	expect(wrongTops).toEqual([]);
 
 	// Two active items never share a folder and a name.
 	const activeNames = new Set<string>();
@@ -470,7 +451,6 @@ export async function queue_empty_folders_first(args: {
 					...(archiveOperationId !== null ? { archivedPath: `/${name}` } : {}),
 				});
 				if (isDeleted) await ctx.db.delete("files_nodes", nodeId);
-				else if (archiveOperationId !== null) await ctx.db.patch("files_nodes", nodeId, { archiveTopNodeId: nodeId });
 				await ctx.db.insert("files_subtree_op_nodes", {
 					opId,
 					// Take these rows before the job's own rows, which get small numbers.

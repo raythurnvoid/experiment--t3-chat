@@ -244,7 +244,6 @@ export async function public_api_file_archives_db_archive(
 		await files_nodes_db_archive_node(ctx, {
 			node,
 			archiveOperationId,
-			archiveTopNodeId: node._id,
 			updatedBy: args.writeContext.actorUserId,
 			now: Date.now(),
 			savedScope: "job",
@@ -253,15 +252,11 @@ export async function public_api_file_archives_db_archive(
 		archivedNodeIds.push(node._id);
 	}
 	// Children go first, so a node knows only now whether its folder went to Trash with it. A node
-	// whose folder stays out of Trash is in Trash on its own, and is its own top. Any other node takes
-	// its folder's top, so go through folders before the items inside them.
-	const tops = new Map<string, Id<"files_nodes">>();
-	for (const nodeId of archivedNodeIds.toReversed()) {
+	// whose folder stays out of Trash is in Trash on its own.
+	const archivedIds = new Set<string>(archivedNodeIds);
+	for (const nodeId of archivedNodeIds) {
 		const node = (await ctx.db.get("files_nodes", nodeId))!;
-		const parentTop = tops.get(node.parentId);
-		tops.set(nodeId, parentTop ?? nodeId);
-		if (parentTop) await ctx.db.patch("files_nodes", nodeId, { archiveTopNodeId: parentTop });
-		else await files_trash_entries_db_insert(ctx, node);
+		if (!archivedIds.has(node.parentId)) await files_trash_entries_db_insert(ctx, node);
 	}
 	if (archivedNodeIds.length) await files_media_validation_db_advance_version(ctx, scope);
 	return Result({

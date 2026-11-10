@@ -926,7 +926,6 @@ async function db_archive_node(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		node: Doc<"files_nodes">;
-		archiveTopNodeId: Id<"files_nodes">;
 		/**
 		 * True for a named item. Its Trash entry covers everything inside it.
 		 */
@@ -938,7 +937,6 @@ async function db_archive_node(
 	await files_nodes_db_archive_node(ctx, {
 		node,
 		archiveOperationId: args.run.archiveOperationId,
-		archiveTopNodeId: args.archiveTopNodeId,
 		updatedBy: args.userAuth.id,
 		now: args.now,
 		savedScope: "follow",
@@ -1019,41 +1017,8 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 		const frame = row.forceArchive;
 		if (!frame) throw should_never_happen("Forced archive has no saved parent", { rowId: row._id });
 		args.budget.checkNodes -= 1;
-		// A folder this job moved to Trash inside a kept folder is the top of the items inside it now.
-		// They still have the named item as their top, so rewrite it. No Move runs during the job. Its
-		// steps wait for a Move, and a Move waits for this job. So the paths here do not change.
-		if (frame.topCursor !== undefined) {
-			const { afterTreePath } = frame.topCursor;
-			const top = (await ctx.db.get("files_nodes", row.nodeId))!;
-			const inside = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-					q
-						.eq("organizationId", args.run.organizationId)
-						.eq("workspaceId", args.run.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("archiveOperationId", args.run.archiveOperationId)
-						.gt("treePath", afterTreePath)
-						.lt("treePath", path_tree_prefix_upper_bound(top.treePath)),
-				)
-				.take(PAGE_SIZE);
-			for (const node of inside) {
-				if (node.archiveTopNodeId === frame.rootNodeId)
-					await ctx.db.patch("files_nodes", node._id, { archiveTopNodeId: top._id });
-			}
-			args.budget.nodes -= inside.length;
-			if (inside.length === PAGE_SIZE) {
-				await ctx.db.patch("files_subtree_op_nodes", row._id, {
-					forceArchive: { ...frame, topCursor: { afterTreePath: inside.at(-1)!.treePath } },
-				});
-				continue;
-			}
-			await ctx.db.delete("files_subtree_op_nodes", row._id);
-			continue;
-		}
 		// The children-first walk stamps a folder only after everything inside it. So a folder the job
-		// keeps out of Trash may hold items it stamped. They are in Trash on their own now, so each one is
-		// its own top.
+		// keeps out of Trash may hold items it stamped. They are in Trash on their own now.
 		if (frame.promoteCursor !== undefined) {
 			if (args.budget.hasPaginated) return { kind: "continue" };
 			args.budget.hasPaginated = true;
@@ -1068,22 +1033,7 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 						.eq("archiveOperationId", args.run.archiveOperationId),
 				)
 				.paginate({ cursor: frame.promoteCursor, numItems: PAGE_SIZE });
-			for (const child of stamped.page) {
-				await ctx.db.patch("files_nodes", child._id, { archiveTopNodeId: child._id });
-				await files_trash_entries_db_insert(ctx, child);
-			}
-			// New rows run first, so the items inside get their new top before the next page.
-			const { promoteCursor: _promoteCursor, ...topFrame } = frame;
-			await files_subtree_ops_db_enqueue_nodes(ctx, {
-				opId: args.opId,
-				nodes: stamped.page
-					.filter((child) => child.kind === "folder")
-					.map((child) => ({
-						nodeId: child._id,
-						nodeDone: true,
-						forceArchive: { ...topFrame, topCursor: { afterTreePath: child.treePath } },
-					})),
-			});
+			for (const child of stamped.page) await files_trash_entries_db_insert(ctx, child);
 			args.budget.nodes -= stamped.page.length;
 			if (!stamped.isDone) {
 				await ctx.db.patch("files_subtree_op_nodes", row._id, {
@@ -1173,15 +1123,7 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 				continue;
 			}
 		}
-		// Everything starts with the named item as its top. When the job keeps a folder, the items it moved
-		// to Trash inside that folder get new tops (see `promoteCursor` and `topCursor` above).
-		await db_archive_node({
-			ctx,
-			...args,
-			node,
-			archiveTopNodeId: frame.rootNodeId,
-			trashEntry: node._id === frame.rootNodeId,
-		});
+		await db_archive_node({ ctx, ...args, node, trashEntry: node._id === frame.rootNodeId });
 		await db_finish_forced_item(ctx, { ...args, row });
 	}
 	return { kind: "continue" };
@@ -1530,9 +1472,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			args.progress.skipped += 1;
 			if (args.progress.total === null) args.progress.discovered += 1;
 		} else {
-			// A named item is never inside another named item (`files_nodes_db_archive_named_nodes`), so it is
-			// the top of everything this job stamps inside it.
-			await db_archive_node({ ctx, ...args, node, archiveTopNodeId: node._id, trashEntry: true });
+			await db_archive_node({ ctx, ...args, node, trashEntry: true });
 			// The check kept the numbers below `rootNodeIds.length` for these rows. The first named item
 			// gets the highest one, and every folder found later gets a higher one still. So the walk ends
 			// inside the first named item before it goes into the second.
@@ -1592,7 +1532,7 @@ async function db_apply_archive(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				isStopped = true;
 				break;
 			}
-			await db_archive_node({ ctx, ...args, node: child, archiveTopNodeId: node.archiveTopNodeId!, trashEntry: false });
+			await db_archive_node({ ctx, ...args, node: child, trashEntry: false });
 			count += 1;
 			if (child.kind === "folder") {
 				folderIds.push(child._id);
@@ -2278,7 +2218,6 @@ async function db_restore_top(
 		await files_nodes_db_archive_node(ctx, {
 			node,
 			archiveOperationId: parentOperationId,
-			archiveTopNodeId: parent!.archiveTopNodeId!,
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
@@ -2424,7 +2363,6 @@ async function db_land_node(
 		await files_nodes_db_archive_node(ctx, {
 			node,
 			archiveOperationId: skipOperationId,
-			archiveTopNodeId: node._id,
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
@@ -2475,7 +2413,6 @@ async function db_land_node(
 		await files_nodes_db_archive_node(ctx, {
 			node: replacedNode,
 			archiveOperationId: files_archive_operation_id_new(args.now),
-			archiveTopNodeId: replacedNode._id,
 			updatedBy: args.userAuth.id,
 			now: args.now,
 			savedScope: "follow",
@@ -2770,7 +2707,6 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 					await files_nodes_db_archive_node(ctx, {
 						node: child,
 						archiveOperationId: folder.archiveOperationId,
-						archiveTopNodeId: folder.archiveTopNodeId!,
 						updatedBy: args.userAuth.id,
 						now: args.now,
 						savedScope: "follow",
@@ -2809,13 +2745,13 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 /**
  * A restore that ended early leaves items of its operation in Trash. An item whose folder is not in the
  * same delete, because the folder came back or was never deleted, is now in Trash on its own. Give it
- * a Trash entry, and make it the top of the items inside it.
+ * a Trash entry.
  *
  * First finish the repair the apply still owes. The apply gives a folder its new path or scope, then
  * walks the items inside it in later steps. So when the job stops, the queue can still hold folders
  * whose items keep the old path and scope. No app flow has shown this yet. This repair is a safeguard,
- * so a stopped job never leaves wrong paths behind. It only fixes paths, scopes, tops and Trash
- * entries. It brings back nothing more and keeps every delete stamp.
+ * so a stopped job never leaves wrong paths behind. It only fixes paths, scopes and Trash entries.
+ * It brings back nothing more and keeps every delete stamp.
  *
  * Then read each selected root's items with the same index the apply uses, one native page per step.
  * The walk changes nothing else, so it needs no membership.
@@ -2831,27 +2767,17 @@ async function db_end_restore(
 	if (generation !== run.ending!.generation) run.ending = { ...run.ending!, rootIndex: 0, cursor: null, generation };
 
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
-	// The items of the operation keep their Trash paths, and a folder sorts before the items inside it.
-	// So a folder gets its new top before its items read it. The repair below walks a folder before its
-	// items too. It also visits items of older deletes, so compare with the item's own delete.
-	const set_top_and_entry = async (node: Doc<"files_nodes">) => {
-		let parent: Doc<"files_nodes"> | null | undefined = null;
+	// The repair below also visits items of older deletes, so compare with the item's own delete.
+	const insert_entry_if_alone = async (node: Doc<"files_nodes">) => {
 		if (node.parentId !== files_ROOT_ID) {
-			parent = parents.get(node.parentId);
+			let parent = parents.get(node.parentId);
 			if (parent === undefined) {
 				parent = await ctx.db.get("files_nodes", node.parentId);
 				parents.set(node.parentId, parent);
 			}
+			if (parent?.archiveOperationId === node.archiveOperationId) return;
 		}
-		const isAlone = parent?.archiveOperationId !== node.archiveOperationId;
-		const top = isAlone ? node._id : parent!.archiveTopNodeId!;
-		// An earlier root in this step may have cached this folder as a parent. Drop it, so the items
-		// inside read the new top.
-		if (node.archiveTopNodeId !== top) {
-			await ctx.db.patch("files_nodes", node._id, { archiveTopNodeId: top });
-			parents.delete(node._id);
-		}
-		if (isAlone) await files_trash_entries_db_insert(ctx, node);
+		await files_trash_entries_db_insert(ctx, node);
 	};
 
 	// Each done row is a folder whose items may still have its old path and scope. A row that is not
@@ -2893,7 +2819,7 @@ async function db_end_restore(
 			}
 			// Read the child again, so a new Trash entry gets its new area. An item of this delete may now
 			// be outside every selected root's path, so the walk below would not find it.
-			if (child.archiveOperationId !== null) await set_top_and_entry((await ctx.db.get("files_nodes", child._id))!);
+			if (child.archiveOperationId !== null) await insert_entry_if_alone((await ctx.db.get("files_nodes", child._id))!);
 		}
 		await files_subtree_ops_db_save_page(ctx, {
 			row,
@@ -2913,7 +2839,7 @@ async function db_end_restore(
 		// The root itself first, before its first page.
 		if (ending.cursor === null) {
 			const node = await ctx.db.get("files_nodes", root.nodeId);
-			if (node?.archiveOperationId === run.archiveOperationId) await set_top_and_entry(node);
+			if (node?.archiveOperationId === run.archiveOperationId) await insert_entry_if_alone(node);
 		}
 		if (!root.treePath.endsWith("/")) {
 			run.ending = { ...ending, rootIndex: ending.rootIndex + 1, cursor: null };
@@ -2934,7 +2860,7 @@ async function db_end_restore(
 					.lt("treePath", path_tree_prefix_upper_bound(root.treePath)),
 			)
 			.paginate({ cursor: ending.cursor, numItems: PAGE_SIZE });
-		for (const node of left.page) await set_top_and_entry(node);
+		for (const node of left.page) await insert_entry_if_alone(node);
 		run.ending = left.isDone
 			? { ...ending, rootIndex: ending.rootIndex + 1, cursor: null }
 			: { ...ending, cursor: left.continueCursor };
@@ -3660,7 +3586,6 @@ export async function files_archive_runs_db_start(
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
 					subject: plugin.writeContext.subject,
-					restoreRunId: runId,
 				})
 			: null,
 		membership: args.membership,
@@ -4003,7 +3928,6 @@ export async function files_archive_runs_db_advance(
 						organizationId: storedRun.organizationId,
 						workspaceId: storedRun.workspaceId,
 						subject: plugin.writeContext.subject,
-						restoreRunId: runId,
 					})
 				: null,
 		membership: isApiKeyLost || plugin?.isLost ? null : membership,

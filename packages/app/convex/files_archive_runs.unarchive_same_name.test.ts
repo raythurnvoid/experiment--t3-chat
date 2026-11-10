@@ -72,7 +72,7 @@ describe("unarchive_nodes", () => {
 		vi.setSystemTime(8.64e15);
 		await f.t.run(async (ctx) => {
 			for (let index = 0; index < 120; index++) {
-				const nodeId = await ctx.db.insert("files_nodes", {
+				await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
@@ -87,7 +87,6 @@ describe("unarchive_nodes", () => {
 					pathDepth: 3,
 					archiveOperationId: `replace-${index}`,
 				});
-				await ctx.db.patch("files_nodes", nodeId, { archiveTopNodeId: nodeId });
 			}
 		});
 		vi.setSystemTime(now);

@@ -242,13 +242,6 @@ its ancestors; allowed siblings remain in Trash. Before moving a folder to Trash
 active child, including a child added behind the cursor. A queued item moved elsewhere is not
 trashed at its new location. Stop or revocation keeps the completed part.
 
-Each item in Trash stores the top item of its delete in `archiveTopNodeId` (rule in the
-`files-explorer-tree` skill, "the step that decides an entry writes it"). A forced delete stamps
-children before it knows which folders it keeps, so it first writes the named folder as their top.
-When it keeps a folder, each child it moved to Trash becomes its own top, and a queued step pages
-the items inside each such child folder and gives them that child as top. It pages only its own
-delete's items, so the work is bounded by what it stamped.
-
 Force waits for overlapping Move, scope, or running Restore work. A Restore queued behind the
 delete does not make it wait in a cycle. Outcomes are stored and paged, with current read checks
 when shown. A retained parent is not counted as trashed. Activity shows partial results.
@@ -269,19 +262,12 @@ Trash saves the path in `archivedPath` at the first stamp. A later stamp, rename
 item does not change it, and Restore clears it. Decided 2026-11-01: following the old parent folder
 gave too many edge cases, for example a parent that is in Trash too.
 
-Restore clears `archiveTopNodeId` too. An item that joins another delete takes that delete's top. An
-item that a Skip, a too-long path or Replace leaves in Trash on its own is its own top. A restore that
-ends early makes each item it left alone in Trash the top of the items inside it. It visits only
-items under each selected root's current path. An item of the same delete still at an older path,
-after an earlier restore stopped halfway, keeps its old top. So a reader of the top must check that
-the top is in Trash with the same delete and that its path is above the item.
-
 A restore that ends early (Stop, a refusal, a lost key or membership, a timeout) first finishes the
 path repair it owes, then gives the Trash entries above (`db_end_restore`). The apply gives a folder
 its new path or area, then walks the items inside it in later steps. So the stopped job's queue can
 still hold folders whose items keep the old path and area. The ending walks each such folder by
 parent id, like the apply, and skips a folder whose path and area did not change. Each item gets its
-folder's path and area. Each item left in Trash gets its top and, when it is alone, its Trash entry.
+folder's path and area. Each item left in Trash alone gets its Trash entry.
 The ending brings back nothing more and keeps every delete stamp and the Restore counts. It keeps
 its op until this ends, so queued jobs still wait. A refusal inside a page first saves that page,
 so folders the page already changed keep their queue rows. The same rule holds for app, key and

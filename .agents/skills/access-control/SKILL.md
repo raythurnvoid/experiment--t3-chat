@@ -203,34 +203,26 @@ without waiting for the scope job to write each item. Removal still takes effect
 once. People and service accounts keep the chain and its per-file timing. Ordinary
 shares and open plugin consents still keep the same extended root alive.
 
-Trash keeps paths, so the path match runs only between a live item and a live selected
-folder; live paths are unique. Creates and Restores keep them unique while a Trash or Move
-job is halfway (see "Trash and Restore" in the `files-read-only` skill). A selected folder
-in Trash gives no live item access, so a new item created at its old path stays locked.
+A selected folder matches by path, for live items and for items in Trash
+(`pair_choice_allows` in `access_control.ts`). Live paths are unique: creates and Restores
+keep them unique while a Trash or Move job is halfway (see "Trash and Restore" in the
+`files-read-only` skill). A selected folder in Trash gives no live item access, so a new
+item created at its old path stays locked.
 
-An item in Trash is matched by ids, not by paths (`trash_place` in `access_control.ts`).
-The checker climbs by `parentId`. Inside one delete it jumps to the stored top
-(`archiveTopNodeId`, see the `files-explorer-tree` skill). A selected folder reaches the
-item when it is the top of a delete on the way up, or that delete's item on the way up (the
-item itself for the first delete), or when it is live and at or
-above the first live folder above the item. So a selection on a live folder reaches its
-Trash items at once, like its live items.
+An item in Trash keeps its path, and a selected folder reaches it when the folder's
+`treePath` starts the item's `treePath`, in the same restricted area. The folder can be
+live or in Trash. Trash can hold several items with the same path from different deletes,
+and a selection reaches all of them, like Dropbox matches deleted files by path. Matching by
+path reads only the pair's few choices, so a check costs the same for a deep tree as for a flat
+one, and a running Restore locks nothing. A Move or a Restore that is still running gives an
+item its new path when it reaches it. Until then the item keeps the access of its old path,
+like the scope jobs ("One simple rule beats an exact patch" in `CLAUDE.md`).
 
-A selected folder inside a delete, below its top, uses the item's stored chain from that
-delete, stopped at the folder. So an item that was already in Trash when that folder was
-selected becomes readable once the selection's scope job writes its chain. Keep the
-extended root that `grant_file_access_as_me` writes.
-
-The checker denies on the safe side when the stored top does not fit (another delete, not a
-folder above the item, or not the highest folder of its delete). It also denies while a
-forced delete has not fixed the tops of a folder it keeps, and while a restore puts that
-part of a delete back. The restore deny covers every Trash item under the selected items,
-also while the restore waits for a name choice, which can last up to 24 hours. It stops a
-choice on the old top from reaching an item that the restore already moved out of it.
-A plugin's own Restore job is the one exception: its steps pass `restoreRunId`, so they can
-still check the items they put back. Every other reader stays denied, also a new request of
-the same plugin. That request then answers `busy` only when the plugin can read the item
-apart from the job (see "Plugin Restore" in the `public-api` skill).
+Design principle (decided 2026-11-10): plugin access to Trash follows paths, and Restore is
+an ordinary file operation. Do not track the "real" folders of a Trash item for access
+(climbing deletes by id, storing each delete's top, or locking items while a Restore runs).
+That design cost about 2 database queries per delete above each item, so 100 deep items
+passed the 4,096-query transaction limit, and it made Restore a special case.
 
 The selections load once per checker, up to 100 roots. A loop over many items must share
 one checker (`access_control_create_file_checker`), not call
@@ -1294,9 +1286,9 @@ inside it. Everybody who had access before keeps it: added people only add acces
 - Known limit: a list whose rows sit under many separate deep chains of shared folders pays a
   few reads per root for each row. 100 rows under 100 separate 64-root chains cost about 13,000
   queries, over the 4,096 limit. Plugin pairs avoid this for live items with their bounded
-  selections (see "Personal plugin file grants"). Their Trash items jump to the top of each
-  delete, and walk the chain only below a selected folder inside a delete. People and service
-  accounts have no per-subject grant limit, so they still walk the chain. Not fixed yet.
+  selections (see "Personal plugin file grants"), and match their Trash items by path too.
+  People and service accounts have no per-subject grant limit, so they still walk the chain.
+  Not fixed yet.
 - Levels: added people get **Can view** or **Can edit** only. `manage` is only on a restricted root
   or from the workspace, so `content.permissions.manage` never comes from the chain. Message:
   `access_control_ADDED_PEOPLE_LEVEL_MESSAGE`.

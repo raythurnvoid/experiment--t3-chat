@@ -20,7 +20,6 @@ import { expect_under_convex_limits, transaction_cost } from "./files_pending_ov
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { public_api_file_archives_db_archive } from "./public_api_file_archives.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
-import { read_node, restore, seed_tree, step } from "./files_archive_runs.setup.test.ts";
 import {
 	fixture,
 	insert_installation,
@@ -339,46 +338,6 @@ test("a chosen folder keeps its Trash items but gives a new item at its old path
 
 	const freshId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/docs/secret.md" });
 	expect(await levels(f, pairId, freshId), "a new item at a chosen folder's Trash path stays denied").toEqual(denied);
-});
-
-test("a choice on a new folder at a Trash path, deleted later, gives the older Trash items nothing", async () => {
-	const f = await fixture();
-	const pairId = await pair(f);
-	const outer = await folder(f, "/p");
-	const old = await folder(f, "/p/x");
-	await archive(f, old.folderId);
-	const fresh = await folder(f, "/p/x");
-	await consent(f, pairId, fresh.folderId, "write");
-	await archive(f, outer.folderId);
-	expect(
-		await levels(f, pairId, fresh.fileId),
-		"the new folder keeps its own item, below the top of the delete",
-	).toEqual(write);
-	expect(await levels(f, pairId, old.fileId), "the old folder's item at the same path").toEqual(denied);
-	expect(await levels(f, pairId, old.folderId), "the old folder at the same path").toEqual(denied);
-});
-
-test("a choice on a Trash top gives nothing to an item a running restore is moving out of it", async () => {
-	const f = await fixture();
-	const pairId = await pair(f);
-	// 400 files make the restore take several steps, so it lands d0 before it reaches w.
-	const tree = await seed_tree(f, { name: "t", folderCount: 1, filesPerFolder: 400 });
-	const deep = await folder(f, "/t/d0/zz/w");
-	await consent(f, pairId, tree.topId, "write");
-	await archive(f, tree.topId);
-	expect(await levels(f, pairId, deep.fileId), "a Trash item under the chosen folder").toEqual(write);
-
-	const restored = await restore(f, [tree.folderIds[0]!]);
-	expect(restored._nay).toBeUndefined();
-	for (let count = 0; count < 20 && (await read_node(f, tree.folderIds[0]!)).archiveOperationId !== null; count++) {
-		await step(f, restored._yay!.runId);
-	}
-	expect((await read_node(f, tree.folderIds[0]!)).archiveOperationId, "d0 landed under a new live /t").toBeNull();
-	expect((await read_node(f, deep.fileId)).archiveTopNodeId, "w's item still names the old top").toBe(tree.topId);
-	expect(
-		await levels(f, pairId, deep.fileId),
-		"an item of the running restore, whose stored top is no longer above it",
-	).toEqual(denied);
 });
 
 test("a separately selected child survives ended parent consent", async () => {
@@ -786,7 +745,7 @@ test("100 checks on deep Trash items under a chosen live folder fit one transact
 		restrictedScopeNodeId: null,
 		archiveOperationId,
 	};
-	// One delete of /c/d. Its top has its own "Add people" root, so each item's chain must climb.
+	// One delete of /c/d. It is its own "Add people" root, like every folder below it.
 	const topId = await f.t.run(async (ctx) => {
 		const nodeId = await ctx.db.insert("files_nodes", {
 			...base,
@@ -799,7 +758,7 @@ test("100 checks on deep Trash items under a chosen live folder fit one transact
 			parentExtendedScopeNodeId: chosen.folderId,
 			extendedScopeNodeId: null,
 		});
-		await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId, archiveTopNodeId: nodeId });
+		await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
 		return nodeId;
 	});
 	const leaves: Array<Id<"files_nodes">> = [];
@@ -823,7 +782,6 @@ test("100 checks on deep Trash items under a chosen live folder fit one transact
 						pathDepth: depth + 3,
 						parentExtendedScopeNodeId: parentId,
 						extendedScopeNodeId: null,
-						archiveTopNodeId: topId,
 					});
 					await ctx.db.patch("files_nodes", nodeId, { extendedScopeNodeId: nodeId });
 					parentId = nodeId;
@@ -837,7 +795,6 @@ test("100 checks on deep Trash items under a chosen live folder fit one transact
 					treePath: `${path}/leaf/`,
 					pathDepth: 64,
 					extendedScopeNodeId: parentId,
-					archiveTopNodeId: topId,
 				});
 			}),
 		);

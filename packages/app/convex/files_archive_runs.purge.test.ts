@@ -345,7 +345,6 @@ describe("files_nodes.purge_nodes", () => {
 					pathDepth: 1,
 					archiveOperationId: fields.archiveOperationId,
 				});
-				await ctx.db.patch("files_nodes", nodeId, { archiveTopNodeId: nodeId });
 				await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
 			});
 		// More Trash entries than one page, each under its own older operation.
@@ -390,7 +389,6 @@ describe("files_nodes.purge_nodes", () => {
 				restrictedScopeNodeId: restrictedId,
 				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000),
 			});
-			await ctx.db.patch("files_nodes", innerId, { archiveTopNodeId: innerId });
 			await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", innerId))!);
 		});
 		// An archive job that still stamps the items inside its folder.

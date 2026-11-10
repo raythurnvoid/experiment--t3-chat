@@ -202,7 +202,7 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/back/d0/f000.md");
 	}, 60_000);
 
-	test("an item whose folder moves to Trash during its restore joins that delete, with the folder as its top", async () => {
+	test("an item whose folder moves to Trash during its restore joins that delete", async () => {
 		const f = await fixture();
 		// 151 items inside `/outer/d0`: more than one check step of 100, so the restore is still checking.
 		const tree = await seed_tree(f, { name: "outer", folderCount: 1, filesPerFolder: 150 });
@@ -216,7 +216,6 @@ describe("unarchive_nodes", () => {
 		await run_to_end(f, job);
 		expect(await read_node(f, itemId), "the item stays with its folder in Trash").toMatchObject({
 			archiveOperationId: (await read_node(f, tree.topId)).archiveOperationId,
-			archiveTopNodeId: tree.topId,
 		});
 	}, 60_000);
 

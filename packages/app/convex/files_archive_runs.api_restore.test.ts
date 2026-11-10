@@ -853,12 +853,11 @@ describe("files/restore", () => {
 					if (node.archiveOperationId === null) return [];
 					const parent = parent_of(node);
 					const isAlone = parent?.archiveOperationId !== node.archiveOperationId;
-					const top = isAlone ? node._id : parent!.archiveTopNodeId;
-					return node.archiveTopNodeId === top && atEnd.entryNodeIds.includes(node._id) === isAlone ? [] : [node.path];
+					return atEnd.entryNodeIds.includes(node._id) === isAlone ? [] : [node.path];
 				}),
-				"each item left in Trash has the right top, and a Trash entry when it is alone",
+				"each item left in Trash has a Trash entry only when it is alone",
 			).toEqual([]);
-			// Paths, areas and tops are derived from the folder, and so are the `ancestor1..12` path fields.
+			// Paths and areas are derived from the folder, and so are the `ancestor1..12` path fields.
 			const derivedFields = new Set([
 				"path",
 				"treePath",
@@ -868,7 +867,6 @@ describe("files/restore", () => {
 				"extendedScopeNodeId",
 				"parentExtendedScopeNodeId",
 				"isPublic",
-				"archiveTopNodeId",
 			]);
 			const without_derived = (nodes: typeof atEnd.nodes) =>
 				nodes.map((node) =>
@@ -878,7 +876,7 @@ describe("files/restore", () => {
 				);
 			expect(
 				without_derived(atEnd.nodes),
-				"the repair keeps every delete stamp and changes only paths, areas and tops",
+				"the repair keeps every delete stamp and changes only paths and areas",
 			).toEqual(without_derived(atStop.nodes));
 			expect(ended.progress, "nothing more comes back after the stop").toEqual(atStop.progress);
 			expect(atEnd.mediaRevision, "the repair moves the media validation version").toBeGreaterThan(
