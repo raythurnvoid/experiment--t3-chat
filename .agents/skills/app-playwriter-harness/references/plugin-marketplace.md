@@ -526,6 +526,61 @@ That is expected. After an uninstall and a reinstall in the same thread, the mod
 earlier "the tool is not available" answer. Say in the prompt that tools change between turns, and
 it calls the tool again.
 
+## Restore fixture plugin (Data Probe 0.5.x)
+
+Data Probe 0.5.0 adds plugin Restore checks. It asks for `workspace.files.write` and
+`workspace.files.restore`. 0.5.1 changes only the version number, so you can upgrade between two
+Restore versions. Both live in `chitchat-qa/copy-qa-0922`. Fixtures: the qa-data inventory.
+
+Page ids inside the frame (`/plugins-ui/<versionId>/dist/frontend/index.html`):
+
+- Restore form: `#restore-node-id`, `#restore-archive-operation-id` (the delete stamp),
+  `#restore-path`, `#restore-request-id`, `#restore-on-conflict`, `#restore-dry-run`, `#restore-force`,
+  `#restore-wait-ms`. Buttons `#run-restore` and `#run-restore-after-wait`. Result in
+  `#restore-result[data-state]`, job ids in `#restore-jobs [data-job-id]`.
+- Job form: `#job-id`, `#job-cursor`. `#read-job-page` reads with the page token, `#read-job-backend`
+  through a backend run. Result in `#job-result[data-state][data-job-status]`.
+
+Setting a field with `el.value = ...` from `frame.evaluate` is enough; the page reads the fields on click.
+
+Update steps that cost time (verified 2026-11-10):
+
+- **A publish that fails at "could not measure its input" is a bad OpenAI key, not the plugin.** The
+  review counts tokens first with `${OPENAI_BASE_URL}/responses/input_tokens` (`plugins.ts`). When the
+  deployment's `OPENAI_API_KEY` answers 401, every publish fails the same way. Call that endpoint once
+  with a tiny input and print only the status. Ask the user for a new key; never print it.
+- **`Update` stays disabled until the policy allows the new version.** The hero's
+  `data-organization-policy` reads `needs_approval`. Allow it in the organization policy modal first
+  (see `app-map.md`).
+- **`Accept and update` stays disabled until the run-as box is ticked again.** Its input is covered by
+  `.PluginsRunConsent`, so a click on the input does not land. Click the label text instead.
+
+### Queue a plugin Restore behind a person (no timing race)
+
+Use the app's own Restore name-clash wait. It waits for a person, so the plugin job stays `queued`
+as long as you need:
+
+1. Owner moves the child to Trash (stamp D1), then its parent (stamp D2).
+2. Owner makes an empty folder at the parent's old path.
+3. Owner restores the parent with `files_nodes.unarchive_nodes`. With no clash choice, its run waits:
+   `files_archive_runs.get` shows Activity `awaiting_input`.
+4. The plugin restores the child by node id and D1. It answers 200, `isDone: false`, and one job id.
+   `files/jobs/get` reads `queued`. Check that the plugin run ended before you go on.
+5. Change what you want to test (a file choice, the installed version).
+6. Owner answers with `files_archive_runs.resolve_conflicts` (`keep_both`). Read the job again.
+
+A restored item comes back at its Trash path. That is the parent of its `archivedPath`. A parent
+that was renamed or moved after the delete does not count. So after Keep both, the child lands in
+the new empty folder, not in the renamed old parent. Put that empty folder **inside** a folder the
+plugin may edit. If it sits at the root, the job fails with "Permission denied" for the right reason
+and proves nothing about the queue.
+
+Results on 2026-11-10: with no change the job succeeds 1 of 1. After the folder choice was removed
+(Current: No access), it fails with "Permission denied" and the child stays in the Trash. A failed
+job's read names the item that stayed in the Trash ("This item is still in the Trash..."). The path
+shows only while the plugin can still read the item. A Whole workspace Can view choice is enough,
+so remove that choice too when you check that names are hidden.
+
 ## Page agent tools fixture (Gmail 0.3.5 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
