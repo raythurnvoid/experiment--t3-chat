@@ -117,8 +117,10 @@ API or plugin door can do it yet.
   discard), Yjs states, chunks, versions, metadata, grants, share links, the comment channel
   (`channels_db_purge_channel_batch`), every user's drafts on the node
   (discarded like an expired draft, which frees their private storage), and the R2 assets (one R2
-  delete job per asset, after the PUT may-arrive margin). The node doc goes last, only when no child
-  is left.
+  delete job per asset, after the PUT may-arrive margin). For a folder, it also moves the Trash
+  entries of that folder's area to the area the folder is in, so older Trash items of a deleted
+  restricted folder still list (as locked rows for people who cannot open them). The node doc goes
+  last, only when no child is left.
 - The first drain call sets `files_nodes.purgeRunId`. From then on every write refuses the node with
   "This item is being deleted." (`files_write_policy`), even a forced one. A started node always
   finishes: Stop, a lost membership or the deadline end the job only between nodes. A later run takes

@@ -66,21 +66,15 @@ async function insert_node(args: {
 }
 
 /**
- * Restrict `nodeId`, then run the steps of its scope op to the end. `afterStep` gets the node ids in
- * the op's queue and the walk's next queue number, after the request and after each step.
+ * Run the steps of the running subtree op to the end. `afterStep` gets the node ids in the op's
+ * queue, after the request and after each step.
  */
-async function restrict_to_end(args: {
+async function step_to_end(args: {
 	f: Fixture;
-	nodeId: Id<"files_nodes">;
-	afterStep: (queued: Array<Id<"files_nodes">>, sequence: number) => void | Promise<void>;
+	afterStep: (queued: Array<Id<"files_nodes">>) => void | Promise<void>;
 }) {
-	const { f, afterStep, nodeId } = args;
+	const { f, afterStep } = args;
 
-	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-		membershipId: f.db.membershipId,
-		nodeId,
-	});
-	expect(restricted._nay).toBeUndefined();
 	for (let count = 0; count < 200; count++) {
 		const state = await f.t.run(async (ctx) => {
 			const op = await ctx.db.query("files_subtree_ops").first();
@@ -90,13 +84,49 @@ async function restrict_to_end(args: {
 				.withIndex("by_op", (q) => q.eq("opId", op._id))
 				.unique();
 			const rows = (await ctx.db.query("files_subtree_op_nodes").collect()).filter((row) => row.opId === op._id);
-			return { opId: op._id, step: walk!.step, sequence: walk!.sequence, queued: rows.map((row) => row.nodeId) };
+			return { opId: op._id, step: walk!.step, queued: rows.map((row) => row.nodeId) };
 		});
 		if (!state) return;
-		await afterStep(state.queued, state.sequence);
+		await afterStep(state.queued);
 		await f.t.mutation(internal.files_subtree_ops.advance, { opId: state.opId, step: state.step });
 	}
-	throw new Error("The scope op did not finish");
+	throw new Error("The op did not finish");
+}
+
+/**
+ * Restrict `nodeId`, then run the steps of its scope op to the end (`step_to_end`).
+ */
+async function restrict_to_end(args: {
+	f: Fixture;
+	nodeId: Id<"files_nodes">;
+	afterStep: (queued: Array<Id<"files_nodes">>) => void | Promise<void>;
+}) {
+	const { f, afterStep, nodeId } = args;
+
+	const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+		membershipId: f.db.membershipId,
+		nodeId,
+	});
+	expect(restricted._nay).toBeUndefined();
+	await step_to_end({ f, afterStep });
+}
+
+/**
+ * Delete `nodeId` permanently, then run the steps of its purge op to the end (`step_to_end`).
+ */
+async function purge_to_end(args: {
+	f: Fixture;
+	nodeId: Id<"files_nodes">;
+	afterStep: (queued: Array<Id<"files_nodes">>) => void | Promise<void>;
+}) {
+	const { f, afterStep, nodeId } = args;
+
+	const purged = await f.asOwner.mutation(api.files_nodes.purge_nodes, {
+		membershipId: f.db.membershipId,
+		nodeIds: [nodeId],
+	});
+	expect(purged._nay).toBeUndefined();
+	await step_to_end({ f, afterStep });
 }
 
 async function insert_scope_op(
@@ -334,16 +364,17 @@ describe("advance", () => {
 		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id)).toEqual([]);
 	}, 120_000);
 
-	test("a step that stops inside a group of folders with one name queues each folder once", async () => {
+	test("a purge step that stops inside a group of folders with one name queues each folder once", async () => {
 		const f = await fixture();
-		// Each replace of a folder archives the old one, so a folder can hold many archived folders with one
-		// name. Their files keep the steps busy, so a step ends while their folders are still queued. The
-		// 50 files before them fill the first page, so the group starts on the second page.
+		// Each replace of a folder moves the old one to Trash, so a folder can hold many Trash folders with
+		// one name. A scope job reads live children only, but a purge reads them all. Their files keep the
+		// steps busy, so a step ends while their folders are still queued. The 50 files before them fill
+		// the first page, so the group starts on the second page.
 		const top = await f.t.run(async (ctx) => {
 			const top = await insert_node({
 				ctx,
 				f,
-				fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null },
+				fields: { parent: null, name: "top", kind: "folder", archiveOperationId: "delete-top" },
 			});
 			for (let index = 0; index < 50; index++) {
 				await insert_node({
@@ -353,7 +384,7 @@ describe("advance", () => {
 						parent: top,
 						name: `a${String(index).padStart(2, "0")}.md`,
 						kind: "file",
-						archiveOperationId: null,
+						archiveOperationId: "delete-top",
 					},
 				});
 			}
@@ -371,39 +402,27 @@ describe("advance", () => {
 			return top;
 		});
 
+		// A step that read a page again would queue some items a second time, even when the first row is
+		// already gone.
 		const twice: Array<Id<"files_nodes">> = [];
-		const firstPass: Array<{ sequence: number; rewrittenFolders: number }> = [];
-		await restrict_to_end({
+		let steps = 0;
+		await purge_to_end({
 			f,
 			nodeId: top._id,
-			afterStep: async (queued, sequence) => {
+			afterStep: (queued) => {
+				steps += 1;
 				twice.push(...queued.filter((nodeId, index) => queued.indexOf(nodeId) !== index));
-
-				// A step rewrites a folder and queues it in the same mutation. So while the first pass runs, the
-				// walk has used one queue number for `/top` and one for each rewritten folder. A step that read a
-				// page again would queue some folders a second time, even when the first row is already gone.
-				const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-				if (nodes.every((node) => node.restrictedScopeNodeId === top._id)) return;
-				firstPass.push({
-					sequence,
-					rewrittenFolders: nodes.filter(
-						(node) => node.kind === "folder" && node._id !== top._id && node.restrictedScopeNodeId === top._id,
-					).length,
-				});
 			},
 		});
 		expect(twice).toEqual([]);
-		expect(firstPass.length).toBeGreaterThan(1);
-		expect(firstPass.filter((state) => state.sequence !== 1 + state.rewrittenFolders)).toEqual([]);
-
-		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id)).toEqual([]);
+		expect(steps).toBeGreaterThan(1);
+		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 	}, 120_000);
 
-	test("reads every child of a group that shares a name and a creation time", async () => {
+	test("a purge reads every child of a group that shares a name and a creation time", async () => {
 		const f = await fixture();
 		const top = await f.t.run((ctx) =>
-			insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: null } }),
+			insert_node({ ctx, f, fields: { parent: null, name: "top", kind: "folder", archiveOperationId: "delete-top" } }),
 		);
 		// `8.64e15` is the largest time a date can hold, and `8.64e15 + 0.001` is `8.64e15` again. So the
 		// test clock cannot move the creation time of the next node forward, and all of them get one time.
@@ -424,10 +443,9 @@ describe("advance", () => {
 		);
 		expect(new Set(tied.map((node) => node._creationTime))).toEqual(new Set([8.64e15]));
 
-		await restrict_to_end({ f, nodeId: top._id, afterStep: () => {} });
+		await purge_to_end({ f, nodeId: top._id, afterStep: () => {} });
 
-		const nodes = await f.t.run((ctx) => ctx.db.query("files_nodes").collect());
-		expect(nodes.filter((node) => node.restrictedScopeNodeId !== top._id).map((node) => node.name)).toEqual([]);
+		expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 	}, 120_000);
 });
 

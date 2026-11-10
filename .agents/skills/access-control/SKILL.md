@@ -218,9 +218,12 @@ other folder at the workspace root, where the plugin has no Edit. The folder can
 live or in Trash. Trash can hold several items with the same path from different deletes,
 and a selection reaches all of them, like Dropbox matches deleted files by path. Matching by
 path reads only the pair's few choices, so a check costs the same for a deep tree as for a flat
-one, and a running Restore locks nothing. A Move or a Restore that is still running gives an
-item its new path when it reaches it. Until then the item keeps the access of its old path,
-like the scope jobs ("One simple rule beats an exact patch" in `CLAUDE.md`). One exception:
+one, and a running Restore locks nothing. A Trash item keeps its delete-time path, so a
+selection reaches it while that path is inside the selected folder's current path. A Move of
+the folder does not take its Trash items along (see
+[Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). A Restore that is still running gives an item of its
+own delete its new path when it reaches it. Until then the item keeps the access of its old
+path ("One simple rule beats an exact patch" in `CLAUDE.md`). One exception:
 a Restore checks an item inside a folder it already brought back against that folder, when
 both have the same scopes. Keep both may have renamed the folder, so the item's old path
 would match nothing (`db_check_writable_nodes` in `files_archive_runs.ts`).
@@ -1190,9 +1193,11 @@ doors live in `convex/files_sharing_db.ts`. See "Public file links" below.
 The model:
 
 - A node is restricted exactly when `restrictedScopeNodeId === _id`. Everything under it points at
-  the same id. `restrict_node` and `unrestrict_node` set the node's own scope now, then start a
-  scope job with `files_subtree_ops_db_start_rebuild` (kind `scope`). Plugins never restrict a node:
-  a folder a plugin creates gets its parent's access. The job walks children by `parentId` and
+  the same id. `restrict_node` and `unrestrict_node` refuse an item in Trash (see
+  [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). They set the node's own scope
+  now, then start a scope job with `files_subtree_ops_db_start_rebuild` (kind `scope`). Plugins never
+  restrict a node: a folder a plugin creates gets its parent's access. The job walks live children by
+  `parentId` and
   writes each child's `restrictedScopeNodeId` from its live parent. A child that is its own
   restricted folder keeps its own scope. The first step runs inside the request, so a small folder
   is done at once, unless a Move holds the workspace: then every step, the first one too, waits for
@@ -1214,8 +1219,10 @@ The model:
   `/outer`'s grants, not to workspace read. A folder above can be unrestricted too before its own
   job reaches the dead folder, so the reader follows up to 8 dead folders. Past that it keeps the
   stored scope. Its list was kept at view or edit, so it lets in the people it will let in after the
-  job. A pointer
-  chain that ends at `null`, at a deleted node, or in another workspace means open. Every reader of
+  job. A pointer chain that ends at `null` means open. A chain that reaches a deleted node or a node
+  of another workspace keeps the stored scope, so it stays closed. Only a Trash item can point at a
+  deleted node: a restricted folder is deleted for good only from Trash, when no live item is inside
+  it ([Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). Every reader of
   the stored pointer uses this one helper: the permission check, the list filter,
   `access_control_db_can_act_on_file_node`, the service account grant state, and
   `get_node_share_state`.
@@ -1279,17 +1286,23 @@ inside it. Everybody who had access before keeps it: added people only add acces
 - Writers: `set_node_share_grant` (people and roles) and `access_control_db_set_service_account_grant`
   (accounts) make the item an extended root, then start a scope job (`files_subtree_ops_db_start_rebuild`,
   kind `scope`) for the items inside. Both check every refusal before any write, so a refused share
-  leaves no extended root. `remove_node_share_grant` makes the item plain again when its last grant
+  leaves no extended root. Both refuse to make an item in Trash an extended root (see
+  [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). `remove_node_share_grant` makes the item plain again when its last grant
   goes, and starts the job. The account writer is used inside `access_control.ts`, a light module, so
   it extends through `ctx.runMutation(internal.files_subtree_ops.extend_node)` (same transaction).
 - The check (`access_control_db_extended_chain_allows`): when the restricted or workspace check
   fails, follow `extendedScopeNodeId`, then each root's `parentExtendedScopeNodeId`, and ask each
   root for a grant. A pointer at a node that is no longer an extended root (its job still runs)
   follows that node's own pointer, at most 8 dead hops in a row. The chain stops closed at a missing
-  node, another tenant, a root not above the node, or a root in another restricted area. There is no
-  depth cap. The checker caches each root's answer per request. Cost tests in
+  node, another tenant, a root not above the node, or a root in another restricted area. There is
+  no depth cap. The checker caches each root's answer per request. Cost tests in
   `files_sharing.extended.test.ts` use 64 nested folders, following the
   [Files depth test rule](../../../AGENTS.md#reads-must-scale-no-scans).
+- A Trash item keeps its delete-time pointers, because scope jobs do not rewrite Trash items
+  ([Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). So the chain trusts its first
+  root without the path check, and compares live areas
+  (`access_control_db_resolve_live_restricted_scope`) instead of raw pointers. A plugin pair's choice
+  of a restricted folder compares Trash areas the same way.
 - Known limit: a list whose rows sit under many separate deep chains of shared folders pays a
   few reads per root for each row. 100 rows under 100 separate 64-root chains cost about 13,000
   queries, over the 4,096 limit. Plugin pairs avoid this for live items with their bounded

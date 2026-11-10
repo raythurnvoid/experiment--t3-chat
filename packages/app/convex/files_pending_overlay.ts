@@ -1652,10 +1652,13 @@ export const check_metadata_catalog = internalQuery({
 });
 
 /**
- * Compare one page of saved nodes' `ancestor1..12` with their parent's, in every workspace, and
+ * Compare one page of active saved nodes' `ancestor1..12` with their parent's, in every workspace, and
  * return the nodes that differ. A node is right when it copies its parent's ancestors plus the
- * parent, so a walk with no difference proves every chain. Call again with the returned cursor until
- * it is null.
+ * parent, so a walk with no difference proves every live chain. Call again with the returned cursor
+ * until it is null.
+ *
+ * Trash items keep the ancestors of their delete time, even after their folders moved, so they are
+ * not compared.
  */
 export const check_ancestors = internalQuery({
 	args: { cursor: v.union(v.string(), v.null()) },
@@ -1666,6 +1669,7 @@ export const check_ancestors = internalQuery({
 			.paginate({ cursor: args.cursor, numItems: ANCESTOR_CHECK_PAGE_SIZE });
 		const differences: string[] = [];
 		for (const node of nodes.page) {
+			if (node.archiveOperationId !== null) continue;
 			const stored = files_ancestor_ids(node);
 			const expected = await files_pending_overlay_db_child_ancestors(ctx.db, node.parentId);
 			// A node whose parent is gone has no expected chain.

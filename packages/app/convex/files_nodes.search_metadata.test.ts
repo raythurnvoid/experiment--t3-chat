@@ -2045,7 +2045,7 @@ describe("folder table sort fields", () => {
 		expect(restoredRead.fields[0]?.archiveOperationId).toBeUndefined();
 	});
 
-	test("restrict and unrestrict set the flag on the node and on its field docs, archived ones too", async () => {
+	test("restrict and unrestrict set the flag on the node and on its field docs", async () => {
 		const { t, db, asOwner, create_folder, set_metadata } = await seed_sort_fields();
 		const folderId = await create_folder("/restricted");
 		await set_metadata(folderId, "status: Open\n");
@@ -2060,12 +2060,6 @@ describe("folder table sort fields", () => {
 		expect(restrictedRead.fields).toEqual([expect.objectContaining({ isRestrictedScopeRoot: true })]);
 		expect(restrictedRead.valueDocsWithSortFields).toBe(0);
 
-		const archived = await asOwner.mutation(api.files_nodes.archive_nodes, {
-			membershipId: db.membershipId,
-			nodeIds: [folderId],
-		});
-		expect(archived._nay).toBeUndefined();
-		await test_finish_saved_scope_jobs(t);
 		const unrestricted = await asOwner.mutation(api.files_sharing.unrestrict_node, {
 			membershipId: db.membershipId,
 			nodeId: folderId,
@@ -2073,9 +2067,7 @@ describe("folder table sort fields", () => {
 		expect(unrestricted._nay).toBeUndefined();
 		const unrestrictedRead = await read_sort_fields(t, folderId);
 		expect(unrestrictedRead.node.isRestrictedScopeRoot).toBe(false);
-		expect(unrestrictedRead.fields).toEqual([
-			expect.objectContaining({ archiveOperationId: expect.any(String), isRestrictedScopeRoot: false }),
-		]);
+		expect(unrestrictedRead.fields).toEqual([expect.objectContaining({ isRestrictedScopeRoot: false })]);
 	});
 
 	test("a frontmatter save sorts by the first list item and leaves a map parent without a value", async () => {

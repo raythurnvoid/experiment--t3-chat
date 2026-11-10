@@ -29,12 +29,17 @@ export const descendants = internalQuery({
 	returns: paginationResultValidator(
 		v.union(doc(app_convex_schema, "files_saved_places"), doc(app_convex_schema, "files_nodes")),
 	),
+	// Read live children only. Trash items stay frozen where they were deleted, so a Move never carries them.
 	handler: async (ctx, args) => {
 		return args.source === "before"
 			? await ctx.db
 					.query("files_saved_places")
-					.withIndex("by_view_parent_name", (q) =>
-						q.eq("cohortId", args.cohortId).eq("view", "before").eq("parentId", args.parentId),
+					.withIndex("by_view_parent_archive_name", (q) =>
+						q
+							.eq("cohortId", args.cohortId)
+							.eq("view", "before")
+							.eq("parentId", args.parentId)
+							.eq("archiveOperationId", null),
 					)
 					.paginate({
 						cursor: args.cursor,
@@ -43,12 +48,13 @@ export const descendants = internalQuery({
 					})
 			: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("moveCohortId", undefined)
-							.eq("parentId", args.parentId),
+							.eq("parentId", args.parentId)
+							.eq("archiveOperationId", null),
 					)
 					.paginate({
 						cursor: args.cursor,
@@ -70,12 +76,18 @@ export const owner_saved_folders = internalQuery({
 	returns: paginationResultValidator(
 		v.union(doc(app_convex_schema, "files_saved_places"), doc(app_convex_schema, "files_nodes")),
 	),
+	// Live folders only, like `descendants`. A Move never changes a Trash folder, so its drafts need no work.
 	handler: async (ctx, args) => {
 		return args.source === "before"
 			? await ctx.db
 					.query("files_saved_places")
-					.withIndex("by_view_parent_kind_name", (q) =>
-						q.eq("cohortId", args.cohortId).eq("view", "before").eq("parentId", args.parentId).eq("kind", "folder"),
+					.withIndex("by_view_parent_archive_kind_name", (q) =>
+						q
+							.eq("cohortId", args.cohortId)
+							.eq("view", "before")
+							.eq("parentId", args.parentId)
+							.eq("archiveOperationId", null)
+							.eq("kind", "folder"),
 					)
 					.paginate({
 						cursor: args.cursor,
@@ -84,12 +96,13 @@ export const owner_saved_folders = internalQuery({
 					})
 			: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_org_ws_parent_kind_name", (q) =>
+					.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
 						q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("moveCohortId", undefined)
 							.eq("parentId", args.parentId)
+							.eq("archiveOperationId", null)
 							.eq("kind", "folder"),
 					)
 					.paginate({

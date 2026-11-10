@@ -5,7 +5,6 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx } from "./_generated/server.js";
 import { advance as advance_cohort } from "./files_move_cohorts.ts";
 import { owner_saved_folders } from "./files_move_pages.ts";
-import { run_to_end as finish_archive } from "./files_archive_runs.setup.test.ts";
 import * as owner_work from "./files_move_owner_work.ts";
 import * as overlay from "../server/files-pending-overlay.ts";
 import { files_move_reservations_db_find_blocker } from "../server/files-move-reservations.ts";
@@ -22,7 +21,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "archived"])(
+test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "long-paths"])(
 	"saved owner folders keep accepted drafts through %s",
 	async (mode) => {
 		const t = test_convex({ transactionLimits: true });
@@ -50,21 +49,15 @@ test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "archived
 		const target = await folder("root", "/target");
 		const owner = await folder(
 			"root",
-			mode === "archived" ? `/${"甲".repeat(255)}/${"乙".repeat(255)}/${"丙".repeat(240)}/owner` : "/owner",
+			mode === "long-paths" ? `/${"甲".repeat(255)}/${"乙".repeat(255)}/${"丙".repeat(240)}/owner` : "/owner",
 		);
 		const deep = await folder(owner, "deep");
-		const archived: Id<"files_nodes">[] = [];
+		const longFolders: Id<"files_nodes">[] = [];
 		const folderPages: { ids: Id<"files_nodes">[]; isDone: boolean }[] = [];
 		const workerCosts: { ranges: number; read: number; bytes: number; written: number; writeBytes: number }[] = [];
-		if (mode === "archived") {
+		if (mode === "long-paths") {
 			for (let index = 0; index < 70; index++)
-				archived.push(await folder(deep, `${String(index).padStart(3, "0")}${"文".repeat(252)}`));
-			const started = await asUser.mutation(api.files_nodes.archive_nodes, {
-				membershipId: db.membershipId,
-				nodeIds: archived,
-			});
-			if (started._nay || !started._yay) throw new Error("Expected the Archive job");
-			expect((await finish_archive({ t, db, asOwner: asUser }, started._yay)).activity.status).toBe("succeeded");
+				longFolders.push(await folder(deep, `${String(index).padStart(3, "0")}${"文".repeat(252)}`));
 			test_spy_handler(owner_saved_folders, async (handler, ctx, args) => {
 				const result = await handler(ctx, args);
 				if ((args as { parentId: Id<"files_nodes"> }).parentId === deep) {
@@ -347,15 +340,15 @@ test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "archived
 			expect(prefixes, "the joined worker really visits owner prefixes").toBeGreaterThan(0);
 			expect(staged, "the joined worker really stages owners").toBeGreaterThan(0);
 		}
-		if (mode === "archived") {
-			expect(folderPages.flatMap((page) => page.ids).sort(), "every archived folder is visited once").toEqual(
-				[...archived].sort(),
+		if (mode === "long-paths") {
+			expect(folderPages.flatMap((page) => page.ids).sort(), "every folder is visited once").toEqual(
+				[...longFolders].sort(),
 			);
 			expect(
 				folderPages.some((page) => page.ids.length < 32 && !page.isDone),
 				"large legal paths produce a short native page",
 			).toBe(true);
-			for (const nodeId of archived) expect((await source(nodeId))?.mode).toBe("children");
+			for (const nodeId of longFolders) expect((await source(nodeId))?.mode).toBe("children");
 		}
 		if (mode === "stop-after")
 			expect(
@@ -379,8 +372,9 @@ test.each(["finish", "joined", "overlap", "stop-before", "stop-after", "archived
 			)._nay,
 			"create succeeds after release",
 		).toBeUndefined();
-		if (mode === "archived") {
-			for (const nodeId of archived) expect(await source(nodeId), "repair releases archived folder holds").toBeNull();
+		if (mode === "long-paths") {
+			for (const nodeId of longFolders)
+				expect(await source(nodeId), "repair releases the deeper folder holds").toBeNull();
 			console.info(
 				"owner frontier worker peaks",
 				Object.fromEntries(

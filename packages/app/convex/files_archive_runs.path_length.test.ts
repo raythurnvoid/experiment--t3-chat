@@ -279,7 +279,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(await read_node(f, short)).toMatchObject({ archiveOperationId: null, readOnly: true });
 	});
 
-	test("a child archived on its own that followed its folder past 1,024 characters comes back at its Trash path", async () => {
+	test("a child archived on its own keeps its Trash path when its folder comes back at a longer path", async () => {
 		const f = await fixture();
 		const chain = `${NAMES.join("/")}/${"d".repeat(250)}`;
 		// 1,023 characters.
@@ -295,9 +295,10 @@ describe("unarchive_nodes path limit", () => {
 		const job = (await restore(f, [top._id]))._yay!;
 		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
 		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
-		const followed = await read_node(f, deepestId);
-		expect(followed.archiveOperationId, "the child stays archived").not.toBeNull();
-		expect(followed.path, "the child follows its folder to 1,025 characters").toBe(`/p/x-2/${chain}`);
+		const kept = await read_node(f, deepestId);
+		expect(kept.archiveOperationId, "the child stays archived").not.toBeNull();
+		// The Restore of another delete never changes this child, so it does not reach 1,025 characters.
+		expect(kept.path, "the child keeps its delete-time path").toBe(`/p/x/${chain}`);
 
 		// The child comes back where it was deleted, inside the live `/p/x`, not inside `/p/x-2`.
 		expect(await restore(f, [deepestId])).toEqual({ _yay: null });
@@ -309,7 +310,7 @@ describe("unarchive_nodes path limit", () => {
 		expect(restored.archivedPathLength, "an active restored child has no allowance").toBeUndefined();
 	});
 
-	test("a child archived by a Move replacement comes back at its Trash path, not past the normal limit", async () => {
+	test("a child archived by a Move replacement keeps its Trash path when its folder comes back at a longer path", async () => {
 		const f = await fixture();
 		const create_folder = async (parentId: Id<"files_nodes"> | "root", name: string) => {
 			const created = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
@@ -399,14 +400,13 @@ describe("unarchive_nodes path limit", () => {
 		const job = (await restore(f, [topId]))._yay!;
 		expect(await resolve(f, job.runId, "keep_both")).toEqual({ _yay: null });
 		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
-		const followed = await read_node(f, childId);
-		expect(followed).toMatchObject({
+		const kept = await read_node(f, childId);
+		expect(kept, "the child keeps its delete-time path").toMatchObject({
 			_id: childId,
-			path: `/p/x-2/${chain}`,
+			path: `/p/x/${chain}`,
 			archiveOperationId: archived.archiveOperationId,
 		});
-		expect(followed.path.length).toBe(1025);
-		expect(followed.archivedPathLength, "parent Restore preserves the child's missing allowance").toBeUndefined();
+		expect(kept.archivedPathLength, "parent Restore preserves the child's missing allowance").toBeUndefined();
 		// The Move saved the child's Trash path, so it comes back there, within the normal limit.
 		expect(await restore(f, [childId])).toEqual({ _yay: null });
 		expect(await read_node(f, childId)).toMatchObject({ archiveOperationId: null, path: `/p/x/${chain}` });

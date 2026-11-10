@@ -8,7 +8,7 @@
 // also serve plugins, which act as their file pair.
 
 import { compareValues, v, ConvexError, type Infer } from "convex/values";
-import type { IndexRange, RegisteredMutation, RegisteredQuery } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { validate } from "convex-helpers/validators";
 import { z } from "zod";
 
@@ -671,10 +671,7 @@ const TRASH_LIST_MAX_ITEMS = 100;
 
 const trash_key_validator = v.object({
 	archiveOperationId: v.string(),
-	/**
-	 * The `treePath` in an area, or the `name` in a folder: the index field after the delete id.
-	 */
-	treePathOrName: v.string(),
+	name: v.string(),
 	createdAt: v.number(),
 	nodeId: v.string(),
 });
@@ -707,15 +704,17 @@ export const get_plugin_trash_access = internalQuery({
 });
 
 /**
- * One page of one index stream of `files/trash/list`: the archived docs of one area or one folder
- * below `upperKey`, newest archive operation first. `public_api_files_organize_http_trash_list` merges
- * the streams.
+ * One page of `files/trash/list`, newest archive operation first.
  *
- * Every archived doc is listed, not only the top items of the app's Trash view. Two index ranges
- * serve an area. "items" holds the docs of the area. "folders" holds the restricted folders whose
- * parent is in the area: a restricted folder lists in the area of its parent, locked when the
- * caller cannot open it, and its contents list only in its own area. One range serves a folder:
- * "children" holds the archived docs directly inside it, by name.
+ * Area mode (no `folderNodeId`) reads the area's Trash entries, like the app's Trash view
+ * (`files_tree.list_trash_entries`): the items in Trash on their own, then by the path they had at
+ * delete time. A restricted folder lists in the area of its parent, locked when the caller cannot open
+ * it. An unrestrict moves the entries of the opened folder to the area above, while the Trash items
+ * keep their delete-time area. So an area must not read the items by their stored area.
+ * `entriesCursor` is the Convex cursor of that range.
+ *
+ * Folder mode reads the archived docs directly inside the folder, by name, below `upperKey`.
+ * `public_api_files_organize_http_trash_list` merges that stream across the saved views.
  */
 export const list_trash_page = internalQuery({
 	args: {
@@ -730,12 +729,12 @@ export const list_trash_page = internalQuery({
 		 */
 		areaNodeId: v.union(v.string(), v.null()),
 		/**
-		 * A folder, live or in Trash, for the "children" stream. Null with "items" and "folders". Not
-		 * normalized: it comes from the request body.
+		 * A folder, live or in Trash, for folder mode. Null in area mode. Not normalized: it comes from
+		 * the request body.
 		 */
 		folderNodeId: v.union(v.string(), v.null()),
-		stream: v.union(v.literal("items"), v.literal("folders"), v.literal("children")),
 		upperKey: v.union(trash_key_validator, v.null()),
+		entriesCursor: v.union(v.string(), v.null()),
 		phase: v.number(),
 		numItems: v.number(),
 	},
@@ -763,7 +762,6 @@ export const list_trash_page = internalQuery({
 					updatedBy: v.union(v.string(), v.null()),
 					assetId: v.union(v.id("files_r2_assets"), v.null()),
 					archiveOperationId: v.string(),
-					treePathOrName: v.string(),
 					createdAt: v.number(),
 					locked: v.boolean(),
 					top: v.boolean(),
@@ -771,6 +769,7 @@ export const list_trash_page = internalQuery({
 			),
 			frontier: v.union(trash_key_validator, v.null()),
 			phaseCount: v.number(),
+			entriesCursor: v.union(v.string(), v.null()),
 			isDone: v.boolean(),
 		}),
 	),
@@ -851,56 +850,72 @@ export const list_trash_page = internalQuery({
 			area = areaNode._id;
 		}
 
-		const phases = files_index_range_phases({
-			fields: [
-				"archiveOperationId",
-				folder ? "name" : "treePath",
-				...(args.savedStream.kind === "cohort" ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"]),
-			],
-			order: "desc",
-			// An active doc has a null `archiveOperationId`, so this range holds the archived docs only.
-			start: [null],
-			startInclusive: false,
-			end: args.upperKey
-				? [
-						args.upperKey.archiveOperationId,
-						args.upperKey.treePathOrName,
-						args.upperKey.createdAt,
-						args.upperKey.nodeId,
-					]
-				: [],
-			endInclusive: false,
-		});
-		const phase = phases[args.phase];
-		if (!phase) return { status: "page" as const, rows: [], frontier: null, phaseCount: phases.length, isDone: true };
-		const range = (q: IndexRange) => files_index_range_apply(q, phase);
-		const result = await (
-			folder
-				? saved.queries.by_parent_archive_name((q) => range(q.eq("parentId", folder._id)))
-				: args.stream === "items"
-					? saved.queries.by_scope_archive_tree((q) => range(q.eq("restrictedScopeNodeId", area)))
-					: saved.queries.by_parent_scope_archive_tree((q) => range(q.eq("parentScopeNodeId", area)))
-		)
-			.order("desc")
-			.paginate({ cursor: null, numItems: args.numItems });
+		let nodes: Array<Doc<"files_nodes">>;
+		let frontier: TrashKey | null = null;
+		let phaseCount = 1;
+		let entriesCursor: string | null = null;
+		let isDone: boolean;
+		if (folder) {
+			const folderId = folder._id;
+			const phases = files_index_range_phases({
+				fields: [
+					"archiveOperationId",
+					"name",
+					...(args.savedStream.kind === "cohort" ? ["nodeCreationTime", "nodeId"] : ["_creationTime", "_id"]),
+				],
+				order: "desc",
+				// An active doc has a null `archiveOperationId`, so this range holds the archived docs only.
+				start: [null],
+				startInclusive: false,
+				end: args.upperKey
+					? [args.upperKey.archiveOperationId, args.upperKey.name, args.upperKey.createdAt, args.upperKey.nodeId]
+					: [],
+				endInclusive: false,
+			});
+			const phase = phases[args.phase];
+			if (!phase)
+				return {
+					status: "page" as const,
+					rows: [],
+					frontier: null,
+					phaseCount: phases.length,
+					entriesCursor: null,
+					isDone: true,
+				};
+			const result = await saved.queries
+				.by_parent_archive_name((q) => files_index_range_apply(q.eq("parentId", folderId), phase))
+				.order("desc")
+				.paginate({ cursor: null, numItems: args.numItems });
 
-		// The frontier is read before the docs are dropped below. It can name a doc the caller cannot
-		// open, so the HTTP action seals it inside the public cursor.
-		const last = result.page.at(-1);
-		const frontier = last
-			? {
-					archiveOperationId: last.archiveOperationId!,
-					treePathOrName: folder ? last.name : last.treePath,
-					createdAt: "nodeId" in last ? last.nodeCreationTime : last._creationTime,
-					nodeId: "nodeId" in last ? last.nodeId : last._id,
-				}
-			: null;
-		// "items" drops the area's own folder: it lists in its parent area. "folders" drops a folder that
-		// stopped being restricted: it keeps `parentScopeNodeId` only while its scope job runs, so few
-		// docs are dropped. "children" drops nothing.
-		const nodes = (await saved.read_nodes(result.page)).filter(
-			(node) => folder || node.isRestrictedScopeRoot === (args.stream === "folders"),
-		);
+			// The frontier can name a doc the caller cannot open, so the HTTP action seals it inside the
+			// public cursor.
+			const last = result.page.at(-1);
+			frontier = last
+				? {
+						archiveOperationId: last.archiveOperationId!,
+						name: last.name,
+						createdAt: "nodeId" in last ? last.nodeCreationTime : last._creationTime,
+						nodeId: "nodeId" in last ? last.nodeId : last._id,
+					}
+				: null;
+			nodes = await saved.read_nodes(result.page);
+			phaseCount = phases.length;
+			isDone = result.isDone;
+		} else {
+			const result = await ctx.db
+				.query("files_trash_entries")
+				.withIndex("by_org_ws_area_order_path", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("area", area),
+				)
+				.paginate({ cursor: args.entriesCursor, numItems: args.numItems });
+			// Entries follow the stored nodes. While a Move runs, the current view can already show a node
+			// out of Trash. Its Move cleanup fixes the entry. Until then, leave the row out, like the app.
+			nodes = (
+				await Promise.all(result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)))
+			).filter((node): node is Doc<"files_nodes"> => node !== null && node.archiveOperationId !== null);
+			entriesCursor = result.continueCursor;
+			isDone = result.isDone;
+		}
 		const readable = new Set(
 			(
 				await access_control_db_filter_readable_file_nodes(ctx, {
@@ -911,35 +926,27 @@ export const list_trash_page = internalQuery({
 				})
 			).map((node) => node._id),
 		);
-		const rows = await Promise.all(
-			nodes.map(async (node) => {
-				// A top item is what the app's Trash view lists: its parent is the root, active, or archived by
-				// another delete. One parent read per doc in an area. In a folder the parent is that folder.
-				const parent =
-					folder ??
-					(node.parentId === files_ROOT_ID
-						? null
-						: await files_saved_placement_db_get_node(ctx.db, node.parentId, saved.tag));
-				const locked = !readable.has(node._id);
-				return {
-					nodeId: node._id,
-					path: node.path,
-					name: node.name,
-					kind: node.kind,
-					contentType: node.contentType,
-					updatedAt: node.updatedAt,
-					// Locked, not hidden: a locked row shows name, type, size and dates only.
-					updatedBy: locked ? null : node.updatedBy,
-					assetId: node.assetId,
-					archiveOperationId: node.archiveOperationId!,
-					treePathOrName: folder ? node.name : node.treePath,
-					createdAt: node._creationTime,
-					locked,
-					top: parent?.archiveOperationId !== node.archiveOperationId,
-				};
-			}),
-		);
-		return { status: "page" as const, rows, frontier, phaseCount: phases.length, isDone: result.isDone };
+		const rows = nodes.map((node) => {
+			const locked = !readable.has(node._id);
+			return {
+				nodeId: node._id,
+				path: node.path,
+				name: node.name,
+				kind: node.kind,
+				contentType: node.contentType,
+				updatedAt: node.updatedAt,
+				// Locked, not hidden: a locked row shows name, type, size and dates only.
+				updatedBy: locked ? null : node.updatedBy,
+				assetId: node.assetId,
+				archiveOperationId: node.archiveOperationId!,
+				createdAt: node._creationTime,
+				locked,
+				// A top item is what the app's Trash view lists: an item in Trash on its own. Every area entry is
+				// one. In a folder, it is an item of another delete than the folder.
+				top: folder ? folder.archiveOperationId !== node.archiveOperationId : true,
+			};
+		});
+		return { status: "page" as const, rows, frontier, phaseCount, entriesCursor, isDone };
 	},
 });
 
@@ -952,8 +959,8 @@ type TrashKey = Infer<typeof trash_key_validator>;
 
 function compare_trash_keys(a: TrashKey, b: TrashKey) {
 	return compareValues(
-		[a.archiveOperationId, a.treePathOrName, a.createdAt, a.nodeId],
-		[b.archiveOperationId, b.treePathOrName, b.createdAt, b.nodeId],
+		[a.archiveOperationId, a.name, a.createdAt, a.nodeId],
+		[b.archiveOperationId, b.name, b.createdAt, b.nodeId],
 	);
 }
 
@@ -974,9 +981,9 @@ const trash_list_body_validator = z
 export type public_api_files_organize_http_trash_list_Body = z.infer<typeof trash_list_body_validator>;
 
 /**
- * `files/trash/list`: every archived item of one area, or directly inside one folder, newest delete
- * first. Each page merges the "items" and "folders" streams of `list_trash_page` (or its one "children"
- * stream for a folder) for the normal saved stream and, during a Move, the Move view, like
+ * `files/trash/list`: the Trash entries of one area, or every archived item directly inside one
+ * folder, newest delete first. Area mode reads one range of entries (`list_trash_page`). Folder mode
+ * merges `list_trash_page` for the normal saved stream and, during a Move, the Move view, like
  * `files_saved_list_page` does for a folder list.
  */
 export async function public_api_files_organize_http_trash_list(args: {
@@ -1103,7 +1110,9 @@ export async function public_api_files_organize_http_trash_list(args: {
 				errorCode: "invalid_cursor" as const,
 			},
 		}) as const;
+	// A folder pages by key. An area pages its Trash entries with their Convex cursor.
 	let upperKey: TrashKey | null = null;
+	let entriesCursor: string | null = null;
 	if (body._yay.cursor != null) {
 		let opened: unknown;
 		try {
@@ -1112,91 +1121,120 @@ export async function public_api_files_organize_http_trash_list(args: {
 			if (!(error instanceof ConvexError)) throw error;
 			return await invalid_cursor();
 		}
-		if (!validate(v.object({ upperKey: trash_key_validator }), opened)) return await invalid_cursor();
-		upperKey = opened.upperKey;
+		if (folderNodeId !== null) {
+			if (!validate(v.object({ upperKey: trash_key_validator }), opened)) return await invalid_cursor();
+			upperKey = opened.upperKey;
+		} else {
+			if (!validate(v.object({ entriesCursor: v.string() }), opened)) return await invalid_cursor();
+			entriesCursor = opened.entriesCursor;
+		}
 	}
 
 	type Row = Extract<list_trash_page_Result, { status: "page" }>["rows"][number];
 	const key_of = (row: Row): TrashKey => ({
 		archiveOperationId: row.archiveOperationId,
-		treePathOrName: row.treePathOrName,
+		name: row.name,
 		createdAt: row.createdAt,
 		nodeId: row.nodeId,
 	});
+	const read_page = async (readArgs: { source: files_SavedStream; phase: number }) => {
+		let result: list_trash_page_Result;
+		try {
+			result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_page, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				userId,
+				subject: principal.subject,
+				savedStream: readArgs.source,
+				areaNodeId,
+				folderNodeId,
+				upperKey,
+				entriesCursor,
+				phase: readArgs.phase,
+				numItems: numItems - page.length,
+			})) as list_trash_page_Result;
+		} catch (error) {
+			if (
+				!(error instanceof ConvexError) ||
+				!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+			)
+				throw error;
+			return { refusal: await invalid_cursor() };
+		}
+		if (result.status === "area_not_found") {
+			return {
+				refusal: {
+					status: 404,
+					body: await fail({ status: 404, message: "Area not found", errorCode: "not_found" }),
+				} as const,
+			};
+		}
+		if (result.status === "folder_not_found") {
+			return {
+				refusal: {
+					status: 404,
+					body: await fail({ status: 404, message: "Folder not found", errorCode: "not_found" }),
+				} as const,
+			};
+		}
+		if (result.status === "not_a_folder") {
+			return {
+				refusal: {
+					status: 400,
+					body: await fail({
+						status: 400,
+						message: "folderNodeId must name a folder.",
+						errorCode: "invalid_input",
+					}),
+				} as const,
+			};
+		}
+		if (result.status === "denied" || result.status === "area_locked") {
+			return {
+				refusal: {
+					status: 403,
+					body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+				} as const,
+			};
+		}
+		if (result.status === "not_an_area") {
+			return {
+				refusal: {
+					status: 400,
+					body: await fail({
+						status: 400,
+						message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace.",
+						errorCode: "invalid_input",
+					}),
+				} as const,
+			};
+		}
+		return { result };
+	};
+
 	const page: Row[] = [];
 	let isDone = false;
+	// An area has one stream, read once in the current view. Its page can be short with a cursor when
+	// the view shows some entry nodes out of Trash.
+	if (folderNodeId === null) {
+		const read = await read_page({ source: sources[0]!, phase: 0 });
+		if (read.refusal) return read.refusal;
+		page.push(...read.result.rows);
+		entriesCursor = read.result.entriesCursor;
+		isDone = read.result.isDone;
+	}
 	// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
-	for (let round = 0; round < 8 && page.length < numItems; round++) {
+	for (let round = 0; folderNodeId !== null && round < 8 && page.length < numItems; round++) {
 		const batches: Array<{ rows: Row[]; frontier: TrashKey | null; done: boolean }> = [];
 		for (const source of sources) {
-			for (const stream of folderNodeId !== null ? (["children"] as const) : (["items", "folders"] as const)) {
-				for (let phase = 0; ; phase++) {
-					let result: list_trash_page_Result;
-					try {
-						result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_page, {
-							organizationId: principal.organizationId,
-							workspaceId: principal.workspaceId,
-							userId,
-							subject: principal.subject,
-							savedStream: source,
-							areaNodeId,
-							folderNodeId,
-							stream,
-							upperKey,
-							phase,
-							numItems: numItems - page.length,
-						})) as list_trash_page_Result;
-					} catch (error) {
-						if (
-							!(error instanceof ConvexError) ||
-							!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
-						)
-							throw error;
-						return await invalid_cursor();
-					}
-					if (result.status === "area_not_found") {
-						return {
-							status: 404,
-							body: await fail({ status: 404, message: "Area not found", errorCode: "not_found" }),
-						} as const;
-					}
-					if (result.status === "folder_not_found") {
-						return {
-							status: 404,
-							body: await fail({ status: 404, message: "Folder not found", errorCode: "not_found" }),
-						} as const;
-					}
-					if (result.status === "not_a_folder") {
-						return {
-							status: 400,
-							body: await fail({
-								status: 400,
-								message: "folderNodeId must name a folder.",
-								errorCode: "invalid_input",
-							}),
-						} as const;
-					}
-					if (result.status === "denied" || result.status === "area_locked") {
-						return {
-							status: 403,
-							body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-						} as const;
-					}
-					if (result.status === "not_an_area") {
-						return {
-							status: 400,
-							body: await fail({
-								status: 400,
-								message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace.",
-								errorCode: "invalid_input",
-							}),
-						} as const;
-					}
-					const done = result.isDone && phase + 1 >= result.phaseCount;
-					if (result.frontier || done) {
-						batches.push({ rows: result.rows, frontier: done ? null : result.frontier, done });
-						break;
-					}
+			for (let phase = 0; ; phase++) {
+				const read = await read_page({ source, phase });
+				if (read.refusal) return read.refusal;
+				const { result } = read;
+				const done = result.isDone && phase + 1 >= result.phaseCount;
+				if (result.frontier || done) {
+					batches.push({ rows: result.rows, frontier: done ? null : result.frontier, done });
+					break;
 				}
 			}
 		}
@@ -1276,7 +1314,13 @@ export async function public_api_files_organize_http_trash_list(args: {
 				};
 			}),
 			// `upperKey` can name a row the caller cannot open, so the cursor hides it.
-			cursor: isDone ? null : await crypto_seal_cursor({ purpose: "files_trash_list", scope, payload: { upperKey } }),
+			cursor: isDone
+				? null
+				: await crypto_seal_cursor({
+						purpose: "files_trash_list",
+						scope,
+						payload: folderNodeId !== null ? { upperKey } : { entriesCursor },
+					}),
 			isDone,
 		},
 		headers: { "Cache-Control": "no-store" },

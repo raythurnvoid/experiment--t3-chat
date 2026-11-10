@@ -2923,15 +2923,6 @@ const app_convex_schema = defineSchema({
 			"nodeId",
 		])
 		.index("by_view_parent_name", ["cohortId", "view", "parentId", "name", "nodeCreationTime", "nodeId"])
-		.index("by_view_parent_kind_name", [
-			"cohortId",
-			"view",
-			"parentId",
-			"kind",
-			"name",
-			"nodeCreationTime",
-			"nodeId",
-		])
 		.index("by_view_parent_archive_name", [
 			"cohortId",
 			"view",
@@ -5326,7 +5317,7 @@ const app_convex_schema = defineSchema({
 			"name",
 			"archiveOperationId",
 		])
-		// The subtree op walks page children with this index. It has no `archiveOperationId`, so an archive
+		// The purge walk pages children with this index. It has no `archiveOperationId`, so an archive
 		// stamp does not move a child inside it. Convex adds `_creationTime` at the end.
 		.index("by_organization_workspace_parent_name", [
 			"organizationId",
@@ -5335,6 +5326,10 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"name",
 		])
+		// One folder's children with one delete id, by name. The scope job walk (live children), the Restore
+		// walk (`files_archive_runs.ts`) and the Move descendant pages (`files_move_pages.ts`,
+		// `files_move_cohorts.ts`) page with it. Each walk reads one delete id and pages by name, so a child
+		// that gets a new stamp leaves the range and is never read twice.
 		.index("by_organization_workspace_parent_archiveOperation_name", [
 			"organizationId",
 			"workspaceId",
@@ -5343,17 +5338,10 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"name",
 		])
-		// Move closes saved folders across all archive generations before collecting their owners.
-		.index("by_org_ws_parent_kind_name", [
-			"organizationId",
-			"workspaceId",
-			"moveCohortId",
-			"parentId",
-			"kind",
-			"name",
-		])
 		// One kind of one folder's active children, by name. `get_folder_readme` reads the folder's files.
 		// `list_subtree` and `internal_list_children_saved` (`files_visible.ts`) page one kind at a time.
+		// Move reads the live child folders of saved owner folders (`files_move_pages.ts`,
+		// `files_move_owner_work.ts`).
 		.index("by_organization_workspace_parent_archiveOperation_kind_name", [
 			"organizationId",
 			"workspaceId",
@@ -7161,7 +7149,9 @@ const app_convex_schema = defineSchema({
 	 *
 	 * The step that decides it inserts the doc (`files_trash_entries_db_insert` in
 	 * `server/files-trash-entries.ts`). The overlay flush and Move cleanup delete it when its node
-	 * leaves Trash or is deleted, and keep `area` and the delete id in step with the node.
+	 * leaves Trash or is deleted, and keep the delete id in step with the node. The scope job of an
+	 * unrestrict, and Delete permanently of a restricted folder, move `area` from that folder to the
+	 * area it is in now (`files_trash_entries_db_set_area`).
 	 */
 	files_trash_entries: defineTable({
 		organizationId: files_committed_index_fields.organizationId,
@@ -7169,8 +7159,9 @@ const app_convex_schema = defineSchema({
 		nodeId: v.id("files_nodes"),
 		archiveOperationId: v.string(),
 		/**
-		 * The area the item lists in: the parent's area for a restricted folder, else the item's own.
-		 * Null for the open part of the workspace.
+		 * The area the item lists in: the parent's area for a restricted folder, else the item's own. If
+		 * that area was opened (unrestrict) or deleted for good, the area it is in now. Null for the open
+		 * part of the workspace.
 		 */
 		area: v.union(v.id("files_nodes"), v.null()),
 		/**
@@ -7311,7 +7302,10 @@ const app_convex_schema = defineSchema({
 		 * takes them first, before it reads the next page.
 		 */
 		pending: v.array(v.id("files_nodes")),
-	}).index("by_op_sequence", ["opId", "sequence"]),
+	})
+		.index("by_op_sequence", ["opId", "sequence"])
+		// A Restore asks with it whether a purge queued an item. A node sits in the queue of a few ops at most.
+		.index("by_node", ["nodeId"]),
 	// #endregion files subtree ops
 
 	// #region plugins core

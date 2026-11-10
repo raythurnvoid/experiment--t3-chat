@@ -164,18 +164,24 @@ async function db_collect_saved_folders(ctx: MutationCtx, cohort: Cohort) {
 				cursor.source === "before"
 					? await ctx.db
 							.query("files_saved_places")
-							.withIndex("by_view_parent_kind_name", (q) =>
-								q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId).eq("kind", "folder"),
+							.withIndex("by_view_parent_archive_kind_name", (q) =>
+								q
+									.eq("cohortId", cohort._id)
+									.eq("view", "before")
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null)
+									.eq("kind", "folder"),
 							)
 							.first()
 					: await ctx.db
 							.query("files_nodes")
-							.withIndex("by_org_ws_parent_kind_name", (q) =>
+							.withIndex("by_organization_workspace_parent_archiveOperation_kind_name", (q) =>
 								q
 									.eq("organizationId", cohort.organizationId)
 									.eq("workspaceId", cohort.workspaceId)
 									.eq("moveCohortId", undefined)
 									.eq("parentId", parentId)
+									.eq("archiveOperationId", null)
 									.eq("kind", "folder"),
 							)
 							.first();

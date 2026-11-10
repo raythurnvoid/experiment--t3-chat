@@ -38,6 +38,7 @@ import { access_control_changes_db_record } from "./access_control_changes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_share_links_db_delete_for_node } from "./files_share_links_db.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
+import { files_trash_entries_area_pointer } from "../server/files-trash-entries.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import {
 	organizations_membership_lifetimes_db_get,
@@ -643,6 +644,12 @@ export async function access_control_db_set_service_account_grant(
 			node.restrictedScopeNodeId !== node._id &&
 			node.parentExtendedScopeNodeId === undefined
 		) {
+			// A Trash item keeps its delete-time access fields, and the job would not reach its Trash children.
+			if (node.archiveOperationId !== null) {
+				return Result({
+					_nay: { message: "This item is in Trash. Restore it before you change who can open it." },
+				});
+			}
 			extendNode = node;
 		}
 		resourceId = node._id;
@@ -987,14 +994,19 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  * folder above it, or to `null` when nothing above is restricted. Reading a dead pointer as open
  * would show the node to every member until the job reaches it.
  *
+ * A Trash item keeps its delete-time pointer, because scope jobs skip Trash items. So its dead pointer
+ * stays. Access then goes through the opened folder.
+ *
  * A folder above can be opened too before its own job reaches the dead folder, so the chain can be
  * longer than one hop. Past `DEAD_SCOPE_MAX_HOPS`, keep the node's stored scope. The unrestrict
  * kept that folder's list at view or edit, so its people get in, as they will once the job rewrites
  * the node.
  *
- * A pointer at a deleted node, or at a node of another organization or workspace, is open. We
- * compare organization and workspace, so a pointer that somehow crossed into another workspace is
- * never answered with this workspace's grants.
+ * A pointer at a deleted node, or at a node of another organization or workspace, also keeps the
+ * node's stored scope, so it stays closed. Only a Trash item can point at a deleted node: Delete
+ * permanently removes a restricted folder only from Trash, after its live items have left it. Such a
+ * Trash item stays closed to everyone except the owner, instead of opening to every member. No grant
+ * names a node of another workspace, so a crossed pointer is closed too.
  *
  * Every permission check and list filter reads `restrictedScopeNodeId` through here, so the rule for
  * "is this pointer real" exists once. A second copy of it would let the permission check and the list
@@ -1005,8 +1017,8 @@ const DEAD_SCOPE_MAX_HOPS = 8;
 export async function access_control_db_resolve_live_restricted_scope(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
 		restrictedScopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
@@ -1014,7 +1026,7 @@ export async function access_control_db_resolve_live_restricted_scope(
 	for (let hop = 0; scopeNodeId && hop < DEAD_SCOPE_MAX_HOPS; hop += 1) {
 		const scopeNode = await ctx.db.get("files_nodes", scopeNodeId);
 		if (!scopeNode || scopeNode.organizationId !== args.organizationId || scopeNode.workspaceId !== args.workspaceId) {
-			return null;
+			return args.restrictedScopeNodeId;
 		}
 		if (scopeNode.restrictedScopeNodeId === scopeNode._id) {
 			return scopeNode._id;
@@ -1033,6 +1045,28 @@ export async function access_control_db_resolve_live_restricted_scope(
 }
 
 /**
+ * The live area a Trash entry of `node` lists in. The node's own pointer can be dead after an
+ * unrestrict, and a dead area lists in no Trash view.
+ *
+ * The resolved folder can also be deleted for good already, for example when an outer restricted
+ * folder was purged before this one. Then list the entry in the open area. Only the entry moves: the
+ * item keeps its pointer, so it stays closed to everyone except the owner.
+ */
+export async function access_control_db_resolve_trash_entry_area(
+	ctx: QueryCtx | MutationCtx,
+	node: Doc<"files_nodes">,
+) {
+	const area = await access_control_db_resolve_live_restricted_scope(ctx, {
+		organizationId: node.organizationId,
+		workspaceId: node.workspaceId,
+		restrictedScopeNodeId: files_trash_entries_area_pointer(node),
+	});
+	if (area !== null && (await ctx.db.get("files_nodes", area)) === null) return null;
+
+	return area;
+}
+
+/**
  * Whether an "Add people" grant reaches a node: a grant on an extended root at or above it, in the
  * same restricted area. Follow `extendedScopeNodeId` to the nearest root, then each root's
  * `parentExtendedScopeNodeId`. A pointer at a node that is no longer an extended root (its job still
@@ -1042,19 +1076,47 @@ export async function access_control_db_resolve_live_restricted_scope(
  * is not above the node (a Move job has not reached the node yet), or a root in another restricted
  * area. The node's normal access still works then. Only its added people wait for the job. Each hop
  * must go up, so a bad pointer can never loop.
+ *
+ * A Trash item keeps the pointer it had at delete time, but its folders may have moved since. So its
+ * first root is trusted without a path check. Each later root must still be above the root before it.
+ *
+ * A Trash item also keeps its area pointer, while an unrestrict above gives its live roots the outer
+ * area. So for a Trash item compare the live areas (`access_control_db_resolve_live_restricted_scope`).
+ * A live item compares the stored pointers: a scope job that has not reached it yet stops its chain.
  */
 export async function access_control_db_extended_chain_allows(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		node: Pick<Doc<"files_nodes">, "_id" | "treePath" | "restrictedScopeNodeId" | "extendedScopeNodeId">;
+		/**
+		 * `archiveOperationId` is missing for a live item.
+		 */
+		node: Pick<Doc<"files_nodes">, "_id" | "treePath" | "restrictedScopeNodeId" | "extendedScopeNodeId"> &
+			Partial<Pick<Doc<"files_nodes">, "archiveOperationId">>;
 		get_node: (nodeId: Id<"files_nodes">) => Promise<Doc<"files_nodes"> | null>;
 		root_allows: (rootId: Id<"files_nodes">) => Promise<boolean>;
+		/**
+		 * Pass a cached resolver when there is one. Only a Trash item uses it.
+		 */
+		live_scope?: (pointer: Id<"files_nodes"> | null) => Promise<Id<"files_nodes"> | null>;
 	},
 ) {
+	const isTrash = Boolean(args.node.archiveOperationId);
+	const live_scope =
+		args.live_scope ??
+		((pointer: Id<"files_nodes"> | null) =>
+			access_control_db_resolve_live_restricted_scope(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				restrictedScopeNodeId: pointer,
+			}));
+	const area_of = async (pointer: Id<"files_nodes"> | null) => (isTrash ? await live_scope(pointer) : pointer);
+	const nodeArea = await area_of(args.node.restrictedScopeNodeId);
 	let pointer = args.node.extendedScopeNodeId;
 	let lastPathLength = Infinity;
+	// Each root must be above the path below it: the node's path first, then the root before it.
+	let belowTreePath = isTrash ? null : args.node.treePath;
 	for (let deadHops = 0; pointer && deadHops <= DEAD_SCOPE_MAX_HOPS;) {
 		const root = await args.get_node(pointer);
 		if (
@@ -1062,13 +1124,17 @@ export async function access_control_db_extended_chain_allows(
 			root.organizationId !== args.organizationId ||
 			root.workspaceId !== args.workspaceId ||
 			// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
-			!(root._id === args.node._id || (root.kind === "folder" && args.node.treePath.startsWith(root.treePath))) ||
+			!(
+				root._id === args.node._id ||
+				(root.kind === "folder" && (belowTreePath === null || belowTreePath.startsWith(root.treePath)))
+			) ||
 			root.treePath.length >= lastPathLength ||
-			root.restrictedScopeNodeId !== args.node.restrictedScopeNodeId
+			(await area_of(root.restrictedScopeNodeId)) !== nodeArea
 		) {
 			return false;
 		}
 		lastPathLength = root.treePath.length;
+		belowTreePath = root.treePath;
 		if (root.parentExtendedScopeNodeId === undefined) {
 			deadHops += 1;
 			pointer = root.extendedScopeNodeId;
@@ -1196,6 +1262,11 @@ type FileNodeRef = {
 	treePath?: string;
 	/** Read from the node when missing, for the "Add people" chain. */
 	extendedScopeNodeId?: Id<"files_nodes"> | null;
+	/**
+	 * Pass it with the two fields above for a Trash item. When those two come without it, the
+	 * "Add people" chain checks the item like a live one.
+	 */
+	archiveOperationId?: string | null;
 };
 
 /**
@@ -1297,11 +1368,13 @@ export function access_control_create_file_checker(
 	 * a new item with the same path is not inside it.
 	 *
 	 * An item in Trash is matched by its path too, like Dropbox matches deleted files. Trash can hold
-	 * several items with the same path, from different deletes, and a choice reaches all of them. A Move
-	 * or a Restore that is still running gives an item its new path when it reaches it. Until then the
-	 * item keeps the access of its old path, like the scope jobs. A Restore checks an item inside a
-	 * folder it already brought back against that folder, because Keep both may have renamed it
-	 * (`db_check_writable_nodes` in `files_archive_runs.ts`).
+	 * several items with the same path, from different deletes, and a choice reaches all of them. A Trash
+	 * item keeps its delete-time path, so a choice reaches it while that path is inside the chosen folder's
+	 * current path. A Move of the folder does not take its Trash items along. A Restore that is still
+	 * running gives an item of its own delete its new path when it reaches it. Until then the item keeps
+	 * the access of its old path. A Restore checks an item inside a folder it already brought back against
+	 * that folder, because Keep both may have renamed it (`db_check_writable_nodes` in
+	 * `files_archive_runs.ts`).
 	 *
 	 * A chosen folder reaches only the items inside its path. Another item with the folder's own path,
 	 * such as an older folder of the same name in Trash, is not inside it. Without this rule a choice on
@@ -1332,7 +1405,12 @@ export function access_control_create_file_checker(
 				// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
 				(root._id === node._id ||
 					(root.kind === "folder" && full.treePath !== root.treePath && full.treePath.startsWith(root.treePath))) &&
-				root.restrictedScopeNodeId === node.restrictedScopeNodeId &&
+				// A Trash item keeps its delete-time area pointer, so compare live areas, like the "Add people"
+				// chain does.
+				(full.archiveOperationId === null
+					? root.restrictedScopeNodeId === node.restrictedScopeNodeId
+					: (await live_scope(tenant, root.restrictedScopeNodeId)) ===
+						(await live_scope(tenant, node.restrictedScopeNodeId))) &&
 				(consent.appliedLevel === "write" || (permission === "content.read" && consent.appliedLevel === "read"))
 			) {
 				return true;
@@ -1362,6 +1440,7 @@ export function access_control_create_file_checker(
 			...tenant,
 			node: { ...full, restrictedScopeNodeId: node.restrictedScopeNodeId },
 			get_node,
+			live_scope: (pointer) => live_scope(tenant, pointer),
 			root_allows: (rootId) =>
 				once(`root:${principal.kind}:${rootId}:${permission}`, async () => {
 					if (principal.kind === "user") {
@@ -1411,7 +1490,11 @@ export function access_control_create_file_checker(
 				const full = node.treePath === undefined ? await get_node(node._id) : node;
 				if (
 					scope?.kind === "folder" &&
-					full?.treePath?.startsWith(scope.treePath) &&
+					// A Trash item keeps its delete-time path after the restricted folder moved, so trust its pointer.
+					(full?.treePath?.startsWith(scope.treePath) ||
+						((node.archiveOperationId !== undefined
+							? node.archiveOperationId
+							: (await get_node(node._id))?.archiveOperationId) ?? null) !== null) &&
 					(await pair_root_allows(principal.pairId, scopeNodeId, permission))
 				) {
 					return true;

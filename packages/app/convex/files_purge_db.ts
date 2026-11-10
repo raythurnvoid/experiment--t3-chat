@@ -5,6 +5,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
+import { access_control_db_resolve_trash_entry_area } from "./access_control.ts";
 import { channels_db_purge_channel_batch } from "./channels.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { cancel_file_content_materialization, files_nodes_db_handoff_yjs_cleanup_task } from "./files_nodes.ts";
@@ -19,6 +20,7 @@ import {
 	files_move_reservations_db_check_node_write,
 	files_move_reservations_db_note_source,
 } from "../server/files-move-reservations.ts";
+import { files_trash_entries_db_set_area } from "../server/files-trash-entries.ts";
 
 /**
  * How many docs of one family one drain call deletes.
@@ -119,8 +121,9 @@ export async function files_purge_db_delete_asset(
  * the node (`files_nodes_db_require_writable`), so the families below can only shrink. That call or a
  * later one may still answer `busy`. Then the run must call again later and must not keep the node.
  *
- * Only one purge job works on a path at a time. So a `purgeRunId` of another run is left by a job that
- * ended, and this run takes the node over.
+ * A `purgeRunId` of another run is left by a job that ended, or set by a second purge that reached
+ * the same older Trash item through its folder. Each family below only deletes docs, so this run
+ * takes the node over, and the run that finds the node gone counts it as skipped.
  */
 export async function files_purge_db_drain_node_batch(
 	ctx: MutationCtx,
@@ -192,6 +195,20 @@ export async function files_purge_db_drain_node_batch(
 		.take(DRAIN_BATCH_SIZE);
 	for (const consent of pluginConsents) await ctx.db.delete("plugins_file_consents", consent._id);
 	if (pluginConsents.length > 0) return { kind: "more" as const };
+
+	// Items of older deletes can still list in this restricted folder's area, after their live folder
+	// moved out of it. Move their entries to the area the folder lists in, so they still list there.
+	// They keep their pointer at this folder, so they stay closed (`access_control_db_resolve_live_restricted_scope`).
+	if (node.kind === "folder") {
+		const moved = await files_trash_entries_db_set_area(ctx, {
+			organizationId,
+			workspaceId,
+			from: nodeId,
+			to: await access_control_db_resolve_trash_entry_area(ctx, node),
+			limit: DRAIN_BATCH_SIZE,
+		});
+		if (moved > 0) return { kind: "more" as const };
+	}
 
 	// Drafts on the node, of every user. Discard releases their replacement files and Yjs states.
 	// Temporary, capture and retired Yjs states stay with their owners, which expire or clean them

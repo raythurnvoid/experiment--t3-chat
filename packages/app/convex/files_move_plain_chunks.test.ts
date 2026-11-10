@@ -11,6 +11,7 @@ import {
 	test_finish_file_index,
 	test_finish_saved_scope_jobs,
 	test_finish_transfer_run,
+	test_move_nodes,
 	test_progress_guard,
 	test_spy_handler,
 } from "./setup.test.ts";
@@ -536,7 +537,7 @@ describe("Move unchanged plain chunks", () => {
 		expect((await chunks(f)).every((row) => row.path === "/source/note.txt")).toBe(true);
 	}, 120_000);
 
-	test("keeps a separately archived child's chunks and repairs their cache path", async () => {
+	test("leaves a separately archived child's chunks as they were", async () => {
 		const f = await fixture();
 		expect(
 			(
@@ -548,16 +549,17 @@ describe("Move unchanged plain chunks", () => {
 		).toBeUndefined();
 		await test_finish_saved_scope_jobs(f.t);
 		const original = await chunks(f);
-		const archiveId = original[0]!.archiveOperationId;
-		expect(archiveId).toBeDefined();
-		const move = await start_move(f);
-		await drive_to(f, move, "publish");
-		await assert_reused(f, original);
-		await drive_to(f, move, "finish_sides");
+		expect(original[0]!.archiveOperationId).toBeDefined();
+		// The Move does not take the Trash child along, so it has no metadata pages to pause for.
+		const moved = await test_move_nodes(f.t, f.asUser, {
+			membershipId: f.db.membershipId,
+			itemIds: [f.sourceId],
+			targetParentId: f.targetId,
+		});
+		expect(moved._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(f.t);
+		expect(await chunks(f), "the Trash child's chunks keep every field").toEqual(original);
 		expect(await saved_search(f, { kind: "content", text: "movechunkneedle" })).toEqual([]);
-		await finish(f, move);
-		await assert_reused(f, original);
-		expect((await chunks(f)).every((row) => row.archiveOperationId === archiveId)).toBe(true);
 		expect(
 			(
 				await f.asUser.mutation(api.files_nodes.unarchive_nodes, {

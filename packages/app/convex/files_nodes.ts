@@ -146,6 +146,7 @@ import {
 	access_control_db_authorize_file_write,
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
+	access_control_db_resolve_trash_entry_area,
 	access_control_subject_validator,
 	type access_control_Subject,
 } from "./access_control.ts";
@@ -3014,7 +3015,7 @@ export async function files_nodes_db_validate_occupant_replace(
 		const writable = await files_nodes_db_require_user_writable(ctx, { node: replacesNode, userId: membership.userId });
 		if (writable._nay) return writable;
 
-		// This only records a draft. The Save cohort checks archived descendants before publication.
+		// This only records a draft. The Save cohort checks the replaced item again before publication.
 	}
 
 	return Result({ _yay: { replacesEntry: occupant, replacesNode, replacesContentVersion } });
@@ -3196,8 +3197,10 @@ export async function files_nodes_db_archive_node(
 	if (args.savedScope === "follow") await files_pending_overlay_db_follow_saved_scope(ctx, args.node);
 	else await files_pending_overlay_db_schedule_saved_scope(ctx, args.node);
 	await files_updated_by_db_sync_node(ctx, { nodeId: args.node._id });
-	if (args.trashEntry) await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", args.node._id))!);
-	else await files_trash_entries_db_delete(ctx, args.node._id);
+	if (args.trashEntry) {
+		const node = (await ctx.db.get("files_nodes", args.node._id))!;
+		await files_trash_entries_db_insert(ctx, node, await access_control_db_resolve_trash_entry_area(ctx, node));
+	} else await files_trash_entries_db_delete(ctx, args.node._id);
 }
 
 /**

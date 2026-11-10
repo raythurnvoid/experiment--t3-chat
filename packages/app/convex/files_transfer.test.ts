@@ -3072,7 +3072,8 @@ describe("move", () => {
 			for (const path of ["/source/hidden-name", "/source/hidden-name/child"]) {
 				const nodeId = folders.get(path)!;
 				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
-					path: `/target${path}`,
+					// A Move does not take Trash items along. They keep their delete-time path.
+					path: archived ? path : `/target${path}`,
 					restrictedScopeNodeId: restrictedId,
 					archiveOperationId: before.find((node) => node._id === nodeId)!.archiveOperationId,
 				});

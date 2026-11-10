@@ -340,6 +340,58 @@ test("a chosen folder keeps its Trash items but gives a new item at its old path
 	expect(await levels(f, pairId, freshId), "a new item at a chosen folder's Trash path stays denied").toEqual(denied);
 });
 
+test("a chosen restricted folder keeps its Trash items after it moved", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const chosen = await folder(f, "/private");
+	const target = await folder(f, "/target");
+	const goneId = await test_create_saved_text_file(f.t, { membershipId: f.db.membershipId, path: "/private/gone.md" });
+	await restrict(f, chosen.folderId, true);
+	await consent(f, pairId, chosen.folderId, "write");
+	await archive(f, goneId);
+
+	// The Move does not take the Trash file along. It keeps its delete-time path and its area.
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const moved = await test_move_nodes(f.t, f.asOwner, {
+		membershipId: f.db.membershipId,
+		itemIds: [chosen.folderId],
+		targetParentId: target.folderId,
+	});
+	expect(moved._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", goneId))).toMatchObject({
+		path: "/private/gone.md",
+		restrictedScopeNodeId: chosen.folderId,
+	});
+
+	expect(await levels(f, pairId, goneId), "the Trash file keeps the choice of its area").toEqual(write);
+});
+
+test("a chosen folder keeps its Trash items after the restricted folder above it is opened", async () => {
+	const f = await fixture();
+	const pairId = await pair(f);
+	const outer = await folder(f, "/private");
+	const chosen = await folder(f, "/private/docs");
+	const goneId = await test_create_saved_text_file(f.t, {
+		membershipId: f.db.membershipId,
+		path: "/private/docs/gone.md",
+	});
+	await restrict(f, outer.folderId, true);
+	await consent(f, pairId, chosen.folderId, "write");
+	await archive(f, goneId);
+
+	// The live chosen folder moves to the open area. The Trash file keeps its pointer at the opened folder.
+	await restrict(f, outer.folderId, false);
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", chosen.folderId))).toMatchObject({
+		restrictedScopeNodeId: null,
+	});
+	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", goneId))).toMatchObject({
+		restrictedScopeNodeId: outer.folderId,
+	});
+
+	expect(await levels(f, pairId, goneId), "the choice compares the live areas of a Trash item").toEqual(write);
+});
+
 test("a separately selected child survives ended parent consent", async () => {
 	const f = await fixture();
 	const pairId = await pair(f);

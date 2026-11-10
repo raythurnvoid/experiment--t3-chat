@@ -44,6 +44,7 @@ import {
 	access_control_db_authorize_membership,
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
+	access_control_db_resolve_trash_entry_area,
 } from "./access_control.ts";
 import {
 	activities_db_delete,
@@ -536,6 +537,17 @@ async function db_check_writable_nodes(
 		if (!allowed) return { kind: "failed", nay: { message: "Permission denied" } } as const;
 		// Restore preserves the archived item's flag. Its live parent list is checked separately.
 		if (args.run.kind === "restore" && node.archiveOperationId === args.run.archiveOperationId) {
+			// An older Trash item keeps its delete-time path, so a Delete permanently of the folder it is in now
+			// does not hold that path. Refuse the item once a purge queued it. The purge then already checked
+			// the item's folder and may delete the items inside it, even after this Restore brings it back.
+			// A job deletes each queue row when it handles it, so a node has one row per open job that reached
+			// it. That count grows with jobs running now, not with the size of the folder or its history.
+			const queueRows = await ctx.db
+				.query("files_subtree_op_nodes")
+				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+				.collect();
+			if (node.purgeRunId || queueRows.some((row) => row.purge !== undefined))
+				return { kind: "failed", nay: { message: "This item is being deleted." } } as const;
 			if (
 				!(await files_write_policy_db_is_within_scope(ctx, {
 					organizationId: membership.organizationId,
@@ -1045,7 +1057,8 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 						.eq("archiveOperationId", args.run.archiveOperationId),
 				)
 				.paginate({ cursor: frame.promoteCursor, numItems: PAGE_SIZE });
-			for (const child of stamped.page) await files_trash_entries_db_insert(ctx, child);
+			for (const child of stamped.page)
+				await files_trash_entries_db_insert(ctx, child, await access_control_db_resolve_trash_entry_area(ctx, child));
 			args.budget.nodes -= stamped.page.length;
 			if (!stamped.isDone) {
 				await ctx.db.patch("files_subtree_op_nodes", row._id, {
@@ -1206,6 +1219,10 @@ async function db_check_purge_node(
 
 	// The person picked the named item in the Archive view. When it was restored, archived again or
 	// moved since, they did not pick what is there now.
+	//
+	// An item inside is checked by its folder, not by its path. An older Trash item keeps its delete-time
+	// path after its folder was renamed, so its path can be outside the named item's path. A restored item
+	// is live, so it is not deleted.
 	const root = node._id === frame.rootNodeId ? node : await ctx.db.get("files_nodes", frame.rootNodeId);
 	if (
 		!root ||
@@ -1214,7 +1231,7 @@ async function db_check_purge_node(
 		node.organizationId !== args.run.organizationId ||
 		node.workspaceId !== args.run.workspaceId ||
 		node.parentId !== frame.parentId ||
-		(node._id !== root._id && (root.kind !== "folder" || !node.treePath.startsWith(root.treePath)))
+		(node._id !== root._id && (root.kind !== "folder" || node.archiveOperationId === null))
 	)
 		return "changed";
 
@@ -1398,7 +1415,12 @@ async function db_apply_purge(ctx: MutationCtx, args: StepArgs): Promise<StepOut
 			// Queue the next page of children above the folder, so they go first. Archived children can
 			// share a name, so the page goes by name and creation time.
 			if (node.kind === "folder") {
-				const page = await files_subtree_ops_db_next_children(ctx, { row, folder: node, budget: args.budget });
+				const page = await files_subtree_ops_db_next_children(ctx, {
+					row,
+					folder: node,
+					childrenOf: "all",
+					budget: args.budget,
+				});
 				if (!page) return { kind: "continue" };
 				if (page.children.length > 0 || !page.isDone) {
 					args.budget.checkNodes -= page.children.length;
@@ -2574,9 +2596,9 @@ export async function files_archive_runs_db_find_saved_restore_left_node(
 
 /**
  * Pull the selected roots' unfinished items, at most one page at a time, and land each one. Walk each
- * folder by `parentId`. A child of the operation comes back when its folder is active, or joins its
+ * folder's children of the operation. A child comes back when its folder is active, or joins its
  * folder's archive when the folder was skipped. A name clash in an active folder asks, like a clash of
- * a top item. Every other child keeps its stamp and gets the new path and scope.
+ * a top item. Trash items of other deletes keep the path and scope they had at delete time.
  *
  * The walk ends when no matching item is left inside any selected root.
  */
@@ -2664,7 +2686,13 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		// Read the folder again. The top item above may have just landed it.
 		const folder = (await ctx.db.get("files_nodes", node._id))!;
-		const next = await files_subtree_ops_db_next_children(ctx, { row, folder, budget: args.budget });
+		// Read only this delete's children. Trash items of other deletes stay as they were at delete time.
+		const next = await files_subtree_ops_db_next_children(ctx, {
+			row,
+			folder,
+			childrenOf: { archiveOperationId: run.archiveOperationId },
+			budget: args.budget,
+		});
 		if (!next) return { kind: "continue" };
 		const folderIds = [];
 		let pending: Array<Id<"files_nodes">> = [];
@@ -2736,7 +2764,8 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				args.budget.nodes -= 1;
 				args.writeState.isWritten = true;
 			}
-			// A folder of another archive that kept its path keeps the paths inside too. Skip its walk.
+			// A selected top item follows its folder here, then lands from its own row. A folder that kept its
+			// path keeps the paths inside too. Skip its walk.
 			else if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
 				args.budget.nodes -= 1;
 				args.writeState.isWritten = true;
@@ -2768,7 +2797,8 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
  * walks the items inside it in later steps. So when the job stops, the queue can still hold folders
  * whose items keep the old path and scope. This happens when a Stop, a refusal, a lost key, plugin or
  * membership, or a timeout comes between a folder's own step and the walk of its items. The repair only
- * fixes paths, scopes and Trash entries. It brings back nothing more and keeps every delete stamp.
+ * fixes paths, scopes and Trash entries of this delete's items. It brings back nothing more and keeps
+ * every delete stamp.
  *
  * Then read each selected root's items with the same index the apply uses, one native page per step.
  * The walk changes nothing else, so it needs no membership.
@@ -2784,7 +2814,7 @@ async function db_end_restore(
 	if (generation !== run.ending!.generation) run.ending = { ...run.ending!, rootIndex: 0, cursor: null, generation };
 
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
-	// The repair below also visits items of older deletes, so compare with the item's own delete.
+	// An item is alone in Trash when its folder is not in the item's own delete.
 	const insert_entry_if_alone = async (node: Doc<"files_nodes">) => {
 		if (node.parentId !== files_ROOT_ID) {
 			let parent = parents.get(node.parentId);
@@ -2794,7 +2824,8 @@ async function db_end_restore(
 			}
 			if (parent?.archiveOperationId === node.archiveOperationId) return;
 		}
-		await files_trash_entries_db_insert(ctx, node);
+		// The item may still point at a folder that was opened since its delete.
+		await files_trash_entries_db_insert(ctx, node, await access_control_db_resolve_trash_entry_area(ctx, node));
 	};
 
 	// Each done row is a folder whose items may still have its old path and scope. A row that is not
@@ -2816,7 +2847,13 @@ async function db_end_restore(
 			await ctx.db.delete("files_subtree_op_nodes", row._id);
 			continue;
 		}
-		const next = await files_subtree_ops_db_next_children(ctx, { row, folder, budget: args.budget });
+		// Only this delete's items can owe a repair. Other Trash items keep their delete-time path and scope.
+		const next = await files_subtree_ops_db_next_children(ctx, {
+			row,
+			folder,
+			childrenOf: { archiveOperationId: run.archiveOperationId },
+			budget: args.budget,
+		});
 		if (!next) return { kind: "continue" };
 		const folderIds = [];
 		let pending: Array<Id<"files_nodes">> = [];
@@ -2836,7 +2873,7 @@ async function db_end_restore(
 			}
 			// Read the child again, so a new Trash entry gets its new area. An item of this delete may now
 			// be outside every selected root's path, so the walk below would not find it.
-			if (child.archiveOperationId !== null) await insert_entry_if_alone((await ctx.db.get("files_nodes", child._id))!);
+			await insert_entry_if_alone((await ctx.db.get("files_nodes", child._id))!);
 		}
 		await files_subtree_ops_db_save_page(ctx, {
 			row,

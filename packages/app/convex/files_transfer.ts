@@ -1773,6 +1773,9 @@ export async function files_transfer_db_start_rename(
 		fileNode: source,
 	});
 	if (authorized._nay) return authorized;
+	// Trash items stay as they were at delete time, like in the Windows Recycle Bin and the macOS Trash.
+	if (source.archiveOperationId !== null)
+		return Result({ _nay: { name: "nay", message: "This item is in Trash. Restore it before you rename it." } });
 	const writable = await files_nodes_db_require_user_writable(ctx, { node: source, userId: membership.userId });
 	if (writable._nay) return writable;
 	const parent =
@@ -1798,7 +1801,7 @@ export async function files_transfer_db_start_rename(
 		if (valid._yay !== segment) return Result({ _nay: { message: "Invalid folder name" } });
 	}
 	if (segments.length === 1 && name._yay === source.name) return Result({ _yay: null });
-	if (segments.length === 1 && source.archiveOperationId === null) {
+	if (segments.length === 1) {
 		const occupant = await files_saved_placement_db_get_slot(ctx.db, {
 			...membership,
 			parentId: source.parentId,
@@ -3422,7 +3425,7 @@ async function db_commit_move(args: {
 	const source = item.source.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, item.source.id) : null;
 	if (
 		!source ||
-		(source.archiveOperationId !== null && source.archiveOperationId !== run.rename?.source.archiveOperationId) ||
+		source.archiveOperationId !== null ||
 		source.path !== item.sourcePath ||
 		source.parentId !== (item.sourceParent.kind === "root" ? files_ROOT_ID : item.sourceParent.id) ||
 		source.name !== item.sourceName

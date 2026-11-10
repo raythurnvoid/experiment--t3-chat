@@ -262,12 +262,68 @@ Trash saves the path in `archivedPath` at the first stamp. A later stamp, rename
 item does not change it, and Restore clears it. Decided 2026-11-01: following the old parent folder
 gave too many edge cases, for example a parent that is in Trash too.
 
+Design principle (decided 2026-11-10): Trash items stay as they were at delete time, like in the
+Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore simple.
+
+- A Move or a Rename reads live children only (archive operation `null`), so it never takes Trash
+  items along. They keep their path, `treePath`, ancestors and access pointers of delete time.
+- A Rename of an item in Trash is refused: `This item is in Trash. Restore it before you rename it.`
+  The sidebar does not offer Rename on Trash rows.
+- A Restore reads only the items of its own delete. Trash items of other deletes inside a restored
+  folder stay as they are.
+- Access checks trust a Trash item's frozen pointers. The "Add people" chain trusts the item's first
+  root without the path check. The chain and a plugin choice of a restricted folder compare the live
+  areas of the pointers (`access_control_db_resolve_live_restricted_scope`), not the raw pointers. So
+  an unrestrict above a Trash item keeps its added people and plugin choices (see the
+  `access-control` skill). A plugin's choice of an open folder still matches by path.
+- A pointer at a node that was deleted for good stays closed: only the owner can open the item. Only
+  a Trash item can hold such a pointer, because a restricted folder is deleted for good only from
+  Trash, when no live item is inside it.
+- Delete permanently checks the items inside a named folder by parent id, not by path. A Restore
+  refuses an item that a Delete permanently queued or started to delete (`This item is being
+  deleted.`), because that job holds only the folder's path, not the item's delete-time path. The
+  queue counts too: the job queues the items inside a folder after it checked the folder, so a
+  Restore of that folder would come back without them (index `by_node` of `files_subtree_op_nodes`).
+  Two purges can reach the same older Trash item. One deletes it, the other finds it gone, and both
+  end.
+- Scope jobs (restrict, unrestrict, Add people, plugin anchors and their cleanup) read live children
+  only. A Trash item keeps the area and "Add people" pointers of its delete time. So a restrict does
+  not lock older Trash items inside the folder: they keep the access they had when they were deleted,
+  like files in the Windows Recycle Bin.
+- An unrestrict of folder R, or Delete permanently of R, moves the Trash entries of area R to the
+  area R is in now, as paged work (`files_trash_entries_db_set_area`). The unrestrict does it at the
+  end of its scope job (`db_set_trash_entries_area` in `files_subtree_ops_rebuild.ts`), the purge
+  before it deletes R (`files_purge_db_drain_node_batch`). The Trash nodes keep their pointer at R.
+  Access follows that pointer through an opened R to its live area, and stays closed when R is gone.
+  A new Trash entry gets the live area of its item's pointer
+  (`access_control_db_resolve_trash_entry_area`). A later write of the node does not move it back.
+- A restrict or an unrestrict of an item in Trash is refused: `This item is in Trash. Restore it
+  before you change who can open it.` This also covers turning on "Everyone in this workspace can
+  view" for an open Trash item, because that restricts it. A first added person or service account
+  on an open Trash item is refused with the same text, because it would make the item a shared root
+  and change its children. More people on a Trash item that already has some, and every removal,
+  stay allowed: the people list is live, not frozen. A plugin's choice of an open folder in Trash is
+  accepted, but the folder gets no anchor. The choice reaches its Trash items by path.
+
+Accepted as designed (reviewed 2026-11-10):
+
+- A later restrict of R does not move its old entries back to R. They stay in the area above as
+  locked rows ("Locked, not hidden"), with name, path, type, size and dates, for people who cannot
+  open R. R's people do not find them in R's Trash list.
+- A plugin's folder choice matches Trash items by their delete-time path. After a Move of the chosen
+  folder, a new folder at the old path reaches those Trash items, and the moved folder does not.
+  Path-limited API keys work the same way.
+- Only the first "Add people" root of a Trash item skips the path check. Later roots follow the live
+  chain: if that root moves under another shared folder in the same area, the people of that folder
+  reach the Trash item too.
+
 A restore that ends early (Stop, a refusal, a lost key, plugin or membership, a timeout) first finishes the
 path repair it owes, then gives the Trash entries above (`db_end_restore`). The apply gives a folder
-its new path or area, then walks the items inside it in later steps. So the stopped job's queue can
-still hold folders whose items keep the old path and area. The ending walks each such folder by
-parent id, like the apply, and skips a folder whose path and area did not change. Each item gets its
-folder's path and area. Each item left in Trash alone gets its Trash entry.
+its new path or area, then walks the items of its delete inside it in later steps. So the stopped
+job's queue can still hold folders whose items keep the old path and area. The ending walks each such
+folder by parent id, like the apply, and skips a folder whose path and area did not change. Each item
+of this delete gets its folder's path and area. Each item left in Trash alone gets its Trash entry.
+Items of other deletes keep their delete-time path and area.
 The ending brings back nothing more and keeps every delete stamp and the Restore counts. It keeps
 its op until this ends, so queued jobs still wait. A refusal inside a page first saves that page,
 so folders the page already changed keep their queue rows. The same rule holds for app, key and
@@ -358,8 +414,10 @@ destination path is read-only.".
 A Copy or Move that merges into a folder or replaces a file checks that item too. When it is
 Read-only, the text says "The destination folder is read-only." or "The destination file is
 read-only.". When the item is a draft, the lock is on a saved folder above it, so the text is "A
-folder in the destination path is read-only.". Before it saves, the Move checks the replaced item and
-the items inside it again, and says "An item the Move replaces is read-only.". A folder that a Move
+folder in the destination path is read-only.". Before it saves, the Move checks the replaced item
+again, with the same texts. A replaced folder holds no live items, and the Move does not check or
+touch its Trash items. The text "An item the Move replaces is read-only." is only a second guard on
+the replaced item's own record. A folder that a Move
 creates on the way to its destination checks the folder above it, and says "A folder in the
 destination path is read-only.". The Pending tab keeps Accept disabled while the file a Move replaces
 is Read-only. So a user sees "The destination file is read-only." there only when the lock comes after

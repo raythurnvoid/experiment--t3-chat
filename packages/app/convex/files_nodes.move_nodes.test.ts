@@ -41,6 +41,15 @@ import {
 	expected_ledger_keys,
 } from "./files_nodes.setup.test.ts";
 import { accept_move_proposals_for_test } from "./files_nodes.move_nodes.setup.test.ts";
+import {
+	archive,
+	fixture,
+	folder,
+	read_node,
+	restore,
+	run_to_end,
+	seed_tree,
+} from "./files_archive_runs.setup.test.ts";
 
 const generateTextMock = vi.hoisted(() => vi.fn());
 const streamTextMock = vi.hoisted(() => vi.fn());
@@ -202,10 +211,12 @@ describe("reviewed Move graph", () => {
 					path: target.path + "/" + anchor.name + "/new/shared/" + source.name,
 					restrictedScopeNodeId: target._id,
 				});
+			// A Trash item stays where it was deleted, with its old scope.
 			expect(await ctx.db.get("files_nodes", archivedChild._id)).toMatchObject({
 				archiveOperationId: "old-archive",
-				path: target.path + "/" + anchor.name + "/new/shared/" + sources[0]!.name + "/" + archivedChild.name,
-				restrictedScopeNodeId: target._id,
+				path: archivedChild.path,
+				treePath: archivedChild.treePath,
+				restrictedScopeNodeId: archivedChild.restrictedScopeNodeId,
 			});
 		});
 	});
@@ -563,7 +574,7 @@ describe("reviewed Move graph", () => {
 	);
 
 	test.each(["active", "read_only", "archived"] as const)(
-		"checks a replacement folder's %s descendants before writing",
+		"checks a replacement folder and its descendants before writing (%s)",
 		async (childState) => {
 			const t = test_convex();
 			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -575,7 +586,6 @@ describe("reviewed Move graph", () => {
 					await ctx.db.patch("files_nodes", child._id, {
 						archiveOperationId: "earlier-archive",
 						sortName: files_sort_text_key(child.name),
-						...(childState === "read_only" ? { readOnly: true, readOnlyDecisionId: crypto.randomUUID() } : {}),
 					});
 					await ctx.db.patch("files_nodes", child._id, {
 						ancestor1: db.files.file_root_1._id,
@@ -593,7 +603,9 @@ describe("reviewed Move graph", () => {
 				destName: occupant.name,
 				replace: true,
 			});
-			if (childState === "archived") {
+			// A Trash child never blocks the replace: the Move does not touch it. In the read_only case
+			// someone locks the live folder after the proposal, so the Save refuses it.
+			if (childState !== "active") {
 				expect(result._nay).toBeUndefined();
 				const proposal = await t.run((ctx) =>
 					ctx.db
@@ -609,42 +621,26 @@ describe("reviewed Move graph", () => {
 					destParent: { kind: "root" },
 					destName: "moved-parent",
 				});
-				expect(
-					(await accept_move_proposals_for_test(t, db, [proposal!._id, parentMove.pendingUpdateId])).activity?.status,
-				).toBe("succeeded");
-				const path = "/moved-parent/" + occupant.name + "/" + child.name;
-				expect(await t.run((ctx) => ctx.db.get("files_nodes", child._id))).toEqual({
-					...before.find((node) => node._id === child._id),
-					path,
-					treePath: path + "/",
-					// The mock node has no field yet. A rebuild that writes the node also writes it.
-					extendedScopeNodeId: null,
-				});
-			} else {
-				if (result._yay) {
-					const proposal = await t.run((ctx) =>
-						ctx.db
-							.query("files_pending_updates")
-							.withIndex("by_user_target", (q) =>
-								q.eq("userId", db.userId).eq("target.kind", "saved").eq("target.id", source._id),
-							)
-							.unique(),
+				if (childState === "read_only")
+					await t.run((ctx) =>
+						ctx.db.patch("files_nodes", occupant._id, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
 					);
-					const parentMove = await propose_move_for_test(t, {
-						...db,
-						nodeId: db.files.file_root_1._id,
-						destParent: { kind: "root" },
-						destName: "moved-parent",
-					});
-					const review = await accept_move_proposals_for_test(t, db, [proposal!._id, parentMove.pendingUpdateId]);
+				const review = await accept_move_proposals_for_test(t, db, [proposal!._id, parentMove.pendingUpdateId]);
+				if (childState === "read_only") {
 					expect(review.activity?.status).toBe("failed");
 					expect(
-						review.units.some(
-							(unit) => unit.errorMessage === "An item the Move replaces is read-only. Unlock it, then try again.",
-						),
-					).toBe(true);
-				} else
-					expect(result._nay.message).toBe(childState === "active" ? "Directory not empty" : "This item is read-only.");
+						review.units.map((unit) => unit.errorMessage),
+						"the Save refuses a locked live folder it replaces",
+					).toEqual(["The destination folder is read-only. Unlock it, then try again."]);
+					return;
+				}
+				expect(review.activity?.status).toBe("succeeded");
+				// The older Trash child stays where it was deleted. Only the live occupant goes to Trash.
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", child._id))).toEqual(
+					before.find((node) => node._id === child._id),
+				);
+			} else {
+				expect(result._nay?.message).toBe("Directory not empty");
 				expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
 			}
 		},
@@ -879,7 +875,10 @@ describe("paged folder moves and scope jobs", () => {
 			const nodes = await ctx.db.query("files_nodes").collect();
 			const children = nodes.filter((node) => node.parentId === source._id);
 			expect(children).toHaveLength(BIG_FOLDER_CHILDREN);
-			expect(children.every((node) => node.path.startsWith("/target/source/"))).toBe(true);
+			// The Trash child stays at its delete-time path.
+			expect(children.filter((node) => !node.path.startsWith("/target/source/")).map((node) => node.path)).toEqual([
+				`/source/child-${BIG_FOLDER_CHILDREN - 1}`,
+			]);
 			expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual([
 				`child-${BIG_FOLDER_CHILDREN - 1}`,
 			]);
@@ -946,7 +945,10 @@ describe("paged folder moves and scope jobs", () => {
 		const nodes = await t.run((ctx) => ctx.db.query("files_nodes").collect());
 		const children = nodes.filter((node) => node.parentId === source._id);
 		expect(children).toHaveLength(BIG_FOLDER_CHILDREN);
-		expect(children.filter((node) => !node.path.startsWith("/target/source/child-"))).toEqual([]);
+		// The Trash child stays at its delete-time path.
+		expect(children.filter((node) => !node.path.startsWith("/target/source/child-")).map((node) => node.path)).toEqual([
+			`/source/child-${BIG_FOLDER_CHILDREN - 1}`,
+		]);
 		// The walk writes paths, never the archive stamp.
 		expect(children.filter((node) => node.archiveOperationId !== null).map((node) => node.name)).toEqual([
 			`child-${BIG_FOLDER_CHILDREN - 1}`,
@@ -959,48 +961,75 @@ describe("paged folder moves and scope jobs", () => {
 		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(1);
 	});
 
-	test("a public Move finishes a big group of archived items with one name", async () => {
-		const t = test_convex();
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const { source, target } = await seed_wide_source({ t, db, childCount: 0, metadataPerNode: 0 });
-		// Each replace of `report.md` archives the old one, so a folder can collect many items with one name.
-		await t.run(async (ctx) => {
-			ctx = { ...ctx, db: files_content_heads_db_wrap(ctx).db };
-			for (let index = 0; index < BIG_FOLDER_CHILDREN; index += 1) {
-				await ctx.db.insert("files_nodes", {
-					...test_mocks.files.base(),
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					createdBy: db.userId,
-					updatedBy: db.userId,
-					parentId: source._id,
-					kind: "file",
-					name: "report.md",
-					sortName: files_sort_text_key("report.md"),
-					path: "/source/report.md",
-					treePath: "/source/report.md",
-					pathDepth: 2,
-					archiveOperationId: `replace-${index}`,
-				});
-			}
-		});
-		const moved = async () =>
-			(await t.run((ctx) => ctx.db.query("files_nodes").collect())).filter(
-				(node) => node.path === "/target/source/report.md",
-			).length;
-		const pagedMoves = count_paged_moves();
-
+	test("a Move and a Rename leave Trash items as they were at delete time", async () => {
+		vi.useFakeTimers();
+		const f = await fixture();
+		// 36 Trash files and 4 live files in one folder: more Trash items than one Move page of 32.
+		const tree = await seed_tree(f, { name: "box", folderCount: 1, filesPerFolder: 40 });
+		const folderId = tree.folderIds[0]!;
+		const trashIds = tree.fileIds.slice(0, 36);
+		const liveIds = tree.fileIds.slice(36);
+		const archived = await archive(f, trashIds);
+		expect(archived._nay).toBeUndefined();
+		if (archived._yay) await run_to_end(f, archived._yay);
+		const otherId = await folder(f, "/other");
 		expect(
-			await test_move_nodes(t, asUser, {
-				membershipId: db.membershipId,
-				itemIds: [source._id],
-				targetParentId: target._id,
-			}),
-		).toEqual({ _yay: null });
-		expect(await moved()).toBe(BIG_FOLDER_CHILDREN);
-		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
-		expect(pagedMoves.count, "the group needs more than one Move page").toBeGreaterThan(1);
+			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: otherId }))
+				._nay,
+		).toBeUndefined();
+		const read_trash = () =>
+			f.t.run(async (ctx) => ({
+				nodes: await Promise.all(trashIds.map((id) => ctx.db.get("files_nodes", id))),
+				metadataDocs: (await ctx.db.query("files_metadata_docs").collect()).filter(
+					(doc) => doc.sourceKind === "committed" && trashIds.includes(doc.fileNodeId),
+				),
+				chunks: (await ctx.db.query("files_plain_text_chunks").collect()).filter(
+					(chunk) => chunk.sourceKind === "committed" && trashIds.includes(chunk.fileNodeId),
+				),
+				entries: await ctx.db.query("files_trash_entries").collect(),
+			}));
+		const before = await read_trash();
+		const collected = new Set<string>();
+		test_spy_handler(descendant_page, async (handler, ctx, args) => {
+			const result = await handler(ctx, args);
+			const { page } = result as unknown as { page: Array<{ _id: string } | { nodeId: string }> };
+			for (const entry of page) collected.add("nodeId" in entry ? entry.nodeId : entry._id);
+			return result;
+		});
+
+		// Move the folder into a restricted folder, then rename it.
+		expect(
+			(
+				await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds: [folderId],
+					targetParentId: otherId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId: folderId, path: "renamed" }))
+				._nay,
+		).toBeUndefined();
+		for (const id of liveIds)
+			expect(await read_node(f, id)).toMatchObject({
+				path: expect.stringMatching(/^\/other\/renamed\//),
+				restrictedScopeNodeId: otherId,
+			});
+		expect(await read_trash(), "Trash items and their side docs keep every field").toEqual(before);
+		expect(
+			trashIds.filter((id) => collected.has(id)),
+			"the Move reads live children only",
+		).toEqual([]);
+		expect(liveIds.filter((id) => !collected.has(id))).toEqual([]);
+
+		// Restore lands the item at its Trash path and makes the missing folder there.
+		const restored = await restore(f, [trashIds[0]!]);
+		expect(restored._nay).toBeUndefined();
+		if (restored._yay) await run_to_end(f, restored._yay);
+		const back = await read_node(f, trashIds[0]!);
+		expect(back).toMatchObject({ archiveOperationId: null, path: "/box/d0/f000.md" });
+		expect(back.parentId).not.toBe(folderId);
 	});
 
 	test("a restrict of a big folder commits now and a job gives every child the new scope", async () => {
@@ -1008,8 +1037,10 @@ describe("paged folder moves and scope jobs", () => {
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		// `child-0` below keeps its own scope, but the step still writes its new parent scope. One more
-		// child than a step writes leaves work for the job.
-		const childCount = files_subtree_ops_STEP_MAX_NODES + 1;
+		// live child than a step writes leaves work for the job. The last child is in Trash. The job skips
+		// it, so it keeps the scope of its delete time.
+		const childCount = files_subtree_ops_STEP_MAX_NODES + 2;
+		const trashName = `child-${childCount - 1}`;
 		const { source } = await seed_wide_source({ t, db, childCount, metadataPerNode: 0 });
 		// A restricted child keeps its own scope. The walk still goes inside it.
 		const nested = await t.run(async (ctx) => {
@@ -1042,7 +1073,7 @@ describe("paged folder moves and scope jobs", () => {
 		const activity = await t.run((ctx) => ctx.db.query("activities").first());
 		expect(activity).toMatchObject({ source: { kind: "files_subtree_op", opKind: "scope" }, feedVisible: false });
 		expect(
-			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && scope !== source._id),
+			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && name !== trashName && scope !== source._id),
 			"the first step leaves one child for the job",
 		).toHaveLength(1);
 
@@ -1050,7 +1081,10 @@ describe("paged folder moves and scope jobs", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 		const restricted = await scopes();
 		expect(restricted.size).toBe(childCount);
-		expect([...restricted].filter(([name, scope]) => name !== "child-0" && scope !== source._id)).toEqual([]);
+		expect(
+			[...restricted].filter(([name, scope]) => name !== "child-0" && name !== trashName && scope !== source._id),
+		).toEqual([]);
+		expect(restricted.get(trashName), "the Trash child keeps the scope of its delete time").toBe(null);
 		expect(restricted.get("child-0")).toBe(nested._id);
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", nested._id)))?.parentScopeNodeId).toBe(source._id);
 
@@ -1234,11 +1268,12 @@ describe("move_nodes", () => {
 				itemIds: [other._yay.nodeId, source._id],
 				targetParentId: target._id,
 			});
-			// Every access level moves the restricted folder along. It keeps its own people.
+			// Every access level moves the restricted folder along. It keeps its own people. In Trash it
+			// stays where it was deleted.
 			expect(result._nay).toBeUndefined();
 			for (const node of [restricted, child]) {
 				expect(await t.run((ctx) => ctx.db.get("files_nodes", node._id))).toMatchObject({
-					path: `${target.path}${node.path}`,
+					path: archived ? node.path : `${target.path}${node.path}`,
 					restrictedScopeNodeId: restricted._id,
 					archiveOperationId: before.find((saved) => saved._id === node._id)!.archiveOperationId,
 				});

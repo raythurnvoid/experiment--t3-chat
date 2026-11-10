@@ -35,7 +35,10 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_publish_receipt,
 } from "../server/files-saved-placement.ts";
-import { access_control_db_extended_chain_allows } from "./access_control.ts";
+import {
+	access_control_db_extended_chain_allows,
+	access_control_db_resolve_trash_entry_area,
+} from "./access_control.ts";
 import {
 	activities_db_get_by_source_id,
 	activities_db_require_by_source_id,
@@ -954,8 +957,6 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 		target = transfer.source;
 		origin = { kind: "transfer", itemId: transfer._id };
 	}
-	const transferRun =
-		cohort.origin.kind === "transfer" ? await ctx.db.get("files_transfer_runs", cohort.origin.runId) : null;
 	const held = proposal
 		? await db_reserve_source(ctx, cohort, { kind: "proposal", id: proposal._id }, "proposal")
 		: Result({ _yay: null });
@@ -963,11 +964,7 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 	let reserved;
 	if (target.kind === "saved") {
 		const node = await files_saved_placement_db_get_node(ctx.db, target.id, { cohortId: cohort._id, view: "before" });
-		if (
-			!node ||
-			node.archiveOperationId !== (transferRun?.rename?.source.archiveOperationId ?? null) ||
-			(input?.reviewSource && input.reviewSource.path !== node.path)
-		)
+		if (!node || node.archiveOperationId !== null || (input?.reviewSource && input.reviewSource.path !== node.path))
 			return Result({ _nay: { name: "needs_review", message: "A reviewed source moved. Review it again." } });
 		if (origin.kind === "transfer") {
 			const transfer = (await ctx.db.get("files_transfer_items", origin.itemId))!;
@@ -1092,25 +1089,12 @@ async function db_rename_parents(
 	const name = names[cursor.segmentIndex]!;
 	if (cursor.parentId === run.rename.source.parentId && name === run.rename.source.name)
 		return Result({ _nay: { name: "destination_changed", message: "A folder cannot move into itself." } });
-	let folder =
-		cursor.parentArchiveOperationId === null
-			? await files_saved_placement_db_get_slot(
-					ctx.db,
-					{ ...cohort, parentId: cursor.parentId, name },
-					{ cohortId: cohort._id, view: "after" },
-				)
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", cohort.organizationId)
-							.eq("workspaceId", cohort.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", cursor.parentId)
-							.eq("name", name)
-							.eq("archiveOperationId", cursor.parentArchiveOperationId),
-					)
-					.unique();
+	// The start refuses a Rename in Trash, so every folder of the new path is live.
+	let folder = await files_saved_placement_db_get_slot(
+		ctx.db,
+		{ ...cohort, parentId: cursor.parentId, name },
+		{ cohortId: cohort._id, view: "after" },
+	);
 	if (folder) {
 		const selected = await ctx.db
 			.query("files_move_cohort_items")
@@ -1136,10 +1120,7 @@ async function db_rename_parents(
 		// Check before the first write: an existing folder may keep a longer name, a new one may not.
 		const tooLong = files_check_name_and_path_length({ names: [name], path });
 		if (tooLong._nay) return tooLong;
-		const claimed =
-			cursor.parentArchiveOperationId === null
-				? await db_claim_slot(ctx, cohort, { parentId: cursor.parentId, name })
-				: Result({ _yay: null });
+		const claimed = await db_claim_slot(ctx, cohort, { parentId: cursor.parentId, name });
 		if (claimed._nay) return claimed;
 		// No `files_nodes_db_find_live_under_path` check (see `db_allocate_private`).
 		const nodeId = await ctx.db.insert("files_nodes", {
@@ -1170,8 +1151,7 @@ async function db_rename_parents(
 			restrictedScopeNodeId: parent?.restrictedScopeNodeId ?? null,
 			isRestrictedScopeRoot: false,
 			extendedScopeNodeId: parent?.extendedScopeNodeId ?? null,
-			archiveOperationId: cursor.parentArchiveOperationId,
-			...(cursor.parentArchiveOperationId !== null ? { archivedPath: path } : {}),
+			archiveOperationId: null,
 			readOnly: false,
 			readOnlyDecisionId: null,
 			createdBy: cohort.userId,
@@ -1306,18 +1286,23 @@ async function db_descendants(
 				cursor.source === "before"
 					? await ctx.db
 							.query("files_saved_places")
-							.withIndex("by_view_parent_name", (q) =>
-								q.eq("cohortId", cohort._id).eq("view", "before").eq("parentId", parentId),
+							.withIndex("by_view_parent_archive_name", (q) =>
+								q
+									.eq("cohortId", cohort._id)
+									.eq("view", "before")
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null),
 							)
 							.first()
 					: await ctx.db
 							.query("files_nodes")
-							.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+							.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 								q
 									.eq("organizationId", cohort.organizationId)
 									.eq("workspaceId", cohort.workspaceId)
 									.eq("moveCohortId", undefined)
-									.eq("parentId", parentId),
+									.eq("parentId", parentId)
+									.eq("archiveOperationId", null),
 							)
 							.first();
 			if (!first) {
@@ -1392,8 +1377,8 @@ async function db_headers(
 	let parentId = old?.parentId ?? "root";
 	let name = old?.name ?? physical.name;
 	let archiveOperationId = old?.archiveOperationId ?? null;
-	// Keep an older archive separate from the active folder being replaced.
-	if ((record.role === "replacement" && archiveOperationId === null) || proposal?.pendingArchive)
+	// The replaced item and its live items go to Trash in this Move's own delete.
+	if (record.role === "replacement" || proposal?.pendingArchive)
 		archiveOperationId = files_archive_operation_id_new(cohort.operationTime, cohort._id);
 	if (selected && item) {
 		let parent: Doc<"files_pending_nodes">["parent"];
@@ -1427,20 +1412,7 @@ async function db_headers(
 				cohortId: cohort._id,
 				view: "before",
 			});
-			const rename =
-				cohort.origin.kind === "transfer"
-					? (await ctx.db.get("files_transfer_runs", cohort.origin.runId))?.rename
-					: undefined;
-			const archivedRenameParent =
-				rename &&
-				parentId === rename.source.parentId &&
-				sourceParent?.path === rename.parentPath &&
-				sourceParent.archiveOperationId === rename.parentArchiveOperationId;
-			if (
-				!sourceParent ||
-				sourceParent.kind !== "folder" ||
-				(sourceParent.archiveOperationId !== null && !archivedRenameParent)
-			)
+			if (!sourceParent || sourceParent.kind !== "folder" || sourceParent.archiveOperationId !== null)
 				return Result({ _nay: { name: "needs_review", message: "The destination folder changed. Review it again." } });
 			const reserved = await db_reserve_saved(ctx, cohort, { node: sourceParent, role: "anchor" });
 			if (reserved._nay) return reserved;
@@ -1778,17 +1750,9 @@ async function db_headers(
 				: undefined,
 		isPublic,
 		archiveOperationId: afterArchive,
-		// Already archived nodes keep their allowance even if the path changes.
-		archivedPathLength:
-			afterArchive === null
-				? undefined
-				: old && old.archiveOperationId !== null
-					? old.archivedPathLength
-					: path.length > files_PATH_MAX_LENGTH
-						? path.length
-						: undefined,
-		// Same rule for the Trash path: a later Move above an archived item does not change it.
-		archivedPath: afterArchive === null ? undefined : old && old.archiveOperationId !== null ? old.archivedPath : path,
+		// A Move collects live items only, so an item that ends in Trash here goes to Trash in this Move.
+		archivedPathLength: afterArchive !== null && path.length > files_PATH_MAX_LENGTH ? path.length : undefined,
+		archivedPath: afterArchive === null ? undefined : path,
 		...files_ancestor_fields(parent ? [...files_ancestor_ids(parent), parent._id] : []),
 		// Like `mv`, a Move or Rename keeps the item's modified time. An Archive or Restore here is a real
 		// change. A content change sets its own time when its content is sealed.
@@ -1851,7 +1815,7 @@ async function db_authorize_record(
 	let archiveDescendant = false;
 	if (record.role === "descendant" && record.itemId) {
 		const item = (await ctx.db.get("files_move_cohort_items", record.itemId))!;
-		// Move carries descendants. Delete checks each active descendant; older Trash keeps its stamp.
+		// Move carries descendants, so it checks the moved item. Delete checks each descendant.
 		const proposal = item.pendingUpdateId ? await ctx.db.get("files_pending_updates", item.pendingUpdateId) : null;
 		archiveDescendant = Boolean(proposal?.pendingArchive);
 		if (!proposal?.pendingArchive) {
@@ -1860,7 +1824,6 @@ async function db_authorize_record(
 		}
 	}
 	const node = await files_saved_placement_db_get_node(ctx.db, sourceId, { cohortId: cohort._id, view: "before" });
-	if (archiveDescendant && node && node.archiveOperationId !== null) return Result({ _yay: null });
 	if (record.role === "allocated") {
 		const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 		const privateNode =
@@ -2464,7 +2427,11 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			before?.archiveOperationId !== finalNode.archiveOperationId &&
 			parent?.archiveOperationId !== finalNode.archiveOperationId
 		)
-			await files_trash_entries_db_insert(ctx, finalNode);
+			await files_trash_entries_db_insert(
+				ctx,
+				finalNode,
+				await access_control_db_resolve_trash_entry_area(ctx, finalNode),
+			);
 	}
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;

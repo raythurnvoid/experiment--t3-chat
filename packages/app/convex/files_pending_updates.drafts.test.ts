@@ -720,10 +720,13 @@ describe("archived-parent draft recovery", () => {
 		// The row's own view is null above, so the Pending tab shows it as restricted.
 		expect(rows.page).toMatchObject([{ target }]);
 		expect(JSON.stringify(rows)).not.toContain("retained");
+		// The folder is in Trash, so it cannot be unrestricted. Its people list still gives access back.
 		expect(
-			await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
+			await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
 				membershipId: f.owner.membershipId,
 				nodeId: f.parentId,
+				principal: { kind: "user", userId: f.userId },
+				level: "write",
 			}),
 		).toEqual({ _yay: null });
 		expect(

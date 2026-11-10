@@ -1211,6 +1211,16 @@ export const set_node_share_grant = mutation({
 		if (args.level === "manage" && node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: access_control_ADDED_PEOPLE_LEVEL_MESSAGE } });
 		}
+		// A first person on an open Trash item would make it an extended root. A Trash item keeps its
+		// delete-time access fields, and the job below would not reach its Trash children. A Trash item that
+		// is already a root keeps a live list.
+		if (
+			node.archiveOperationId !== null &&
+			node.restrictedScopeNodeId !== node._id &&
+			node.parentExtendedScopeNodeId === undefined
+		) {
+			return Result({ _nay: { message: "This item is in Trash. Restore it before you change who can open it." } });
+		}
 
 		// The owner is not in the list and cannot be put in it: they already pass every check, so a row
 		// for them would be a switch that changes nothing and a Remove button that lies.
@@ -1488,6 +1498,11 @@ async function db_restrict_node(
 ) {
 	const { userAuth, membership, node, organization, defaultWorkspaceId } = args;
 
+	// A Trash item keeps the area of its delete time, so its restriction cannot change. Its people list can.
+	if (node.archiveOperationId !== null) {
+		return Result({ _nay: { message: "This item is in Trash. Restore it before you change who can open it." } });
+	}
+
 	const isOwner = userAuth.id === organization.ownerUserId;
 
 	// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
@@ -1761,6 +1776,10 @@ export const unrestrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
+		// A Trash item keeps the area of its delete time. See `db_restrict_node`.
+		if (node.archiveOperationId !== null) {
+			return Result({ _nay: { message: "This item is in Trash. Restore it before you change who can open it." } });
+		}
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "This is not restricted" } });
 		}

@@ -8883,7 +8883,7 @@ describe("pending update read-only checks", () => {
 		).not.toBeNull();
 	});
 
-	test("a locked destination refuses a proposal and a locked replacement child refuses Accept", async () => {
+	test("a locked destination refuses a proposal and a locked Trash child does not block Accept", async () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) => {
 			const membership = await test_mocks_fill_db_with.membership(ctx);
@@ -8955,7 +8955,8 @@ describe("pending update read-only checks", () => {
 		});
 		expect(refusedDestination._nay?.name).toBe("read_only");
 
-		// Accept checks archived children before replacing the folder.
+		// A Trash child stays as it was at delete time, so its lock does not block replacing its folder,
+		// like a delete of the folder.
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: seeded.membershipId,
 			nodeIds: [seeded.occupantChildNodeId],
@@ -8973,7 +8974,8 @@ describe("pending update read-only checks", () => {
 			replace: true,
 		});
 		expect(proposedOccupant._nay).toBeUndefined();
-		const refusedOccupant = await test_apply_file_pending_move(asUser, {
+		const childBefore = await t.run((ctx) => ctx.db.get("files_nodes", seeded.occupantChildNodeId));
+		const accepted = await test_apply_file_pending_move(asUser, {
 			membershipId: seeded.membershipId,
 			target: { kind: "saved", id: seeded.sourceFolderId },
 			...(await reviewed_pending_for_test(t, {
@@ -8981,22 +8983,14 @@ describe("pending update read-only checks", () => {
 				target: { kind: "saved", id: seeded.sourceFolderId },
 			})),
 		});
-		expect(refusedOccupant._nay?.name).toBe("read_only");
+		expect(accepted._nay).toBeUndefined();
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.sourceFolderId)))?.path).toBe(
-			"/pending-read-only-move-src-folder",
+			"/pending-read-only-move-occupant-folder",
 		);
-		expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.occupantFolderId)))?.archiveOperationId).toBeNull();
 		expect(
-			await t.run((ctx) =>
-				read_pending_update_row({
-					ctx,
-					organizationId: seeded.organizationId,
-					workspaceId: seeded.workspaceId,
-					userId: seeded.userId,
-					nodeId: seeded.sourceFolderId,
-				}),
-			),
+			(await t.run((ctx) => ctx.db.get("files_nodes", seeded.occupantFolderId)))?.archiveOperationId,
 		).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", seeded.occupantChildNodeId))).toEqual(childBefore);
 	});
 
 	test("a locked file refuses its own archive proposal", async () => {

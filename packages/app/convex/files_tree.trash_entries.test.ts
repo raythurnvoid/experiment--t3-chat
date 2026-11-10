@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { test_run_with_flush } from "./setup.test.ts";
+import { test_move_nodes, test_run_with_flush } from "./setup.test.ts";
 import { insert_tree_node, seed_folder_table } from "./files_nodes.setup.test.ts";
-import { run_to_end } from "./files_archive_runs.setup.test.ts";
-import { files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
+import { add_member, archive, fixture, read_node, run_to_end, seed_tree } from "./files_archive_runs.setup.test.ts";
+import { files_trash_entries_area_pointer, files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 
 beforeEach(() => {
@@ -23,7 +23,10 @@ afterEach(() => {
  * Give Trash entries to seeded items, like the step that moves an item to Trash on its own does.
  */
 async function insert_entries(ctx: MutationCtx, nodeIds: Array<Id<"files_nodes">>) {
-	for (const nodeId of nodeIds) await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
+	for (const nodeId of nodeIds) {
+		const node = (await ctx.db.get("files_nodes", nodeId))!;
+		await files_trash_entries_db_insert(ctx, node, files_trash_entries_area_pointer(node));
+	}
 }
 
 async function seed_archive() {
@@ -199,7 +202,7 @@ describe("list_trash_entries", () => {
 		).toEqual([]);
 	});
 
-	test("moves an entry between areas when its active parent is restricted and opened again", async () => {
+	test("an entry keeps its delete-time area when its active parent is restricted and opened again", async () => {
 		const f = await seed_archive();
 		const child = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.ids.inActive)))!;
 		const parentId = child.parentId as Id<"files_nodes">;
@@ -207,14 +210,72 @@ describe("list_trash_entries", () => {
 		expect(await f.asOwner.mutation(api.files_sharing.restrict_node, args)).toEqual({ _yay: null });
 		expect(
 			(await f.read(f.asOwner, f.db.membershipId, null, { numItems: 10, cursor: null })).page.map((row) => row._id),
-		).not.toContain(child._id);
+		).toContain(child._id);
 		expect(
 			(await f.read(f.asOwner, f.db.membershipId, parentId, { numItems: 10, cursor: null })).page.map((row) => row._id),
-		).toEqual([child._id]);
+		).toEqual([]);
 		expect(await f.asOwner.mutation(api.files_sharing.unrestrict_node, args)).toEqual({ _yay: null });
 		expect(
 			(await f.read(f.asOwner, f.db.membershipId, null, { numItems: 10, cursor: null })).page.map((row) => row._id),
 		).toContain(child._id);
+	});
+
+	test("a scope job leaves Trash items as they were, and an unrestrict moves their entries to the area above", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const tree = await seed_tree(f, { name: "a", folderCount: 1, filesPerFolder: 2 });
+		const target = await seed_tree(f, { name: "b", folderCount: 0, filesPerFolder: 0 });
+		const folderId = tree.folderIds[0]!;
+		const [earlyId, lateId] = [tree.fileIds[0]!, tree.fileIds[1]!];
+		const set_restricted = async (restricted: boolean) =>
+			expect(
+				await f.asOwner.mutation(restricted ? api.files_sharing.restrict_node : api.files_sharing.unrestrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: folderId,
+				}),
+			).toEqual({ _yay: null });
+		// Rows of one area as the member sees them. Both deletes can share a time, so sort the rows.
+		const member_rows = async (area: Id<"files_nodes"> | null) =>
+			(
+				await member.asUser.query(api.files_tree.list_trash_entries, {
+					membershipId: member.membershipId,
+					area,
+					paginationOpts: { numItems: 10, cursor: null },
+				})
+			).page
+				.map((row) => `${row._id}:${row.locked ? "locked" : "open"}`)
+				.toSorted();
+
+		// Delete one file in the open part, then move its folder and restrict it.
+		expect(await archive(f, [earlyId])).toEqual({ _yay: null });
+		const early = await read_node(f, earlyId);
+		expect(
+			await test_move_nodes(f.t, f.asOwner, {
+				membershipId: f.db.membershipId,
+				itemIds: [folderId],
+				targetParentId: target.topId,
+			}),
+		).toEqual({ _yay: null });
+		await set_restricted(true);
+		expect(await read_node(f, earlyId), "the Trash item keeps its path and scope fields").toEqual(early);
+
+		// Delete the other file while the folder is restricted. It lists in the folder's area.
+		expect(await archive(f, [lateId])).toEqual({ _yay: null });
+		const late = await read_node(f, lateId);
+		expect(late).toMatchObject({ path: "/b/d0/f001.md", restrictedScopeNodeId: folderId });
+		expect(await member_rows(null)).toEqual([`${earlyId}:open`]);
+
+		await set_restricted(false);
+		expect(await read_node(f, earlyId), "the Trash items keep their path and scope fields").toEqual(early);
+		expect(await read_node(f, lateId), "the Trash items keep their path and scope fields").toEqual(late);
+		const afterUnrestrict = [`${earlyId}:open`, `${lateId}:open`].toSorted();
+		expect(await member_rows(null), "after the unrestrict, the entry lists in the area above, open").toEqual(
+			afterUnrestrict,
+		);
+
+		// A later write of the Trash item, like a purge mark, keeps its entry where the unrestrict moved it.
+		await test_run_with_flush(f.t, (ctx) => ctx.db.patch("files_nodes", lateId, { updatedAt: late.updatedAt + 1 }));
+		expect(await member_rows(null), "a later write does not move the entry back").toEqual(afterUnrestrict);
 	});
 
 	test("an entry goes away when its item is restored or deleted for good", async () => {

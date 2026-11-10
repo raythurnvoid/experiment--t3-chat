@@ -15,6 +15,7 @@ import {
 import { files_archive_operation_id_new, files_is_ancestor_field } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { files_trash_entries_area_pointer, files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 import { test_run_with_flush } from "./setup.test.ts";
 import {
 	fixture,
@@ -300,7 +301,8 @@ describe("files/restore", () => {
 					(await test_rename_node(f.t, f.asOwner, { membershipId: f.db.membershipId, nodeId, path }))._nay,
 				).toBeUndefined();
 			}
-			expect((await read_node(f, other.fileIds[0]!)).path).toBe("/old/d0/d0/f000.md");
+			// Trash items keep their delete-time path, so a later Rename never gives one the selected path.
+			expect((await read_node(f, other.fileIds[0]!)).path).toBe("/other/d0/f000.md");
 			expect(
 				await post(f, "/api/v1/files/jobs/get", key.credential, { jobId }),
 				"later renames never add an unselected item to the job",
@@ -744,6 +746,7 @@ describe("files/restore", () => {
 				if (archived._yay) await run_to_end(f, archived._yay);
 			}
 			await archive_to_end(f, tree.topId);
+			const topOperationId = (await read_node(f, tree.topId)).archiveOperationId;
 			// A new `/top` makes the restore bring the old one back as `/top-2`.
 			await folder(f, "/top");
 
@@ -838,8 +841,18 @@ describe("files/restore", () => {
 			const nodeById = new Map(atEnd.nodes.map((node) => [node._id, node]));
 			const parent_of = (node: (typeof atEnd.nodes)[number]) =>
 				node.parentId === "root" ? null : nodeById.get(node.parentId)!;
+			const isOlderDelete = (node: (typeof atEnd.nodes)[number]) =>
+				node.archiveOperationId !== null && node.archiveOperationId !== topOperationId;
+			expect(
+				atEnd.nodes
+					.filter(isOlderDelete)
+					.map((node) => node.path)
+					.sort(),
+				"older deletes keep their delete-time paths",
+			).toEqual(["/top/d5/f000.md", "/top/d7", "/top/d7/f000.md"]);
 			expect(
 				atEnd.nodes.flatMap((node) => {
+					if (isOlderDelete(node)) return [];
 					const parent = parent_of(node);
 					const scopeId = node.isRestrictedScopeRoot ? node._id : (parent?.restrictedScopeNodeId ?? null);
 					return node.path === `${parent?.path ?? ""}/${node.name}` && node.restrictedScopeNodeId === scopeId
@@ -1169,7 +1182,19 @@ describe("files/restore", () => {
 
 describe("files/trash/list", () => {
 	/**
-	 * `/team` is a restricted folder in Trash with `/team/inside.md` from the same delete.
+	 * Give Trash entries to seeded items, like the step that moves an item to Trash on its own does.
+	 */
+	async function insert_entries(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
+		await f.t.run(async (ctx) => {
+			for (const nodeId of nodeIds) {
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				await files_trash_entries_db_insert(ctx, node, files_trash_entries_area_pointer(node));
+			}
+		});
+	}
+
+	/**
+	 * `/team` is a restricted folder in Trash, with its entry, and `/team/inside.md` from the same delete.
 	 */
 	async function insert_restricted_team(f: Fixture, archiveOperationId: string) {
 		const teamId = await insert_root_file(f, { name: "team", archiveOperationId });
@@ -1181,6 +1206,8 @@ describe("files/trash/list", () => {
 				isRestrictedScopeRoot: true,
 				parentScopeNodeId: null,
 			});
+			const team = (await ctx.db.get("files_nodes", teamId))!;
+			await files_trash_entries_db_insert(ctx, team, files_trash_entries_area_pointer(team));
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: f.db.organizationId,
@@ -1202,15 +1229,16 @@ describe("files/trash/list", () => {
 		return teamId;
 	}
 
-	test("lists every item in Trash of one area, newest delete first, and ends with a null cursor", async () => {
+	test("lists the Trash entries of one area, newest delete first, and ends with a null cursor", async () => {
 		const f = await fixture();
 		const ownerKey = await create_owner_key(f);
 		const olderDelete = files_archive_operation_id_new(1_000);
 		const newerDelete = files_archive_operation_id_new(2_000);
-		await insert_root_file(f, { name: "old.md", archiveOperationId: olderDelete });
-		// Two items of one delete at one path. The app's Trash view shows only one of them.
+		const oldId = await insert_root_file(f, { name: "old.md", archiveOperationId: olderDelete });
+		// Two items of one delete at one path.
 		const firstSameId = await insert_root_file(f, { name: "same.md", archiveOperationId: newerDelete });
 		const secondSameId = await insert_root_file(f, { name: "same.md", archiveOperationId: newerDelete });
+		await insert_entries(f, [oldId, firstSameId, secondSameId]);
 		const teamId = await insert_restricted_team(f, newerDelete);
 		// Active files are in the same index, but outside the Trash range.
 		for (const name of ["a.md", "b.md", "c.md"]) await insert_root_file(f, { name, archiveOperationId: null });
@@ -1228,29 +1256,31 @@ describe("files/trash/list", () => {
 		expect(pages.slice(0, -1).every((page) => typeof page.cursor === "string" && page.cursor !== "")).toBe(true);
 		expect(pages.at(-1)!.cursor).toBeNull();
 		expect(pages.flatMap((page) => page.items as Array<Record<string, unknown>>)).toEqual([
-			// The restricted folder lists in the area of its parent. What is inside lists in its own area.
-			expect.objectContaining({ path: "/team", kind: "folder", locked: false, top: true, nodeId: teamId }),
-			// The same delete and path: the newer doc comes first, and a page break between them skips neither.
+			// Inside one delete, items come by path. Two items with the same path come in the order they
+			// were made, and a page break between them skips neither.
 			expect.objectContaining({
 				path: "/same.md",
-				nodeId: secondSameId,
+				nodeId: firstSameId,
 				archiveOperationId: newerDelete,
 				operationAt: 2_000,
 				changedBy: f.db.userId,
 				top: true,
 			}),
-			expect.objectContaining({ path: "/same.md", nodeId: firstSameId, archiveOperationId: newerDelete, top: true }),
+			expect.objectContaining({ path: "/same.md", nodeId: secondSameId, archiveOperationId: newerDelete, top: true }),
+			// The restricted folder lists in the area of its parent.
+			expect.objectContaining({ path: "/team", kind: "folder", locked: false, top: true, nodeId: teamId }),
 			expect.objectContaining({ path: "/old.md", archiveOperationId: olderDelete, operationAt: 1_000 }),
 		]);
 
+		// Its folder is in Trash from the same delete, so it has no entry, like in the app's Trash view.
+		// Folder mode lists it.
 		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, { areaNodeId: teamId })).toMatchObject({
 			status: 200,
-			body: {
-				// Its folder is in Trash from the same delete, so the app's Trash view does not show it.
-				items: [expect.objectContaining({ path: "/team/inside.md", top: false })],
-				cursor: null,
-				isDone: true,
-			},
+			body: { items: [], cursor: null, isDone: true },
+		});
+		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, { folderNodeId: teamId })).toMatchObject({
+			status: 200,
+			body: { items: [expect.objectContaining({ path: "/team/inside.md", top: false })], isDone: true },
 		});
 		// A cursor works only for the area it was made for.
 		for (const body of [{ cursor: "" }, { cursor: pages[0]!.cursor, areaNodeId: teamId }]) {
@@ -1280,6 +1310,7 @@ describe("files/trash/list", () => {
 		const oldDelete = files_archive_operation_id_new(1_000);
 		const newDelete = files_archive_operation_id_new(2_000);
 		const nodeId = await insert_root_file(f, { name: "old.md", archiveOperationId: oldDelete });
+		await insert_entries(f, [nodeId]);
 		// The Move's after view has a new path and Trash stamp. Its cleanup has not rewritten the node doc yet.
 		await f.t.run(async (ctx) => {
 			const cohortId = await test_db_hold_move_slot(ctx, f.db);
@@ -1414,6 +1445,33 @@ describe("files/trash/list", () => {
 			status: 403,
 			body: { message: "Permission denied" },
 		});
+	});
+
+	test("after an unrestrict, the area above lists the folder's Trash items", async () => {
+		const f = await fixture();
+		const ownerKey = await create_owner_key(f);
+		const restrictedId = await folder(f, "/r");
+		const set_restricted = async (restricted: boolean) =>
+			expect(
+				await f.asOwner.mutation(restricted ? api.files_sharing.restrict_node : api.files_sharing.unrestrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: restrictedId,
+				}),
+			).toEqual({ _yay: null });
+		const listed = async (areaNodeId: Id<"files_nodes"> | null) => {
+			const response = await post(f, "/api/v1/files/trash/list", ownerKey.credential, { areaNodeId });
+			expect(response.status).toBe(200);
+			return (response.body.items as Array<{ path: string }>).map((item) => item.path);
+		};
+		await set_restricted(true);
+		const itemId = await folder(f, "/r/x");
+		expect(await archive(f, [itemId])).toEqual({ _yay: null });
+		expect(await listed(restrictedId)).toEqual(["/r/x"]);
+
+		// The Trash item keeps its delete-time area. Its entry moves to the area above.
+		await set_restricted(false);
+		expect((await read_node(f, itemId)).restrictedScopeNodeId).toBe(restrictedId);
+		expect(await listed(null), "after the unrestrict, the area above lists the Trash item").toEqual(["/r/x"]);
 	});
 });
 

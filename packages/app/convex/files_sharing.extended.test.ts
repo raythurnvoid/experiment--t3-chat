@@ -789,6 +789,106 @@ test("restricting a folder above keeps the added people of an item inside it", a
 	expect(await can(f, member(f), ownerFileId)).toBe(false);
 });
 
+test("an item in Trash refuses restrict, unrestrict and a first added person, and keeps a live people list", async () => {
+	const f = await fixture();
+	const { restrictedId, folderId } = await seed_restricted(f);
+	const openId = await seed_folder(f, "/open");
+	const serviceAccountId = await create_account(f);
+	for (const nodeId of [restrictedId, openId]) {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [String(nodeId)],
+		});
+		expect(archived._nay).toBeUndefined();
+	}
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const refusal = { _nay: { message: "This item is in Trash. Restore it before you change who can open it." } };
+	const call = async (restricted: boolean, nodeId: Id<"files_nodes">) => {
+		await reset_rate_limits(f.t, [f.db.userId]);
+		const args = { membershipId: f.db.membershipId, nodeId };
+		return restricted
+			? await f.asOwner.mutation(api.files_sharing.restrict_node, args)
+			: await f.asOwner.mutation(api.files_sharing.unrestrict_node, args);
+	};
+
+	expect(await call(true, openId), "a restrict of an open Trash item").toEqual(refusal);
+	expect(await call(false, restrictedId), "an unrestrict of a Trash folder").toEqual(refusal);
+	expect(await share_with(f, openId, "read"), "a first added person on an open Trash item").toEqual(refusal);
+	expect(
+		await share_with_account(f, folderId, serviceAccountId, "read"),
+		"a first service account on an open Trash item",
+	).toEqual(refusal);
+	expect(await get_node(f, openId)).toMatchObject({ restrictedScopeNodeId: null, extendedScopeNodeId: null });
+
+	// The list of a restricted Trash folder changes no access fields, so it stays live.
+	expect(await share_with(f, restrictedId, "read")).toEqual({ _yay: null });
+	await unshare(f, restrictedId, { kind: "user", userId: f.memberId });
+});
+
+test("an added person still reads a Trash item after its folder moved", async () => {
+	const f = await fixture();
+	const { folderId, fileId } = await seed_restricted(f);
+	expect((await share_with(f, folderId, "read"))._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const targetId = await seed_folder(f, "/r/t");
+
+	// Delete the file alone, then move its folder inside the same restricted folder. The file keeps its
+	// delete-time path and its "Add people" pointer at the folder.
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+		membershipId: f.db.membershipId,
+		nodeIds: [String(fileId)],
+	});
+	expect(archived._nay).toBeUndefined();
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const moved = await test_move_nodes(f.t, f.asOwner, {
+		membershipId: f.db.membershipId,
+		itemIds: [folderId],
+		targetParentId: targetId,
+	});
+	expect(moved._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	expect(await get_node(f, folderId)).toMatchObject({ treePath: "/r/t/d/" });
+	expect(await get_node(f, fileId)).toMatchObject({ treePath: "/r/d/x.md", extendedScopeNodeId: folderId });
+
+	expect(await can(f, member(f), fileId), "the Trash item keeps the added people of its delete time").toBe(true);
+});
+
+test("an added person still reads a Trash item after the restricted folder above it is opened", async () => {
+	const f = await fixture();
+	const outerId = await seed_folder(f, "/p");
+	const restrictedId = await seed_folder(f, "/p/r");
+	const folderId = await seed_folder(f, "/p/r/d");
+	await set_restricted(f, outerId, true);
+	await set_restricted(f, restrictedId, true);
+	expect((await share_with(f, folderId, "read"))._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const fileId = (await f.t.run((ctx) =>
+		ctx.db
+			.query("files_nodes")
+			.filter((q) => q.eq(q.field("path"), "/p/r/d/x.md"))
+			.first(),
+	))!._id;
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+		membershipId: f.db.membershipId,
+		nodeIds: [String(fileId)],
+	});
+	expect(archived._nay).toBeUndefined();
+
+	// The live folder moves to the outer area. The Trash file keeps its pointer at the opened folder.
+	await set_restricted(f, restrictedId, false);
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	expect(await get_node(f, folderId)).toMatchObject({ restrictedScopeNodeId: outerId });
+	expect(await get_node(f, fileId)).toMatchObject({
+		restrictedScopeNodeId: restrictedId,
+		extendedScopeNodeId: folderId,
+	});
+
+	expect(await can(f, member(f), fileId), "the chain compares the live areas of a Trash item").toBe(true);
+});
+
 test("Can edit lets an added person create inside the item, and Can view does not", async () => {
 	const f = await fixture();
 	const { folderId } = await seed_restricted(f);

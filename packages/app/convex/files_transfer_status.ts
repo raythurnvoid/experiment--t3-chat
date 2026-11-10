@@ -109,7 +109,7 @@ export async function files_transfer_status_db_get_owned_run(
 
 export async function files_transfer_status_db_get_entry(args: {
 	ctx: QueryCtx | MutationCtx;
-	run: Pick<Doc<"files_transfer_runs">, "organizationId" | "workspaceId" | "userId" | "sourceView" | "rename">;
+	run: Pick<Doc<"files_transfer_runs">, "organizationId" | "workspaceId" | "userId" | "sourceView">;
 	target: files_PendingTarget;
 	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>;
 }): Promise<files_VisibleEntry | null> {
@@ -122,12 +122,7 @@ export async function files_transfer_status_db_get_entry(args: {
 		!node ||
 		node.organizationId !== run.organizationId ||
 		node.workspaceId !== run.workspaceId ||
-		(node.archiveOperationId !== null &&
-			(!run.rename ||
-				node.parentId !== run.rename.source.parentId ||
-				node.name !== run.rename.source.name ||
-				node.path !== run.rename.source.path ||
-				node.archiveOperationId !== run.rename.source.archiveOperationId)) ||
+		node.archiveOperationId !== null ||
 		!(await reader.canRead(node))
 	)
 		return null;

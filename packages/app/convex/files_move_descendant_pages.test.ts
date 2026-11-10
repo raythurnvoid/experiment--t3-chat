@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { run_to_end as finish_archive } from "./files_archive_runs.setup.test.ts";
 import { advance } from "./files_move_cohorts.ts";
 import * as move_pages from "./files_move_pages.ts";
 import { accept_input } from "./files_transfer.ts";
@@ -75,7 +74,7 @@ function track_db<T extends object>(db: T, pages: Pages, childIds: Set<Id<"files
 test.each([
 	{ title: "reserves fifty physical children in two native pages", count: 50, unicode: false },
 	{
-		title: "reserves archived Unicode children through byte-bounded pages with sixteen draft owners",
+		title: "reserves Unicode children through byte-bounded pages with sixteen draft owners",
 		count: 78,
 		unicode: true,
 	},
@@ -107,18 +106,7 @@ test.each([
 		}
 		const drafts: { id: Id<"files_pending_updates">; userId: Id<"users"> }[] = [];
 		let draftParentId: Id<"files_nodes"> | null = null;
-		let archiveOperationId: string | null = null;
 		if (scenario.unicode) {
-			vi.setSystemTime(Date.now() + 60_000);
-			const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
-				membershipId: db.membershipId,
-				nodeIds: children.map((child) => child.id),
-			});
-			if (archived._nay) throw new Error(archived._nay.message);
-			if (!archived._yay) throw new Error("Expected the public Archive job");
-			expect((await finish_archive({ t, db, asOwner: asUser }, archived._yay)).activity.status).toBe("succeeded");
-			archiveOperationId = (await t.run((ctx) => ctx.db.get("files_nodes", children[0]!.id)))!.archiveOperationId;
-			expect(archiveOperationId).not.toBeNull();
 			draftParentId = await folder("root", "/drafts");
 			for (let index = 0; index < 16; index++) {
 				vi.setSystemTime(Date.now() + 10_000);
@@ -236,7 +224,6 @@ test.each([
 			expect(doc?.path).toBe(`/target/src/${child.name}`);
 			expect(doc?.moveCohortId).toBeUndefined();
 			expect(files_ancestor_ids(doc!)).toEqual([targetId, sourceId]);
-			expect(doc?.archiveOperationId).toBe(archiveOperationId);
 		}
 		for (const draft of drafts)
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", draft.id))).toMatchObject({

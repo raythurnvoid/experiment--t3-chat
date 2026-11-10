@@ -82,6 +82,21 @@ describe("personal plugin file grants", () => {
 		).toEqual({ _yay: null });
 	});
 
+	test("a choice of an open folder in Trash makes it no anchor", async () => {
+		const f = await fixture();
+		const granted = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+			membershipId: f.owner.membershipId,
+			installationId: f.installationId,
+			rootNodeId: f.nodes.archivedFolderId,
+			level: "read",
+		});
+		expect(granted._nay).toBeUndefined();
+		expect(
+			(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodes.archivedFolderId)))?.parentExtendedScopeNodeId,
+			"the Trash folder keeps its delete-time access fields",
+		).toBeUndefined();
+	});
+
 	test("accepts a narrow read grant and refuses edit without the person's write access", async () => {
 		const f = await fixture();
 		const args = {

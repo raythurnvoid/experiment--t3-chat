@@ -1423,7 +1423,7 @@ describe("files_share_rows", () => {
 		await f.expect_share_rows_true();
 	});
 
-	test("rows follow a restore that lands the folder above a shared folder at a new path", async () => {
+	test("rows of a shared folder in Trash keep its delete-time path", async () => {
 		const f = await fixture();
 		const a = await f.saved(null, "a", "folder");
 		const b = await f.saved(a, "b", "folder");
@@ -1432,13 +1432,12 @@ describe("files_share_rows", () => {
 		await f.share(s, { kind: "user", userId: f.v.userId }, "read");
 		const membershipId = f.db.membershipId;
 
-		// `s` has its own archive, so the restore of `b` only moves it. `a` is renamed to `/a2`, so `b`
-		// lands at its Trash path in a new `/a`, and the restore's job writes the new `treePath` of `s`
-		// through the flush.
+		// `s` has its own archive, so a Rename of `a` and the restore of `b` never change it. `b` lands
+		// at its Trash path in a new `/a`.
 		for (const node of [s, b])
 			await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [node._id] }));
 		await f.as_u(() => test_rename_node(f.t, f.asU, { membershipId, nodeId: a._id, path: "a2" }));
-		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/a2/b/s/" }]);
+		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/a/b/s/" }]);
 		await f.as_u(() => f.asU.mutation(api.files_nodes.unarchive_nodes, { membershipId, nodeIds: [b._id] }));
 		expect(await share_rows(f, s._id)).toMatchObject([{ treePath: "/a/b/s/", archiveOperationId: expect.any(String) }]);
 		await f.expect_share_rows_true();
@@ -1810,6 +1809,22 @@ describe("files_nodes ancestors", () => {
 		expect((await node_at(f, "/z/b")).ancestors).toEqual([z._id]);
 		expect((await node_at(f, "/z/b/x.md")).ancestors).toEqual([z._id, b._id]);
 		expect(x._id).toBe((await node_at(f, "/z/b/x.md"))._id);
+		await expect_ancestors_true(f);
+	});
+
+	test("a Trash item keeps the ancestors of its delete time, and the check skips it", async () => {
+		const f = await fixture();
+		const membershipId = f.db.membershipId;
+		const a = await f.saved(null, "a", "folder");
+		const b = await f.saved(a, "b", "folder");
+		const x = await f.saved(b, "x.md");
+		const z = await f.saved(null, "z", "folder");
+		await f.as_u(() => f.asU.mutation(api.files_nodes.archive_nodes, { membershipId, nodeIds: [x._id] }));
+
+		// `b` moves into `/z`. The Move does not take the Trash file `x` along.
+		await f.as_u(() => test_move_nodes(f.t, f.asU, { membershipId, itemIds: [b._id], targetParentId: z._id }));
+		expect((await node_at(f, "/z/b")).ancestors).toEqual([z._id]);
+		expect(files_ancestor_ids((await f.t.run((ctx) => ctx.db.get("files_nodes", x._id)))!)).toEqual([a._id, b._id]);
 		await expect_ancestors_true(f);
 	});
 

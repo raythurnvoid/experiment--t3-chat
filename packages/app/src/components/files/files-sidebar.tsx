@@ -268,7 +268,8 @@ function can_rename_item(args: {
 	canWriteItem: (item: FilesSidebarItem) => boolean;
 	canWriteRoot: boolean;
 }) {
-	if (!is_open_node(args.item)) {
+	// Trash items stay as they were at delete time. The backend refuses their Rename.
+	if (!is_open_node(args.item) || args.item.archiveOperationId !== null) {
 		return false;
 	}
 	// Rename needs the named item and its immediate parent. Protected children never block it.
@@ -2633,7 +2634,7 @@ const FilesSidebarTreeRow = memo(
 		const isUploading = useFilesInFlightUploads(
 			(state) => is_open_node(itemData) && state.nodeIds.includes(itemData._id),
 		);
-		const canRename = is_open_node(itemData) && capabilities.canRelocateOrRename && !isUploading;
+		const canRename = is_open_node(itemData) && !isArchived && capabilities.canRelocateOrRename && !isUploading;
 		// One row the person can archive is enough, like the header "Archive N selected" action. The
 		// archive refuses the other rows and lists them on its Activity.
 		const canArchiveItems = sourceItems.some(

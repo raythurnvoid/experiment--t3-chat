@@ -638,7 +638,7 @@ test.each(["token", "runToken"] as const)(
 	},
 );
 
-test("full folder Trash pages use the published Move before physical cleanup", async () => {
+test("full folder Trash pages read the published Move before physical cleanup", async () => {
 	const f = await fixture({ transactionLimits: true });
 	const p = await plugin(f);
 	const root = await folder(f, "/before/folder");
@@ -678,7 +678,7 @@ test("full folder Trash pages use the published Move before physical cleanup", a
 			).toEqual([...children].reverse());
 			expect(
 				items.map((item) => item.path),
-				"folder Trash uses published paths during Move",
+				"Trash items keep their delete-time paths during Move",
 			).toEqual(children.map((_, i) => `${prefix}/item-${String(i).padStart(3, "0")}`).reverse());
 		}
 	};
@@ -695,7 +695,8 @@ test("full folder Trash pages use the published Move before physical cleanup", a
 				saved: await files_saved_placement_db_get_node(ctx.db, root),
 			}));
 			if (placement.physical?.path !== "/before/folder" || placement.saved?.path !== "/after/folder") return;
-			await check_pages("/after/folder");
+			// A Move does not take Trash items along. The page still finds them under the moved folder.
+			await check_pages("/before/folder");
 			checked = true;
 		},
 	});

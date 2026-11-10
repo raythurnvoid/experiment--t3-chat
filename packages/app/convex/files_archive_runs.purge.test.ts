@@ -8,18 +8,26 @@ import {
 	seed_tree,
 	archive,
 	archive_to_end,
+	folder,
 	restore,
 	lock_archived,
 	read_activity,
+	read_node,
 	run_to_end,
 	step,
 	type Fixture,
 } from "./files_archive_runs.setup.test.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
-import { test_mocks, test_run_with_flush } from "./setup.test.ts";
+import {
+	test_finish_saved_scope_jobs,
+	test_mocks,
+	test_move_nodes,
+	test_rename_node,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { files_archive_operation_id_new } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import { files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
+import { files_trash_entries_area_pointer, files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
@@ -345,7 +353,8 @@ describe("files_nodes.purge_nodes", () => {
 					pathDepth: 1,
 					archiveOperationId: fields.archiveOperationId,
 				});
-				await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", nodeId))!);
+				const node = (await ctx.db.get("files_nodes", nodeId))!;
+				await files_trash_entries_db_insert(ctx, node, files_trash_entries_area_pointer(node));
 			});
 		// More Trash entries than one page, each under its own older operation.
 		for (let index = 0; index < 55; index++) {
@@ -389,7 +398,8 @@ describe("files_nodes.purge_nodes", () => {
 				restrictedScopeNodeId: restrictedId,
 				archiveOperationId: files_archive_operation_id_new(Date.now() - 10_000),
 			});
-			await files_trash_entries_db_insert(ctx, (await ctx.db.get("files_nodes", innerId))!);
+			const inner = (await ctx.db.get("files_nodes", innerId))!;
+			await files_trash_entries_db_insert(ctx, inner, files_trash_entries_area_pointer(inner));
 		});
 		// An archive job that still stamps the items inside its folder.
 		const tree = await seed_tree(f, { name: "stamping", folderCount: 1, filesPerFolder: 60 });
@@ -440,5 +450,233 @@ describe("files_nodes.purge_nodes", () => {
 		}));
 		expect(nodes.purged).toBeNull();
 		expect(nodes.restored?.archiveOperationId).toBeNull();
+	});
+
+	/**
+	 * Delete a file alone, rename its folder, then delete the folder. The file keeps its delete-time path
+	 * `/old/d0/f000.md` inside the Trash folder `/new`.
+	 */
+	async function seed_older_trash_item(f: Fixture, args: { yjsUpdates: number }) {
+		const tree = await seed_tree(f, { name: "old", folderCount: 1, filesPerFolder: 2 });
+		const olderId = tree.fileIds[0]!;
+		await add_yjs_updates(f, olderId, args.yjsUpdates);
+		const archived = await archive(f, [olderId]);
+		if (archived._yay) await run_to_end(f, archived._yay);
+		const renamed = await test_rename_node(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			nodeId: tree.topId,
+			path: "new",
+		});
+		expect(renamed._nay).toBeUndefined();
+		await archive_to_end(f, tree.topId);
+		expect((await read_node(f, olderId)).path).toBe("/old/d0/f000.md");
+		return { topId: tree.topId, olderId };
+	}
+
+	test("deletes an older Trash item whose delete-time path is outside the named folder", async () => {
+		const f = await fixture();
+		const { topId } = await seed_older_trash_item(f, { yjsUpdates: 0 });
+
+		const started = await purge(f, [topId]);
+		if (started.runId) expect((await step_to_end(f, await purge_job(f, started.runId))).status).toBe("succeeded");
+		expect(await list_workspace_paths(f)).toEqual([]);
+	});
+
+	test("refuses to restore an older Trash item that the purge started to delete", async () => {
+		const f = await fixture();
+		const { topId, olderId } = await seed_older_trash_item(f, { yjsUpdates: 300 });
+
+		// The purge holds the path `/new`, not the item's delete-time path, so the restore does not wait.
+		const purgeJob = await purge_job(f, (await purge(f, [topId])).runId);
+		for (let count = 0; (await read_node(f, olderId)).purgeRunId === undefined; count++) {
+			if (count === 10) throw new Error("The purge did not start on the item");
+			await step(f, purgeJob.runId);
+		}
+		const restored = await restore(f, [olderId]);
+		expect(restored._nay?.message).toBe("This item is being deleted.");
+
+		expect((await step_to_end(f, purgeJob)).status).toBe("succeeded");
+		expect(await list_workspace_paths(f)).toEqual([]);
+	});
+
+	test("an older Trash item of a deleted restricted folder stays closed and lists in the area above", async () => {
+		const f = await fixture();
+		const member = await add_member(f);
+		const restrictedId = await folder(f, "/r");
+		const liveId = await folder(f, "/r/a");
+		const itemId = await folder(f, "/r/a/x");
+		const outsideId = await folder(f, "/out");
+		expect(
+			await f.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: restrictedId,
+			}),
+		).toEqual({ _yay: null });
+		await test_finish_saved_scope_jobs(f.t);
+		expect(await archive(f, [itemId])).toEqual({ _yay: null });
+		// The live folder leaves `/r` without its Trash item. Then `/r` is empty and goes for good.
+		expect(
+			await test_move_nodes(f.t, f.asOwner, {
+				membershipId: f.db.membershipId,
+				itemIds: [liveId],
+				targetParentId: outsideId,
+			}),
+		).toEqual({ _yay: null });
+		expect(await archive(f, [restrictedId])).toEqual({ _yay: null });
+		const started = await purge(f, [restrictedId]);
+		if (started.runId) expect((await step_to_end(f, await purge_job(f, started.runId))).status).toBe("succeeded");
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", restrictedId))).toBeNull();
+
+		const rows = async (as: Fixture["asOwner"], membershipId: Id<"organizations_workspaces_users">) =>
+			(
+				await as.query(api.files_tree.list_trash_entries, {
+					membershipId,
+					area: null,
+					paginationOpts: { numItems: 10, cursor: null },
+				})
+			).page.map((row) => `${row._id}:${row.locked ? "locked" : "open"}`);
+		expect(await rows(f.asOwner, f.db.membershipId), "the owner finds the item in the area above").toEqual([
+			`${itemId}:open`,
+		]);
+		expect(await rows(member.asUser, member.membershipId), "a member cannot open the item").toEqual([
+			`${itemId}:locked`,
+		]);
+	});
+
+	test("an older Trash item lists in the open area when the area above its folder is gone too", async () => {
+		const f = await fixture();
+		const outerId = await folder(f, "/p");
+		const middleId = await folder(f, "/p/q");
+		const innerId = await folder(f, "/p/q/r");
+		const liveId = await folder(f, "/p/q/r/a");
+		const itemId = await folder(f, "/p/q/r/a/y");
+		const outsideId = await folder(f, "/out");
+		for (const nodeId of [outerId, innerId]) {
+			expect(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId }),
+			).toEqual({ _yay: null });
+			await test_finish_saved_scope_jobs(f.t);
+		}
+		const move_out = async (itemIds: Array<Id<"files_nodes">>) =>
+			expect(
+				await test_move_nodes(f.t, f.asOwner, {
+					membershipId: f.db.membershipId,
+					itemIds,
+					targetParentId: outsideId,
+				}),
+			).toEqual({ _yay: null });
+		const purge_all = async (nodeId: Id<"files_nodes">) => {
+			const started = await purge(f, [nodeId]);
+			if (started.runId) expect((await step_to_end(f, await purge_job(f, started.runId))).status).toBe("succeeded");
+			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toBeNull();
+		};
+
+		// `y` is left in `/p/q/r`, then `/p/q/r` in `/p/q`, and `/p` goes for good before `/p/q/r`.
+		expect(await archive(f, [itemId])).toEqual({ _yay: null });
+		await move_out([liveId]);
+		expect(await archive(f, [innerId])).toEqual({ _yay: null });
+		await move_out([middleId]);
+		expect(await archive(f, [outerId])).toEqual({ _yay: null });
+		await purge_all(outerId);
+		await purge_all(innerId);
+
+		const page = await f.asOwner.query(api.files_tree.list_trash_entries, {
+			membershipId: f.db.membershipId,
+			area: null,
+			paginationOpts: { numItems: 10, cursor: null },
+		});
+		expect(
+			page.page.map((row) => row._id),
+			"the owner finds the item in the open area",
+		).toEqual([itemId]);
+	});
+
+	test("two purges that reach the same older Trash item both end", async () => {
+		const f = await fixture();
+		const { topId, olderId } = await seed_older_trash_item(f, { yjsUpdates: 300 });
+
+		// The two jobs hold `/new` and `/old/d0/f000.md`, so neither waits for the other.
+		const folderJob = await purge_job(f, (await purge(f, [topId])).runId);
+		const itemJob = await purge_job(f, (await purge(f, [olderId])).runId);
+		for (let count = 0; count < 200; count++) {
+			const [folderActivity, itemActivity] = [
+				await read_activity(f, folderJob.activityId),
+				await read_activity(f, itemJob.activityId),
+			];
+			if (!activities_is_active(folderActivity.status) && !activities_is_active(itemActivity.status)) break;
+			if (activities_is_active(itemActivity.status)) await step(f, itemJob.runId);
+			if (activities_is_active(folderActivity.status)) await step(f, folderJob.runId);
+		}
+
+		// Each job deletes the item at most once and counts it once: one deletes it, the other finds it gone.
+		const progress = [
+			(await read_activity(f, folderJob.activityId)).progress,
+			(await read_activity(f, itemJob.activityId)).progress,
+		];
+		expect({
+			folder: (await read_activity(f, folderJob.activityId)).status,
+			item: (await read_activity(f, itemJob.activityId)).status,
+			deleted: progress.map((entry) => entry?.completed),
+			found: progress.map((entry) => entry?.skipped),
+		}).toEqual({ folder: "succeeded", item: "succeeded", deleted: [3, 1], found: [1, 0] });
+		expect(await list_workspace_paths(f)).toEqual([]);
+	});
+
+	test("a Restore refuses an older Trash folder that a purge already walks into", async () => {
+		const f = await fixture();
+		// The older folder `/old/d0` has a full page of files. The 49 empty folders after it fill the first
+		// page of `/old`, so the purge request ends right after it queues the files of `/old/d0`.
+		const tree = await seed_tree(f, { name: "old", folderCount: 1, filesPerFolder: 50 });
+		const innerId = tree.folderIds[0]!;
+		await f.t.run(async (ctx) => {
+			for (let index = 0; index < 49; index++) {
+				const name = `e${String(index).padStart(2, "0")}`;
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					createdBy: f.db.userId,
+					updatedBy: f.db.userId,
+					parentId: tree.topId,
+					name,
+					sortName: files_sort_text_key(name),
+					kind: "folder",
+					path: `/old/${name}`,
+					treePath: `/old/${name}/`,
+					pathDepth: 2,
+				});
+			}
+		});
+		const innerArchived = await archive(f, [innerId]);
+		if (innerArchived._yay) await run_to_end(f, innerArchived._yay);
+		const renamed = await test_rename_node(f.t, f.asOwner, {
+			membershipId: f.db.membershipId,
+			nodeId: tree.topId,
+			path: "new",
+		});
+		expect(renamed._nay).toBeUndefined();
+		await archive_to_end(f, tree.topId);
+
+		// The purge holds the path `/new`, not `/old/d0`. It queued the files of the older folder and
+		// started none of them.
+		const purgeJob = await purge_job(f, (await purge(f, [tree.topId])).runId);
+		expect(
+			await f.t.run(async (ctx) => {
+				const nodes = await Promise.all(tree.fileIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+				const queued = (await ctx.db.query("files_subtree_op_nodes").collect()).map((row) => row.nodeId);
+				return {
+					queued: tree.fileIds.every((nodeId) => queued.includes(nodeId)),
+					started: nodes.some((node) => node?.purgeRunId !== undefined),
+				};
+			}),
+			"the purge stops between the queue and the first delete",
+		).toEqual({ queued: true, started: false });
+
+		// Without the refusal, the Restore brings the folder back and the purge deletes the files it already
+		// queued, so the Restore ends "succeeded" with files missing.
+		const restored = await restore(f, [innerId]);
+		expect(restored._nay?.message, "a Restore of a folder the purge walks into").toBe("This item is being deleted.");
+		expect((await step_to_end(f, purgeJob)).status).toBe("succeeded");
+		expect(await list_workspace_paths(f)).toEqual([]);
 	});
 });

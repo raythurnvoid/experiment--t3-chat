@@ -1062,6 +1062,9 @@ describe("Move cohort and folder-wide jobs", () => {
 			const stagedCohort = (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId!)))!;
 			const cohortOperation = files_archive_operation_id_new(stagedCohort.operationTime, stagedCohort._id);
 			const afterOperations = beforeOperations.map((operation) => operation ?? cohortOperation);
+			// The cohort collects live items only. Trash items keep their own stamp and get no cohort header.
+			const liveIndexes = ids.flatMap((_, index) => (beforeOperations[index] === null ? [index] : []));
+			const pick_live = <T>(values: T[]) => liveIndexes.map((index) => values[index]);
 			let staged = false;
 			let published = false;
 			let stopped = false;
@@ -1083,7 +1086,7 @@ describe("Move cohort and folder-wide jobs", () => {
 				).toEqual(cohort.publishedAt === null ? beforeOperations : afterOperations);
 				const places = await w.t.run(async (ctx) =>
 					Promise.all(
-						ids.map(async (id) => {
+						pick_live(ids).map(async (id) => {
 							const record = await ctx.db
 								.query("files_move_cohort_nodes")
 								.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", id))
@@ -1105,11 +1108,11 @@ describe("Move cohort and folder-wide jobs", () => {
 							end === "first_archive" && view === 1
 								? "the after header captures a new 1,025 allowance"
 								: "both cohort headers keep numeric and absent allowances",
-						).toEqual(view === 0 ? beforeAllowances : [undefined, 1025, undefined]);
+						).toEqual(pick_live(view === 0 ? beforeAllowances : [undefined, 1025, undefined]));
 						expect(
 							places.map((pair) => pair![view]?.archiveOperationId),
 							"both cohort headers select the exact Archive operations",
-						).toEqual(view === 0 ? beforeOperations : afterOperations);
+						).toEqual(pick_live(view === 0 ? beforeOperations : afterOperations));
 					}
 				}
 				published ||= cohort.publishedAt !== null;

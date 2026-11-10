@@ -220,33 +220,76 @@ export async function files_subtree_ops_db_first_node(ctx: MutationCtx, opId: Id
 type ChildCursor = Doc<"files_subtree_op_nodes">["cursor"];
 
 /**
- * One page of a folder's children, active and archived, in the order of the
- * `by_organization_workspace_parent_name` index: by name, then by creation time. `cursor` is where the
- * next page starts. `isDone` is true when this page reaches the last child. Returns null when the page
- * needs a paginated read and this mutation already did one.
+ * Which children a walk reads: `"all"`, the live children (`null`), or the children of one delete. A
+ * scope job reads the live children and a Restore reads its own delete's children. So Trash items of
+ * other deletes stay as they were at delete time. A purge reads all children, because the Trash folder
+ * it deletes can hold items of older deletes.
+ */
+type ChildrenOf = "all" | { archiveOperationId: string | null };
+
+/**
+ * One index range of a folder's children, which run by name, then by creation time. `start` reads from
+ * the first child, `tie` reads one name and creation time, `group` reads one name after a creation time,
+ * and `next_names` reads the names after one name.
+ */
+type ChildRange =
+	| { from: "start" }
+	| { from: "tie" | "group"; name: string; creationTime: number }
+	| { from: "next_names"; name: string };
+
+/**
+ * One page of a folder's children, by name, then by creation time. `cursor` is where the next page
+ * starts. `isDone` is true when this page reaches the last child. Returns null when the page needs a
+ * paginated read and this mutation already did one.
  */
 async function db_read_children(
 	ctx: MutationCtx,
-	args: { folder: Doc<"files_nodes">; cursor: ChildCursor; budget: { hasPaginated: boolean } },
+	args: { folder: Doc<"files_nodes">; childrenOf: ChildrenOf; cursor: ChildCursor; budget: { hasPaginated: boolean } },
 ): Promise<{ children: Doc<"files_nodes">[]; cursor: ChildCursor; isDone: boolean } | null> {
-	const { folder, cursor } = args;
+	const { folder, childrenOf, cursor } = args;
 
+	// Both indexes end with the name and the creation time. Only the delete id before them differs.
+	const query_children = (range: ChildRange) => {
+		if (childrenOf === "all")
+			return ctx.db.query("files_nodes").withIndex("by_organization_workspace_parent_name", (q) => {
+				const children = q
+					.eq("organizationId", folder.organizationId)
+					.eq("workspaceId", folder.workspaceId)
+					.eq("moveCohortId", undefined)
+					.eq("parentId", folder._id);
+				if (range.from === "start") return children;
+				if (range.from === "next_names") return children.gt("name", range.name);
+				const group = children.eq("name", range.name);
+				return range.from === "tie"
+					? group.eq("_creationTime", range.creationTime)
+					: group.gt("_creationTime", range.creationTime);
+			});
+		return ctx.db.query("files_nodes").withIndex("by_organization_workspace_parent_archiveOperation_name", (q) => {
+			const children = q
+				.eq("organizationId", folder.organizationId)
+				.eq("workspaceId", folder.workspaceId)
+				.eq("moveCohortId", undefined)
+				.eq("parentId", folder._id)
+				.eq("archiveOperationId", childrenOf.archiveOperationId);
+			if (range.from === "start") return children;
+			if (range.from === "next_names") return children.gt("name", range.name);
+			const group = children.eq("name", range.name);
+			return range.from === "tie"
+				? group.eq("_creationTime", range.creationTime)
+				: group.gt("_creationTime", range.creationTime);
+		});
+	};
+
+	// Live names are unique in a folder, so only a walk that reads Trash items can meet a group of one
+	// name that fills a page. The tests cover it with a purge (`"all"`).
 	if (cursor?.mode === "tie") {
 		// Convex allows one paginated query per mutation. A step that already did one ends here.
 		if (args.budget.hasPaginated) return null;
 		args.budget.hasPaginated = true;
-		const page = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name", (q) =>
-				q
-					.eq("organizationId", folder.organizationId)
-					.eq("workspaceId", folder.workspaceId)
-					.eq("moveCohortId", undefined)
-					.eq("parentId", folder._id)
-					.eq("name", cursor.name)
-					.eq("_creationTime", cursor.creationTime),
-			)
-			.paginate({ cursor: cursor.pageCursor, numItems: files_subtree_ops_PAGE_SIZE });
+		const page = await query_children({ from: "tie", name: cursor.name, creationTime: cursor.creationTime }).paginate({
+			cursor: cursor.pageCursor,
+			numItems: files_subtree_ops_PAGE_SIZE,
+		});
 		return {
 			children: page.page,
 			cursor: page.isDone
@@ -256,45 +299,16 @@ async function db_read_children(
 		};
 	}
 
-	const docs =
-		cursor === null
-			? await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name", (q) =>
-						q
-							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", folder._id),
-					)
-					.take(files_subtree_ops_PAGE_SIZE + 1)
-			: await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name", (q) =>
-						q
-							.eq("organizationId", folder.organizationId)
-							.eq("workspaceId", folder.workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", folder._id)
-							.eq("name", cursor.name)
-							.gt("_creationTime", cursor.creationTime),
-					)
-					.take(files_subtree_ops_PAGE_SIZE + 1);
+	const docs = await query_children(
+		cursor === null ? { from: "start" } : { from: "group", name: cursor.name, creationTime: cursor.creationTime },
+	).take(files_subtree_ops_PAGE_SIZE + 1);
 	// One index range cannot start after a name and a creation time. So read the rest of the cursor's
 	// name group first, then the names after it.
 	if (cursor !== null && docs.length <= files_subtree_ops_PAGE_SIZE) {
 		docs.push(
-			...(await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name", (q) =>
-					q
-						.eq("organizationId", folder.organizationId)
-						.eq("workspaceId", folder.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("parentId", folder._id)
-						.gt("name", cursor.name),
-				)
-				.take(files_subtree_ops_PAGE_SIZE + 1 - docs.length)),
+			...(await query_children({ from: "next_names", name: cursor.name }).take(
+				files_subtree_ops_PAGE_SIZE + 1 - docs.length,
+			)),
 		);
 	}
 
@@ -327,21 +341,39 @@ async function db_read_children(
 
 /**
  * The children a step handles next for a queue row: the pending ones first, then the next page. A
- * pending child that somebody moved out of the folder or deleted meanwhile is left out. Returns null
+ * pending child that somebody moved out of the folder, deleted, or moved to another delete meanwhile
+ * is left out. Returns null
  * when the next page needs a paginated read and this mutation already did one.
  */
 export async function files_subtree_ops_db_next_children(
 	ctx: MutationCtx,
-	args: { row: Doc<"files_subtree_op_nodes">; folder: Doc<"files_nodes">; budget: { hasPaginated: boolean } },
+	args: {
+		row: Doc<"files_subtree_op_nodes">;
+		folder: Doc<"files_nodes">;
+		childrenOf: ChildrenOf;
+		budget: { hasPaginated: boolean };
+	},
 ) {
 	const { row, folder } = args;
 	if (row.pending.length === 0) {
-		return await db_read_children(ctx, { folder, cursor: row.cursor, budget: args.budget });
+		return await db_read_children(ctx, {
+			folder,
+			childrenOf: args.childrenOf,
+			cursor: row.cursor,
+			budget: args.budget,
+		});
 	}
 
+	const { childrenOf } = args;
 	const pending = await Promise.all(row.pending.map((nodeId) => ctx.db.get("files_nodes", nodeId)));
 	return {
-		children: pending.filter((child): child is Doc<"files_nodes"> => child !== null && child.parentId === folder._id),
+		// Use the rule of the page read too, so a child that changed its delete id meanwhile is left out.
+		children: pending.filter(
+			(child): child is Doc<"files_nodes"> =>
+				child !== null &&
+				child.parentId === folder._id &&
+				(childrenOf === "all" || child.archiveOperationId === childrenOf.archiveOperationId),
+		),
 		cursor: row.cursor,
 		isDone: false,
 	};

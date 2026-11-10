@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { access_control_create_file_checker } from "./access_control.ts";
+import { access_control_create_file_checker, access_control_db_resolve_trash_entry_area } from "./access_control.ts";
 import { files_nodes_db_archive_node } from "./files_nodes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
@@ -256,7 +256,8 @@ export async function public_api_file_archives_db_archive(
 	const archivedIds = new Set<string>(archivedNodeIds);
 	for (const nodeId of archivedNodeIds) {
 		const node = (await ctx.db.get("files_nodes", nodeId))!;
-		if (!archivedIds.has(node.parentId)) await files_trash_entries_db_insert(ctx, node);
+		if (!archivedIds.has(node.parentId))
+			await files_trash_entries_db_insert(ctx, node, await access_control_db_resolve_trash_entry_area(ctx, node));
 	}
 	if (archivedNodeIds.length) await files_media_validation_db_advance_version(ctx, scope);
 	return Result({

@@ -69,7 +69,7 @@ import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
-import { files_saved_placement_db_get_node, files_saved_placement_db_get_view } from "../server/files-saved-placement.ts";
+import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import {
 	files_move_reservations_db_check,
 	files_move_reservations_db_check_node_write,
@@ -1704,55 +1704,6 @@ export type public_api_service_uploads_delete_upload_target_Result =
  * the same ceiling.
  */
 export const public_api_service_uploads_MAX_ARCHIVE_NODES = 256;
-
-/**
- * Load at most `maxNodes` descendants. One extra read proves that the subtree is too large.
- */
-export async function public_api_service_uploads_db_collect_bounded_descendants(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Id<"organizations">;
-		workspaceId: Id<"organizations_workspaces">;
-		parentId: Id<"files_nodes">;
-		maxNodes: number;
-	},
-) {
-	const descendants: Array<Doc<"files_nodes">> = [];
-	const stack = [args.parentId];
-	const view = await files_saved_placement_db_get_view(ctx.db, args);
-
-	while (stack.length > 0) {
-		const parentId = stack.pop();
-		if (parentId === undefined) {
-			continue;
-		}
-		const remaining = args.maxNodes - descendants.length;
-		const normal = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined).eq("parentId", parentId),
-			)
-			.take(remaining + 1);
-		const selected = view.cohortId === null ? [] : await ctx.db.query("files_saved_places")
-			.withIndex("by_view_parent_name", (q) => q.eq("cohortId", view.cohortId)
-				.eq("view", view.view).eq("parentId", parentId)).take(remaining + 1);
-		if (normal.length + selected.length > remaining) {
-			return null;
-		}
-		const children = [...normal];
-		for (const place of selected) {
-			const node = await files_saved_placement_db_get_node(ctx.db, place.nodeId, { cohortId: place.cohortId, view: place.view });
-			if (!node) throw should_never_happen("A selected service archive node is missing", { nodeId: place.nodeId });
-			children.push(node);
-		}
-		for (const child of children) {
-			descendants.push(child);
-			stack.push(child._id);
-		}
-	}
-
-	return descendants;
-}
 
 /**
  * Archive a sealed destination with a durable request receipt. Force keeps allowed branches;

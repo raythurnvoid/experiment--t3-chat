@@ -259,30 +259,33 @@ describe("unarchive_nodes", () => {
 		expect((await read_node(f, tree.fileIds.at(-1)!)).path).toBe("/target/moving/d1/f039.md");
 	}, 120_000);
 
-	test("public Rename waits for Restore and checks the accepted source again", async () => {
+	test("public Rename waits for Restore", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "rename-wait", folderCount: 2, filesPerFolder: 40 });
 		await archive_to_end(f, tree.topId);
 		const restored = await restore(f, [tree.topId]);
 		expect(restored._nay).toBeUndefined();
+		// A Rename in Trash is refused, so rename the folder once it is back and its items still come back.
+		for (let count = 0; count < 30 && (await read_node(f, tree.topId)).archiveOperationId !== null; count++) {
+			await step(f, restored._yay!.runId);
+		}
 		const renamed = await f.asOwner.mutation(api.files_nodes.rename_node, {
 			membershipId: f.db.membershipId,
 			requestId: crypto.randomUUID(),
-			nodeId: tree.fileIds[0]!,
-			path: "a.md",
+			nodeId: tree.topId,
+			path: "renamed",
 		});
 		expect(renamed._nay).toBeUndefined();
 		expect(renamed._yay).not.toBeNull();
 		for (let count = 0; count < 3; count++) {
 			await f.t.mutation(internal.files_transfer.advance, { runId: renamed._yay!.runId });
 		}
-		expect((await read_node(f, tree.fileIds[0]!)).path, "Rename keeps the old name while Restore runs")
-			.toBe("/rename-wait/d0/f000.md");
+		expect((await read_node(f, tree.topId)).path, "Rename keeps the old name while Restore runs").toBe("/rename-wait");
 		expect((await f.t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.progress?.completed).toBe(0);
 		expect((await run_to_end(f, restored._yay!)).activity.status).toBe("succeeded");
 		await test_finish_transfer_run(f.asOwner, renamed._yay!.runId);
-		expect((await f.t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.status).toBe("awaiting_input");
-		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/rename-wait/d0/f000.md");
+		expect((await f.t.run((ctx) => ctx.db.get("activities", renamed._yay!.activityId)))?.status).toBe("succeeded");
+		expect((await read_node(f, tree.fileIds.at(-1)!)).path).toBe("/renamed/d1/f039.md");
 	});
 
 	test("refuses to restore an operation that a job is still restoring", async () => {

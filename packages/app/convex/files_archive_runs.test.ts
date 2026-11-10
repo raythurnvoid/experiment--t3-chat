@@ -166,19 +166,20 @@ describe("archive_nodes", () => {
 		expect((await create())._nay).toBeUndefined();
 	});
 
-	test("a rename in Trash makes its new folder in Trash with the same delete", async () => {
+	test("a rename in Trash is refused and changes nothing", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "gone", folderCount: 1, filesPerFolder: 1 });
 		await archive_to_end(f, tree.topId);
+		const before = await read_state(f);
 
 		const renamed = await test_rename_node(f.t, f.asOwner, {
 			membershipId: f.db.membershipId,
 			nodeId: tree.fileIds[0]!,
 			path: "sub/moved.md",
 		});
-		expect(renamed._nay).toBeUndefined();
-		expect((await read_node(f, tree.fileIds[0]!)).path).toBe("/gone/d0/sub/moved.md");
-		await expect_consistent(f);
+		expect(renamed._nay?.message).toBe("This item is in Trash. Restore it before you rename it.");
+		expect(await read_state(f)).toEqual(before);
+		expect(await f.t.run((ctx) => ctx.db.query("files_transfer_runs").collect())).toEqual([]);
 	});
 
 	test("has no Stop, and an item archived on its own keeps its operation through Archive and Restore", async () => {

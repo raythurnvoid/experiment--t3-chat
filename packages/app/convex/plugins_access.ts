@@ -718,9 +718,15 @@ export const grant_file_access_as_me = mutation({
 				updatedAt: now,
 			});
 		}
-		// Keep this anchor. Live items match the pair's choices by path, but an item in Trash still follows
-		// the stored "Add people" chain that this scope job writes.
-		if (node && node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
+		// Keep this anchor. Live items match the pair's choices by path, but an item deleted later keeps the
+		// stored "Add people" chain that this scope job writes. A chosen folder in Trash gets no anchor: it
+		// keeps its delete-time access fields, and the choice reaches its Trash items by path.
+		if (
+			node &&
+			node.archiveOperationId === null &&
+			node.restrictedScopeNodeId !== node._id &&
+			node.parentExtendedScopeNodeId === undefined
+		) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				kind: "scope",

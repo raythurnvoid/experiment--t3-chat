@@ -1060,18 +1060,19 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 		name: "Test User",
 	});
 
+	// A Rename in Trash is refused, so make the duplicate with a new live folder at the Trash path.
 	await asUser.mutation(api.files_nodes.archive_nodes, {
 		membershipId: db.membershipId,
-		nodeIds: [db.files.file_root_2._id],
+		nodeIds: [db.files.file_root_1._id],
 	});
-
-	const renameArchived = await test_rename_node(t, asUser, {
+	await test_finish_archive_jobs(t);
+	const created = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
-		nodeId: db.files.file_root_2._id,
+		parentId: files_ROOT_ID,
 		path: db.files.file_root_1.name,
 	});
-	if (renameArchived._nay) {
-		throw new Error("Expected archived rename to succeed");
+	if (created._nay) {
+		throw new Error(created._nay.message);
 	}
 
 	const resolvedRoot1 = await asUser.query(internal.files_nodes.get_by_path, {
@@ -1082,7 +1083,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 		path: `/${db.files.file_root_1.name}`,
 	});
 
-	expect(resolvedRoot1?._id).toBe(db.files.file_root_1._id);
+	expect(resolvedRoot1?._id).toBe(created._yay.nodeId);
 });
 
 test("private file publication creates active ancestors instead of reusing archived nodes", async () => {
@@ -2740,7 +2741,8 @@ describe("files_nodes.rename_node read-only gates", () => {
 		expect(renamed._nay).toBeUndefined();
 		expect((await read_lock_node(t, outerId))?.path).toBe("/outer3");
 		const frozen = await read_lock_node(t, frozenId);
-		expect(frozen?.path).toBe("/outer3/frozen");
+		// A Rename does not take Trash items along. They keep their delete-time path.
+		expect(frozen?.path).toBe("/outer/frozen");
 		expect(frozen?.archiveOperationId).toBeDefined();
 		expect(frozen).toMatchObject({ readOnly: true });
 	});
@@ -2877,7 +2879,8 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		expect(moved._nay).toBeUndefined();
 		expect((await read_lock_node(t, innerId))?.path).toBe("/inner");
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.path).toBe("/inner/deep");
+		// A Move does not take Trash items along. They keep their delete-time path.
+		expect(deep?.path).toBe("/outer/inner/deep");
 		expect(deep?.archiveOperationId).toBeDefined();
 		expect(deep).toMatchObject({ readOnly: true });
 	});

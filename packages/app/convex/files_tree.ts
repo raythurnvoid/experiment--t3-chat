@@ -44,7 +44,6 @@ import {
 } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
-import { files_trash_entries_area } from "../server/files-trash-entries.ts";
 import { files_pending_overlay_db_has_saved_scope_job } from "../server/files-pending-overlay.ts";
 import {
 	files_node_public_doc_fields,
@@ -1699,8 +1698,11 @@ export const list_trash_entries = query({
 		}
 
 		// Entries follow the stored nodes. While a Move runs, the current view can already show a moved
-		// node out of Trash or in another area. Its Move cleanup fixes the entry. Until then, leave the row
-		// out. Only nodes of the running Move can differ, so this drops few rows.
+		// node out of Trash. Its Move cleanup fixes the entry. Until then, leave the row out. Only nodes of
+		// the running Move can differ, so this drops few rows.
+		//
+		// Do not compare the node's area with `args.area`. After an unrestrict, the entry lists in the new
+		// area while the node keeps its delete-time pointer. The list rows check each node's access.
 		const nodes = await Promise.all(
 			result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)),
 		);
@@ -1709,10 +1711,7 @@ export const list_trash_entries = query({
 			membership,
 			checker: reader.checker,
 			folder: { restrictedScopeNodeId: args.area, extendedScopeNodeId: null },
-			fileNodes: nodes.filter(
-				(node): node is Doc<"files_nodes"> =>
-					node !== null && node.archiveOperationId !== null && files_trash_entries_area(node) === args.area,
-			),
+			fileNodes: nodes.filter((node): node is Doc<"files_nodes"> => node !== null && node.archiveOperationId !== null),
 		});
 		return { ...result, page: rows };
 	},

@@ -156,6 +156,22 @@ describe("unarchive_nodes", () => {
 			const f = await fixture();
 			const member = await add_member(f);
 			const tree = await seed_tree(f, { name: "secret", folderCount: 1, filesPerFolder: 1 });
+			// A Trash item keeps the access of its delete time. So restrict the folder first, and let the member
+			// in through a grant that the owner removes later.
+			expect(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: tree.topId,
+				}),
+			).toEqual({ _yay: null });
+			const grant = {
+				membershipId: f.db.membershipId,
+				nodeId: tree.topId,
+				principal: { kind: "user" as const, userId: member.userId },
+			};
+			expect(await f.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...grant, level: "write" })).toEqual({
+				_yay: null,
+			});
 			expect(await archive(f, [tree.fileIds[0]!])).toEqual({ _yay: null });
 			const occupants = await seed_tree(f, { name: "occupants", folderCount: 1, filesPerFolder: 1 });
 			expect(
@@ -171,14 +187,7 @@ describe("unarchive_nodes", () => {
 			});
 			const job = restored._yay!;
 
-			expect(
-				(
-					await f.asOwner.mutation(api.files_sharing.restrict_node, {
-						membershipId: f.db.membershipId,
-						nodeId: tree.folderIds[0]!,
-					})
-				)._nay,
-			).toBeUndefined();
+			expect(await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, grant)).toEqual({ _yay: null });
 
 			const view = await member.asUser.query(api.files_archive_runs.get, {
 				membershipId: member.membershipId,

@@ -1,14 +1,16 @@
-// Give the items inside a moved or newly scoped folder the path and access area of their live parent.
-// The request changes the folder itself, then starts an op here. The first step runs in the same mutation,
-// so a small folder is done at once. Later steps run in `advance` in files_subtree_ops.ts. The archive job
-// also calls `files_nodes_db_rebuild_node` for each child it restores.
+// Give the live items inside a moved or newly scoped folder the path and access area of their live
+// parent. Items in Trash keep what they had at delete time. The request changes the folder itself, then
+// starts an op here. The first step runs in the same mutation, so a small folder is done at once. Later
+// steps run in `advance` in files_subtree_ops.ts. The archive job also calls `files_nodes_db_rebuild_node`
+// for each child it restores.
 //
 // Keep the imports of this module small. On a cold call Convex loads every file that this module imports,
 // even the unused ones. The sharing doors start ops here, so this module must not import files_nodes.ts or
-// files_subtree_ops.ts.
+// files_subtree_ops.ts. Every module that imports this one already loads access_control.ts.
 
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
+import { access_control_db_resolve_trash_entry_area } from "./access_control.ts";
 import { activities_db_start } from "./activities_db.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_path_depth } from "./files_nodes_create_db.ts";
@@ -28,6 +30,7 @@ import {
 } from "./files_subtree_ops_db.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { files_pending_overlay_db_follow_saved_scope } from "../server/files-pending-overlay.ts";
+import { files_trash_entries_db_set_area } from "../server/files-trash-entries.ts";
 import { path_join } from "../server/server-utils.ts";
 import { files_derive_tree_path_for_file_node } from "../shared/files.ts";
 
@@ -46,9 +49,9 @@ export const files_subtree_ops_STEP_MAX_NODES = 75;
  * It never writes `archiveOperationId`. An archive job may stamp the same child, and a patch keeps
  * the other field.
  *
- * It does not check the path limit. A restore gives a child that was archived on its own the path of
- * its restored folder, even when that path is a few characters over the limit. The child stays
- * archived. Its own restore uses its first Archive allowance, or the normal limit when it is absent.
+ * It does not check the path limit. A restore gives an item of its own delete that stays in Trash the
+ * path of its folder, even when that path is a few characters over the limit. Its own restore uses its
+ * first Archive allowance, or the normal limit when it is absent.
  */
 export async function files_nodes_db_rebuild_node(
 	ctx: MutationCtx,
@@ -108,9 +111,44 @@ export async function files_nodes_db_rebuild_node(
 }
 
 /**
+ * Move the Trash entries of each root that stopped being restricted to the area the root is in now.
+ * Returns false when the budget ended first. The next step goes on.
+ *
+ * The Trash items keep their delete-time pointer at the root. Access follows that pointer through the
+ * root to its live area (`access_control_db_resolve_live_restricted_scope`), so only the entries move.
+ * Run it after the walk: then no live item inside still points at the root, so a later delete gets the
+ * new area itself.
+ */
+async function db_set_trash_entries_area(
+	ctx: MutationCtx,
+	args: { op: Doc<"files_subtree_ops">; budget: { nodes: number } },
+) {
+	const { op, budget } = args;
+
+	for (const nodeId of op.rootNodeIds) {
+		const root = await ctx.db.get("files_nodes", nodeId);
+		// Only a root that stopped being restricted has entries to move. A root that was never restricted,
+		// or is restricted again, keeps them: it is an area.
+		if (!root || root.isRestrictedScopeRoot || root.parentScopeNodeId === undefined) continue;
+
+		const moved = await files_trash_entries_db_set_area(ctx, {
+			organizationId: op.organizationId,
+			workspaceId: op.workspaceId,
+			from: root._id,
+			to: await access_control_db_resolve_trash_entry_area(ctx, root),
+			limit: budget.nodes,
+		});
+		budget.nodes -= moved;
+		if (budget.nodes <= 0) return false;
+	}
+	return true;
+}
+
+/**
  * Rewrite the path and scope of each child in the op's queue from its live parent. The request
  * already changed the roots. When the queue is empty, a pass ended. Walk again from the roots,
- * until a pass writes nothing.
+ * until a pass writes nothing. A scope op then moves the Trash entries of an opened folder
+ * (`db_set_trash_entries_area`).
  */
 export async function files_subtree_ops_db_rebuild_walk(args: {
 	ctx: MutationCtx;
@@ -131,6 +169,7 @@ export async function files_subtree_ops_db_rebuild_walk(args: {
 		// wrote nothing ends the walk.
 		if (!row) {
 			if (!passWrote) {
+				if (op.kind === "scope" && !(await db_set_trash_entries_area(ctx, { op, budget }))) break;
 				isDone = true;
 				break;
 			}
@@ -151,7 +190,13 @@ export async function files_subtree_ops_db_rebuild_walk(args: {
 			continue;
 		}
 
-		const next = await files_subtree_ops_db_next_children(ctx, { row, folder, budget });
+		// Trash items stay as they were at delete time, so the walk reads live children only.
+		const next = await files_subtree_ops_db_next_children(ctx, {
+			row,
+			folder,
+			childrenOf: { archiveOperationId: null },
+			budget,
+		});
 		if (!next) break;
 		const folderIds = [];
 		let pending: Array<Id<"files_nodes">> = [];
