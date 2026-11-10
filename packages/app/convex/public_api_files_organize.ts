@@ -4,7 +4,8 @@
 // `public_api_files_organize_http_routes.ts`).
 //
 // They act as the API key, with the same Locked, not hidden rules as `files/list`: a path the key
-// cannot open answers "Permission denied", never "not found".
+// cannot open answers "Permission denied", never "not found". The Trash doors, `restore` and `jobs/get`
+// also serve plugins, which act as their file pair.
 
 import { compareValues, v, ConvexError, type Infer } from "convex/values";
 import type { IndexRange, RegisteredMutation, RegisteredQuery } from "convex/server";
@@ -38,6 +39,7 @@ import {
 	public_api_db_revalidate_live_plugin_run,
 	public_api_get_invalid_name_message,
 } from "./public_api.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { public_api_validate_canonical_folder_path } from "./public_api_plugin_files.ts";
 import {
 	public_api_authorize_request,
@@ -2352,12 +2354,13 @@ export const preview_restore = internalMutation({
 					userId: args.userId,
 					workspaceId: args.workspaceId,
 					jobId,
-					afterOrder: -1,
+					cursor: null,
+					paginate: false,
 					checker,
 				});
 				if (!job) throw should_never_happen("A restore job of this request is missing", { jobId });
-				const { jobId: _jobId, nextOrder, ...preview } = job;
-				jobs.push({ ...preview, hasMoreItems: nextOrder !== null });
+				const { jobId: _jobId, isDone, continueCursor: _continueCursor, ...preview } = job;
+				jobs.push({ ...preview, hasMoreItems: !isDone });
 			}
 		} else {
 			for (const jobId of restored.jobIds) {
@@ -2387,7 +2390,10 @@ type RestorePreview = {
 	refused: restore_items_Result["refused"];
 	jobs: Array<
 		| (Omit<NonNullable<get_job_Result>, "jobId" | "refusedCursor"> & { hasMoreItems: boolean })
-		| (Omit<NonNullable<Awaited<ReturnType<typeof db_get_plugin_restore_job>>>, "jobId" | "nextOrder"> & {
+		| (Omit<
+				NonNullable<Awaited<ReturnType<typeof db_get_plugin_restore_job>>>,
+				"jobId" | "isDone" | "continueCursor"
+		  > & {
 				hasMoreItems: boolean;
 		  })
 	>;
@@ -3170,8 +3176,10 @@ type get_job_Result =
 
 /**
  * Read a Restore job that a plugin started, for the same installation and file pair, like the app's job
- * card. Another installation's, pair's or key's job gets null. The caller checked who asks. Today that
- * is only the dry run of `files/restore`, for the jobs its own nested restore returned.
+ * card. Another installation's, pair's, person's or key's job, an app job and a delete job get null. A
+ * job of an older plugin version stays readable: only its worker stops on an upgrade. The caller checked
+ * who asks: `get_plugin_restore_job`, or the dry run of `files/restore` for the jobs its own nested
+ * restore returned.
  *
  * A plugin gets fixed messages only. It gets a path only where its pair can read the item now, checked
  * with the one `checker` of the whole answer. A row it cannot read stays, with null paths.
@@ -3185,13 +3193,19 @@ async function db_get_plugin_restore_job(
 		workspaceId: Id<"organizations_workspaces">;
 		jobId: Id<"activities">;
 		/**
-		 * The `order` of the last outcome already read, or -1 for the first page.
+		 * The native cursor of the outcome page to read, or null for the first page.
 		 */
-		afterOrder: number;
+		cursor: string | null;
+		/**
+		 * False for the dry run. It reads up to 100 jobs in one mutation, and Convex allows one `paginate`
+		 * per function, so it reads only the first page of each job, with `take`.
+		 */
+		paginate: boolean;
 		checker: ReturnType<typeof access_control_create_file_checker>;
 	},
 ) {
 	const { checker } = args;
+	const isFirstPage = args.cursor === null;
 
 	const activity = await ctx.db.get("activities", args.jobId);
 	if (!activity || activity.source.kind !== "files_archive_run") return null;
@@ -3210,22 +3224,28 @@ async function db_get_plugin_restore_job(
 
 	// Only a stopped job needs a recovery item. Read each selected id at its current saved path.
 	let leftNode = null;
-	if (args.afterOrder === -1 && activity.status !== "succeeded" && !activities_is_active(activity.status)) {
+	if (isFirstPage && activity.status !== "succeeded" && !activities_is_active(activity.status)) {
 		for (const root of run.restoreRoots) {
 			leftNode = await files_archive_runs_db_find_saved_restore_left_node(ctx, { run, root });
 			if (leftNode) break;
 		}
 	}
 
-	// A plugin's job writes `plugin_restore` rows only, a page at a time by order. Sort each row into
+	// A plugin's job writes `plugin_restore` rows only, a page at a time by order. Keep every row of the
+	// page, also one the pair cannot read, so a page never needs more reads to fill up. Sort each row into
 	// skipped or renamed before hiding its paths, so a hidden Keep both still counts as a rename.
-	const items = await ctx.db
-		.query("files_archive_run_items")
-		.withIndex("by_run_order", (q) => q.eq("runId", run._id).gt("order", args.afterOrder))
-		.take(JOB_REFUSED_PAGE_SIZE);
+	const outcomes = ctx.db.query("files_archive_run_items").withIndex("by_run_order", (q) => q.eq("runId", run._id));
+	const page = args.paginate
+		? await outcomes.paginate({ cursor: args.cursor, numItems: JOB_REFUSED_PAGE_SIZE })
+		: await outcomes.take(JOB_REFUSED_PAGE_SIZE).then((items) => ({
+				page: items,
+				isDone: items.length < JOB_REFUSED_PAGE_SIZE,
+				// The dry run never reads a second page.
+				continueCursor: "",
+			}));
 	const skipped = [];
 	const renamed = [];
-	for (const item of items) {
+	for (const item of page.page) {
 		if (item.kind !== "plugin_restore") continue;
 		const isReadable = await is_readable(await files_saved_placement_db_get_node(ctx.db, item.nodeId));
 		if (item.newPath === null) {
@@ -3254,7 +3274,7 @@ async function db_get_plugin_restore_job(
 					: files_archive_runs_PLUGIN_RESTORE_MESSAGES.stopped,
 		refused: [
 			// The items the request refused at the start come on the first page of its last job only.
-			...(args.afterOrder === -1 && run.apiRequest
+			...(isFirstPage && run.apiRequest
 				? await db_render_plugin_restore_refusals(ctx, {
 						organizationId: run.organizationId,
 						workspaceId: run.workspaceId,
@@ -3274,10 +3294,188 @@ async function db_get_plugin_restore_job(
 			...skipped,
 		],
 		renamed,
-		// Set when more outcomes follow.
-		nextOrder: items.length === JOB_REFUSED_PAGE_SIZE ? items.at(-1)!.order : null,
+		isDone: page.isDone,
+		// The native cursor of the next page. It can point at a row the plugin cannot read, so the HTTP
+		// action seals it before it leaves the server.
+		continueCursor: page.continueCursor,
 	};
 }
+
+/**
+ * `files/jobs/get` for a plugin run or page: read one Restore job of the caller's own installation and
+ * file pair, one page of its outcomes at a time. A foreign job answers "not_found", like a missing one.
+ *
+ * Check the caller again here, in the same snapshot as the job. The HTTP auth checked it before, but
+ * the token can rotate, the run can end and consent can change since. The HTTP action passes the token
+ * hash and `now`, so no clock check runs inside a cached query result. The caller's pair, installation
+ * and person come from the stored run or page session, never from the request.
+ */
+export const get_plugin_restore_job = internalQuery({
+	args: {
+		principal: v.union(
+			v.object({
+				kind: v.literal("plugin_run"),
+				runId: v.id("plugins_event_runs"),
+				callId: v.id("plugins_event_run_calls"),
+				tokenHash: v.string(),
+			}),
+			v.object({ kind: v.literal("plugin_ui"), sessionId: v.id("plugins_ui_sessions"), tokenHash: v.string() }),
+		),
+		now: v.number(),
+		/** Not normalized: it comes from the request body. */
+		jobId: v.string(),
+		/** The native outcome cursor, opened from the sealed `refusedCursor` of the last page. */
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.union(
+		v.object({
+			status: v.union(v.literal("unauthenticated"), v.literal("permission_denied"), v.literal("not_found")),
+		}),
+		v.object({
+			status: v.literal("found"),
+			job: v.object({
+				jobId: v.id("activities"),
+				kind: v.literal("restore"),
+				status: app_convex_schema.tables.activities.validator.fields.status,
+				progress: app_convex_schema.tables.activities.validator.fields.progress,
+				errorMessage: v.union(v.string(), v.null()),
+				refused: v.array(
+					v.union(
+						v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
+						v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+					),
+				),
+				renamed: v.array(v.object({ path: v.union(v.string(), v.null()), newPath: v.union(v.string(), v.null()) })),
+				isDone: v.boolean(),
+				continueCursor: v.string(),
+			}),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const { principal } = args;
+
+		let caller: {
+			installation: Doc<"plugins_workspace_installations">;
+			filePairId: Id<"plugins_file_pairs">;
+			userId: Id<"users">;
+		};
+		if (principal.kind === "plugin_run") {
+			const pluginRun = await ctx.db.get("plugins_event_runs", principal.runId);
+			if (!pluginRun || pluginRun.apiTokenHash !== principal.tokenHash) return { status: "unauthenticated" as const };
+			const live = await public_api_db_revalidate_live_plugin_run(ctx, {
+				organizationId: pluginRun.organizationId,
+				workspaceId: pluginRun.workspaceId,
+				runId: pluginRun._id,
+				now: args.now,
+				requiredScope: "files:list",
+			});
+			if (live._nay) {
+				return {
+					status:
+						live._nay.message === "Unauthenticated" ? ("unauthenticated" as const) : ("permission_denied" as const),
+				};
+			}
+			const { installation, subject } = live._yay;
+			const call = await ctx.db.get("plugins_event_run_calls", principal.callId);
+			if (
+				!call ||
+				call.status !== "started" ||
+				call.kind !== "api_request" ||
+				call.route !== "/api/v1/files/jobs/get" ||
+				call.runId !== pluginRun._id ||
+				call.organizationId !== pluginRun.organizationId ||
+				call.workspaceId !== pluginRun.workspaceId ||
+				call.installationId !== installation._id ||
+				call.pluginVersionId !== pluginRun.pluginVersionId
+			) {
+				return { status: "unauthenticated" as const };
+			}
+			// An upload run's authority ends with the file that started it.
+			if (pluginRun.fileNodeId) {
+				const source = await files_saved_placement_db_get_node(ctx.db, pluginRun.fileNodeId);
+				if (
+					!source ||
+					source.archiveOperationId !== null ||
+					source.organizationId !== pluginRun.organizationId ||
+					source.workspaceId !== pluginRun.workspaceId
+				) {
+					return { status: "unauthenticated" as const };
+				}
+			}
+			// The installation's read consent is checked below for runs and pages alike.
+			if (!pluginRun.acceptedCapabilities.includes("workspace.files.read"))
+				return { status: "permission_denied" as const };
+			caller = { installation, filePairId: subject.pairId, userId: pluginRun.actorUserId };
+		} else {
+			// A refresh writes a new token hash and a later expiry on the same session doc. So the session id
+			// and its expiry alone do not prove that the token the HTTP action saw is still the live one.
+			const session = await ctx.db.get("plugins_ui_sessions", principal.sessionId);
+			if (!session || session.tokenHash !== principal.tokenHash || session.expiresAt <= args.now) {
+				return { status: "unauthenticated" as const };
+			}
+			const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+			if (
+				!installation ||
+				installation.status !== "enabled" ||
+				installation.pluginVersionId !== session.pluginVersionId ||
+				installation.organizationId !== session.organizationId ||
+				installation.workspaceId !== session.workspaceId ||
+				!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))
+			) {
+				return { status: "unauthenticated" as const };
+			}
+			caller = { installation, filePairId: session.filePairId, userId: session.userId };
+		}
+		const { installation, userId } = caller;
+
+		// The pair by its exact ids and membership lifetime. Guests have no Trash, like on the other plugin
+		// Trash doors.
+		const pair = await plugins_file_grants_db_validate_pair(ctx, {
+			pairId: caller.filePairId,
+			installationId: installation._id,
+			userId,
+		});
+		if (!pair) return { status: "unauthenticated" as const };
+		const membership = (await ctx.db.get("organizations_workspaces_users", pair.membershipId))!;
+		if (
+			(
+				await access_control_db_authorize_membership(ctx, {
+					userAuth: { id: userId },
+					membership,
+					permission: "content.read",
+				})
+			)._nay ||
+			!installation.acceptedCapabilities.includes("workspace.files.read")
+		) {
+			return { status: "permission_denied" as const };
+		}
+
+		const jobId = ctx.db.normalizeId("activities", args.jobId);
+		const job = jobId
+			? await db_get_plugin_restore_job(ctx, {
+					installationId: installation._id,
+					filePairId: pair._id,
+					userId,
+					workspaceId: pair.workspaceId,
+					jobId,
+					cursor: args.cursor,
+					paginate: true,
+					// One checker for the whole answer: outcomes, refusals and the recovery item share its reads.
+					checker: access_control_create_file_checker(ctx, {
+						organizationId: pair.organizationId,
+						workspaceId: pair.workspaceId,
+						subject: { kind: "plugin_pair", pairId: pair._id },
+					}),
+				})
+			: null;
+		return job ? { status: "found" as const, job } : { status: "not_found" as const };
+	},
+});
+
+type get_plugin_restore_job_Result =
+	typeof get_plugin_restore_job extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 const jobs_get_body_validator = z
 	.object({
@@ -3293,6 +3491,27 @@ const jobs_get_body_validator = z
 
 export type public_api_files_organize_http_jobs_get_Body = z.infer<typeof jobs_get_body_validator>;
 
+/**
+ * A plugin's body. Its `refusedCursor` is sealed, so it has another shape than a key's cursor.
+ */
+const plugin_jobs_get_body_validator = z
+	.object({
+		jobId: z.string().max(64),
+		// A real cursor is about 1.4 KB. The cap stops a huge string before the server opens it.
+		cursor: z.string().max(16384).nullable().optional(),
+	})
+	.strict();
+
+/**
+ * The error code that a plugin run's call keeps for each refusal status of `files/jobs/get`.
+ */
+const PLUGIN_JOBS_GET_ERROR_CODES = {
+	400: "invalid_input",
+	401: "unauthenticated",
+	403: "permission_denied",
+	404: "not_found",
+} as const;
+
 export async function public_api_files_organize_http_jobs_get(args: {
 	ctx: ActionCtx;
 	request: Request;
@@ -3304,13 +3523,107 @@ export async function public_api_files_organize_http_jobs_get(args: {
 		ctx,
 		request,
 		requiredScope: "files:list" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key"],
+		allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
 		route: path,
 	});
 	if (auth._nay) {
 		return auth._nay;
 	}
-	const principal = auth._yay.principal;
+	const { principal, pluginCallId, presentedToken } = auth._yay;
+
+	// A plugin reads only Restore jobs of its own installation and pair, with `get_plugin_restore_job`. It
+	// never reaches the key's `get_job`, whose saved messages can name items the plugin cannot read.
+	if (principal.kind !== "user_api_key") {
+		// A run fails if a claimed call stays open. So every answer below closes the call after the iife
+		// returns, and an unexpected error closes it before it goes on.
+		const response = await (async (/* iife */) => {
+			if (principal.subject.kind !== "plugin_pair") {
+				return { status: 403, body: { message: "Permission denied" } } as const;
+			}
+			const body = await server_request_json_parse_and_validate(request, plugin_jobs_get_body_validator);
+			if (body._nay) {
+				return { status: 400, body: { message: body._nay.message } } as const;
+			}
+
+			// The cursor works only for this job, installation and pair. It does not pin the run or page, so a
+			// later run or a page of the same pair can go on reading.
+			const scope = JSON.stringify([body._yay.jobId, principal.installationId, principal.subject.pairId]);
+			let cursor: string | null = null;
+			if (body._yay.cursor != null) {
+				const opened = await crypto_open_cursor({ purpose: "files_jobs_get", scope, cursor: body._yay.cursor });
+				if (!validate(v.object({ cursor: v.string() }), opened)) {
+					// Like `files/trash/list`, only this error has a code: clients restart with `cursor: null` on it.
+					return {
+						status: 400,
+						body: { message: "This job cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
+					} as const;
+				}
+				cursor = opened.cursor;
+			}
+
+			if (principal.kind === "plugin_run" && !pluginCallId) {
+				throw should_never_happen("A plugin job read has no claimed call", { runId: principal.runId });
+			}
+			const tokenHash = await crypto_sha256_hex(presentedToken);
+			const result = (await ctx.runQuery(internal.public_api_files_organize.get_plugin_restore_job, {
+				principal:
+					principal.kind === "plugin_run"
+						? { kind: "plugin_run", runId: principal.runId, callId: pluginCallId!, tokenHash }
+						: { kind: "plugin_ui", sessionId: principal.sessionId, tokenHash },
+				now: Date.now(),
+				jobId: body._yay.jobId,
+				cursor,
+			})) as get_plugin_restore_job_Result;
+			if (result.status === "unauthenticated") {
+				return { status: 401, body: { message: "Unauthenticated" } } as const;
+			}
+			if (result.status === "permission_denied") {
+				return { status: 403, body: { message: "Permission denied" } } as const;
+			}
+			// Finished jobs are deleted 7 days after they end, so an old id is not found either.
+			if (result.status !== "found") {
+				return { status: 404, body: { message: "Job not found" } } as const;
+			}
+			const { isDone, continueCursor, ...job } = result.job;
+			return {
+				status: 200,
+				body: {
+					...job,
+					refusedCursor: isDone
+						? null
+						: await crypto_seal_cursor({ purpose: "files_jobs_get", scope, payload: { cursor: continueCursor } }),
+				},
+				headers: { "Cache-Control": "no-store" },
+			} as const;
+		})().catch(async (error: unknown) => {
+			await public_api_settle_plugin_call_best_effort(ctx, {
+				callId: pluginCallId,
+				status: "failed",
+				responseStatus: 500,
+				errorCode: "internal_error",
+				errorMessage: "Failed to read the job",
+			});
+			throw error;
+		});
+
+		if (response.status === 200) {
+			await public_api_settle_plugin_call_best_effort(ctx, {
+				callId: pluginCallId,
+				status: "succeeded",
+				responseStatus: 200,
+			});
+		} else {
+			await public_api_settle_plugin_call_best_effort(ctx, {
+				callId: pluginCallId,
+				status: "failed",
+				responseStatus: response.status,
+				errorCode:
+					"errorCode" in response.body ? response.body.errorCode : PLUGIN_JOBS_GET_ERROR_CODES[response.status],
+				errorMessage: response.body.message,
+			});
+		}
+		return response;
+	}
 
 	const body = await server_request_json_parse_and_validate(request, jobs_get_body_validator);
 	if (body._nay) {

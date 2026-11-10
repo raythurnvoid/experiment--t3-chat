@@ -266,6 +266,12 @@ an upload run's source goes to Trash. The request checks the source before it st
 work. Each step checks every item against the pair's choices at that moment, with one
 checker per step, so a choice that ended refuses the items it no longer covers.
 
+A run or page of the same installation and pair reads the job's status with
+`files/jobs/get`. It needs `workspace.files.read`, not Restore. A stopped job of an older
+version stays readable, because the version stop applies only to the job's work. Rows the
+pair cannot read keep their place with null paths. The rules are in
+[Plugin job status](../public-api/SKILL.md#plugin-job-status).
+
 Known limits:
 
 - The fence stops old accepted jobs, not every old token. Each install raises
