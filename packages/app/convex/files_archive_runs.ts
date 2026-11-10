@@ -14,8 +14,7 @@
 // that passed, then the active children of each stamped folder, the first named item's folder
 // first. A child that somebody moved out, or archived on their own, is not reached or keeps its own
 // stamp. Restore lands only the selected roots, then the items inside them that were moved to Trash with them.
-// Other items of the operation stay in Trash. Items inside from other deletes get the new path and scope
-// and keep their own stamp.
+// Other items of the operation and items from other deletes stay frozen in Trash.
 //
 // A fast archive skips the check. The request first reads a few indexes for each named item
 // (`files_archive_runs_db_check_fast`). When they prove that the check would pass for every named item,
@@ -1021,7 +1020,7 @@ async function db_apply_forced_archive(ctx: MutationCtx, args: StepArgs): Promis
 	if (!args.run.ending) {
 		if (!args.membership) return MEMBERSHIP_LOST;
 		// A running Restore also repairs descendant paths. Queued work must never hold this job up.
-		for (const kind of ["move", "scope", "restore"] as const) {
+		for (const kind of ["scope", "restore"] as const) {
 			const repair = await ctx.db
 				.query("files_subtree_ops")
 				.withIndex("by_organization_workspace_kind_status", (q) =>
@@ -1661,8 +1660,8 @@ function add_discover_tree_path(run: Pick<RunFields, "discoverTreePaths">, treeP
 }
 
 /**
- * Refresh the selected roots before checking access or writing nodes. A queued Move may have
- * changed their paths. The worker waits for Move repair before it reads these node docs.
+ * Reserve the selected roots and their Restore destinations before checking access or writing nodes.
+ * Trash paths stay frozen while the job waits.
  */
 async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run } = args;
@@ -1672,15 +1671,13 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 		const node = await ctx.db.get("files_nodes", root.nodeId);
 		args.budget.checkNodes -= 1;
 		if (node && node.archiveOperationId === run.archiveOperationId) {
-			root.treePath = node.treePath;
-			add_discover_tree_path(run, node.treePath);
+			add_discover_tree_path(run, root.treePath);
 			// The item may come back at its Trash path in another folder. Keep that place busy too.
 			add_discover_tree_path(run, files_derive_tree_path_for_file_node(get_archived_path(node), node.kind));
 		}
 		run.checkCursor.rootIndex += 1;
 	}
 
-	run.restoreRoots.sort((a, b) => (a.treePath < b.treePath ? -1 : a.treePath > b.treePath ? 1 : 0));
 	const op = await ctx.db.get("files_subtree_ops", args.opId);
 	if (!op || op.kind !== "restore") throw should_never_happen("Restore is missing its subtree op", { opId: args.opId });
 	const blocker = await files_subtree_ops_db_find_blocker(ctx, {
@@ -1702,7 +1699,7 @@ async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<St
 		defer: blocker !== null,
 		now: args.now,
 	});
-	// A restore that waits finds its paths again when it starts, so it starts from an empty list.
+	// The selected paths stay frozen, so a queued job can continue straight to its access check.
 	run.discoverTreePaths = [];
 	run.checkCursor = { rootIndex: 0, treePath: "" };
 	run.phase = "check";
@@ -3283,7 +3280,7 @@ export async function files_archive_runs_db_check_fast(
 	const nodes = args.nodes.filter((node) => !refusals.has(node._id));
 
 	// The index answers below are right only while nothing rewrites paths or scopes under these items.
-	// A Move, a running scope or move op, or any op on these paths does that page by page. Too many named
+	// A Move, a running scope op, or any op on these paths does that page by page. Too many named
 	// items would also make the request stamp less than all of them.
 	let indexPending = false;
 	const isQuiet = await (async (/* iife */) => {
@@ -3298,19 +3295,17 @@ export async function files_archive_runs_db_check_fast(
 					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 				)
 				.first());
-		for (const kind of ["scope", "move"] as const) {
-			const op = await ctx.db
-				.query("files_subtree_ops")
-				.withIndex("by_organization_workspace_kind_status", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId)
-						.eq("kind", kind)
-						.eq("status", "running"),
-				)
-				.first();
-			if (op) return false;
-		}
+		const scopeOp = await ctx.db
+			.query("files_subtree_ops")
+			.withIndex("by_organization_workspace_kind_status", (q) =>
+				q
+					.eq("organizationId", organizationId)
+					.eq("workspaceId", workspaceId)
+					.eq("kind", "scope")
+					.eq("status", "running"),
+			)
+			.first();
+		if (scopeOp) return false;
 		indexPending = await files_subtree_op_paths_db_has_pending(ctx, { organizationId, workspaceId });
 		if (indexPending) return false;
 		const blocked = await files_subtree_op_paths_tree_find_blocked(ctx, {
@@ -4018,22 +4013,12 @@ export async function files_archive_runs_db_advance(
 }
 
 /**
- * The op this restore waited for ended. Start it. Its first step finds current root paths, then
- * checks access before anything changes.
+ * The op this job waited for ended. Start it. Restore checks access before anything changes.
  */
 export async function files_archive_runs_db_promote(
 	ctx: MutationCtx,
 	args: { op: Extract<Doc<"files_subtree_ops">, { kind: "archive" | "restore" | "purge" }>; now: number },
 ) {
-	const run = (await ctx.db.get("files_archive_runs", args.op.archiveRunId))!;
-	if (run.phase === "check") {
-		// Archived items can move while this job waits. Find all current root paths again before writing.
-		await ctx.db.patch("files_archive_runs", run._id, {
-			phase: "discover",
-			checkCursor: { rootIndex: 0, treePath: "" },
-			rootNodeIds: [],
-		});
-	}
 	const activity = await db_require_activity(ctx, args.op.archiveRunId);
 	await ctx.db.patch("activities", activity._id, {
 		status: "running",

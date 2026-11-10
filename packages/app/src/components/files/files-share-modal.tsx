@@ -935,7 +935,12 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	const workspaceView = Boolean(shareState?.workspaceView);
 	const generalValue: FilesShareModalGeneral_Value = inheritsBase ? "base" : workspaceView ? "view" : "people";
 	const baseScope = shareState?.baseScope ?? null;
-	const baseLabel = baseScope ? `People with access to ${baseScope.name}` : "Everyone in this workspace";
+	const trash = shareState?.trash;
+	const baseLabel = trash?.restrictedFolderDeleted
+		? "Restricted folder deleted"
+		: baseScope
+			? `People with access to ${baseScope.name}`
+			: "Everyone in this workspace";
 
 	// Added people get view or edit only. "Can manage" is for a restricted root, so a choice kept from
 	// one falls back to the default when the node stops being one. On a view-only item everyone can
@@ -1435,6 +1440,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 
 	const selectedPrincipal = PrincipalPicker.fromValue(addPrincipalValue);
 	const addDisabled =
+		!canEditList ||
 		addPrincipalValue === "" ||
 		busy ||
 		(selectedPrincipal?.kind === "service_account" &&
@@ -1454,17 +1460,18 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	// Leaving the access from above restricts the item. A missing edit permission blocks it, and
 	// General access says why in text, not only in a tooltip.
 	const restrictBlocked = generalValue === "base" && !shareState?.canRestrict;
-	const generalNote = !shareState?.canManage
-		? null
-		: restrictBlocked
+	const generalNote = trash
+		? "Restore this item before changing its restriction."
+		: shareState?.canManage && restrictBlocked
 			? "You need Can edit here to restrict this."
 			: null;
 	// "Can view" for the whole workspace only goes on where the workspace has access above: no restricted
 	// folder above, or one that the whole workspace can view too. Elsewhere it is offered only while it is
 	// already on, so it can be turned off.
-	const workspaceInAbove = baseScope === null || baseScope.workspaceView === true;
+	const workspaceInAbove = !trash?.restrictedFolderDeleted && (baseScope === null || baseScope.workspaceView === true);
+	// Trash keeps its restriction. An existing workspace-view grant can still change.
 	const generalOptions = [
-		{ value: "base" as const, label: baseLabel, disabled: false },
+		{ value: "base" as const, label: baseLabel, disabled: Boolean(trash) },
 		...(workspaceInAbove || generalValue === "view"
 			? [{ value: "view" as const, label: "Everyone in this workspace can view", disabled: restrictBlocked }]
 			: []),
@@ -1560,7 +1567,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									</p>
 								) : null}
 
-								{canEditList ? (
+								{canEditList || (trash && shareState.canManage) ? (
 									<div className={"FilesShareModal-add" satisfies FilesShareModal_ClassNames}>
 										{/* Stays enabled while its own add runs, same reason as a row's level trigger:
 										    the add puts focus back here, and a disabled field cannot take it. */}
@@ -1574,7 +1581,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											ownerUserId={shareState.organizationOwnerUserId}
 											roles={pickerRoles}
 											canPickApps={shareState.canShareWithServiceAccounts}
-											disabled={busy && pendingKey !== "add"}
+											disabled={!canEditList || (busy && pendingKey !== "add")}
 											onTextChange={handleAddTextChange}
 											onPick={handleAddPick}
 										/>
@@ -1582,7 +1589,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											value={addLevelValue}
 											setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}
 										>
-											<MySelectTrigger disabled={busy}>
+											<MySelectTrigger disabled={!canEditList || busy}>
 												<MyButton
 													type="button"
 													variant="outline"
@@ -1620,6 +1627,12 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 											Add
 										</MyButton>
 									</div>
+								) : null}
+
+								{trash && shareState.canManage && !canEditList ? (
+									<p className={"FilesShareModal-section-text" satisfies FilesShareModal_ClassNames}>
+										Restore this item before adding people.
+									</p>
 								) : null}
 
 								{canEditList && shareState.nodeKind === "folder" ? (
@@ -1716,9 +1729,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										? "Everyone in this workspace can view this. People added with Can edit can change it."
 										: generalValue === "people"
 											? "Only the people above can open this."
-											: shareState.inheritedFrom.restricted
-												? folderPeopleText(shareState.inheritedFrom.restricted)
-												: "Everyone in this workspace can open this. Their workspace role decides if they can edit."
+											: trash?.restrictedFolderDeleted
+												? "Workspace roles give no access. The organization owner can still open it."
+												: shareState.inheritedFrom.restricted
+													? folderPeopleText(shareState.inheritedFrom.restricted)
+													: "Everyone in this workspace can open this. Their workspace role decides if they can edit."
 								}
 								note={generalNote}
 								editable={shareState.canManage}

@@ -78,6 +78,7 @@ const SHARE = {
 	access: "restricted_root",
 	workspaceView: false,
 	canAddPeople: true,
+	trash: null as { restrictedFolderDeleted: boolean } | null,
 	inheritedFrom: { restricted: null, extended: [] },
 	link: null as { token: string; createdBy: string; createdAt: number } | null,
 	public: null as { isPublic: boolean; canChange: boolean; mediaKind: "image" | "video" } | null,
@@ -446,6 +447,141 @@ describe("FilesShareModal", () => {
 		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
 		expect((await screen.findByRole("option", { name: "Only people added" })).getAttribute("aria-disabled")).toBe(
 			"true",
+		);
+	});
+
+	test("Trash says to restore before restricting and keeps those choices disabled", async () => {
+		mockShareState({
+			...OPEN_SHARE,
+			canRestrict: false,
+			canAddPeople: false,
+			trash: { restrictedFolderDeleted: false },
+		});
+		renderModal();
+
+		expect
+			.soft(generalSection().textContent, "Trash must explain why restriction is blocked")
+			.toContain("Restore this item before changing its restriction.");
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+		for (const name of ["Only people added", "Everyone in this workspace can view"]) {
+			const option = await screen.findByRole("option", { name });
+			expect(option.getAttribute("aria-disabled")).toBe("true");
+			fireEvent.click(option);
+		}
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("Trash blocks unrestrict but still lets a manager change its existing grants", async () => {
+		mockShareState({ ...SHARE, canRestrict: false, trash: { restrictedFolderDeleted: false } });
+		renderModal();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+		const option = await screen.findByRole("option", { name: "Everyone in this workspace" });
+		expect(option.getAttribute("aria-disabled"), "Trash must disable unrestrict").toBe("true");
+		fireEvent.click(option);
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("option", { name: "Everyone in this workspace can view" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_workspace_view", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				enabled: true,
+			}),
+		);
+		await openPicker();
+		fireEvent.click(await screen.findByRole("option", { name: /Ada/ }));
+		fireEvent.click(screen.getByRole("button", { name: "Add" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				principal: { kind: "user", userId: "user_1" },
+				level: "read",
+			}),
+		);
+		expect(mutationMock).toHaveBeenCalledTimes(2);
+	});
+
+	test("Trash keeps the first Add controls visible and disabled for a manager", () => {
+		mockShareState({
+			...OPEN_SHARE,
+			canRestrict: false,
+			canAddPeople: false,
+			trash: { restrictedFolderDeleted: false },
+		});
+		renderModal();
+
+		expect(screen.queryByRole("button", { name: "Add" }), "Trash must show the locked Add action").not.toBeNull();
+		expect(screen.getByRole("button", { name: "Add" }).hasAttribute("disabled")).toBe(true);
+		expect(screen.getByRole("combobox", { name: "Person, role, or app to add" }).hasAttribute("disabled")).toBe(true);
+		expect(
+			screen.getByRole("combobox", { name: "Access level for the new person, role, or app" }).hasAttribute("disabled"),
+		).toBe(true);
+		expect(screen.getByText("Restore this item before adding people.")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Add" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("Trash with a deleted restricted folder does not claim workspace access", async () => {
+		mockShareState({
+			...OPEN_SHARE,
+			canRestrict: false,
+			canAddPeople: false,
+			callerCoverage: { base: null, folder: null, role: null, workspace: null },
+			trash: { restrictedFolderDeleted: true },
+		});
+		renderModal();
+
+		expect(
+			generalSection().textContent,
+			"A deleted restricted folder must not look open to the workspace",
+		).not.toContain("Everyone in this workspace");
+		expect(within(generalSection()).getByText("Restricted folder deleted")).toBeTruthy();
+		expect(
+			within(generalSection()).getByText("Workspace roles give no access. The organization owner can still open it."),
+		).toBeTruthy();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Who can open this" }));
+		expect(screen.queryByRole("option", { name: /Everyone in this workspace/ })).toBeNull();
+		const option = await screen.findByRole("option", { name: "Only people added" });
+		expect(option.getAttribute("aria-disabled")).toBe("true");
+		fireEvent.click(option);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("Trash keeps added people editable after its restricted folder is deleted", async () => {
+		mockShareState({
+			...OPEN_SHARE,
+			access: "extended_root",
+			canRestrict: false,
+			callerCoverage: { base: null, folder: null, role: null, workspace: null },
+			trash: { restrictedFolderDeleted: true },
+			entries: [
+				{
+					principal: { kind: "user", userId: "user_1" },
+					level: "write",
+					serviceAccountName: null,
+					servicePluginName: null,
+					coverage: { base: null, folder: null, role: null, workspace: null },
+				},
+			],
+		});
+		renderModal();
+
+		expect(screen.queryByText(/through workspace role/)).toBeNull();
+		expect(screen.queryByText(/Only the organization owner/)).toBeNull();
+		await waitForDialogFocus();
+		fireEvent.click(screen.getByRole("combobox", { name: "Access level for Ada" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Can view" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
+				membershipId: "membership_1",
+				nodeId: "node_1",
+				principal: { kind: "user", userId: "user_1" },
+				level: "read",
+			}),
 		);
 	});
 

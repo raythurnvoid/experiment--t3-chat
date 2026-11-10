@@ -198,6 +198,8 @@ source file does not permit sibling writes. A root-level source needs workspace
 Edit for its sibling. Added file references need applied Read.
 
 - To let a plugin use a saved file or folder, select it in **My file permissions**.
+- New file choices need a live item. Restore an item in Trash before selecting it. A choice saved
+  earlier stays usable in Trash while applied consent allows it, and can still be removed.
 - A folder a plugin creates (`plugin-folders/ensure`, a writer's folder) is a regular folder. It gets its parent's access, like a folder a person creates. The plugin cannot restrict it or choose who reads it.
 - Billing does not change. The paying user pays for plugin writes. When the balance is out, neither the person nor the plugin can write.
 
@@ -208,7 +210,7 @@ output-folder rules out of the platform, so lists, links, Move and Trash agree.
 
 Plugin runs and frames with `workspace.files.read` may list Trash through
 `files/trash/list` and `files/trash/areas`. Applied folder consent is enough,
-including a folder already in Trash. Consent on a live folder covers the Trash items under
+including a selected folder that later went to Trash. Consent on a live folder covers the Trash items under
 it at once (rules in the `access-control` skill). Areas page eligible consents in consent order.
 Applied workspace View or Edit adds the open area (`areaNodeId: null`, path `/`)
 in that same page. File-only consent adds no parent access or area.

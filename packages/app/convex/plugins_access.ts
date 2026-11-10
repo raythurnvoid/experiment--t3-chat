@@ -659,6 +659,8 @@ export const grant_file_access_as_me = mutation({
 		if (!(await checker.can(node, "content.read")))
 			return Result({ _nay: { message: "You cannot read this item. Ask for Can view access first." } });
 		if (node) {
+			if (node.archiveOperationId !== null)
+				return Result({ _nay: { message: `${node.path} is in Trash. Restore it before you choose it for a plugin.` } });
 			if (node.purgeRunId !== undefined)
 				return Result({ _nay: { message: `${node.path} is being deleted. Choose another item.` } });
 			const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
@@ -719,22 +721,19 @@ export const grant_file_access_as_me = mutation({
 			});
 		}
 		// Keep this anchor. Live items match the pair's choices by path, but an item deleted later keeps the
-		// stored "Add people" chain that this scope job writes. A chosen folder in Trash gets no anchor: it
-		// keeps its delete-time access fields, and the choice reaches its Trash items by path.
+		// stored "Add people" chain that this scope job writes. New choices need a live item.
 		if (
 			node &&
-			node.archiveOperationId === null &&
 			node.restrictedScopeNodeId !== node._id &&
 			node.parentExtendedScopeNodeId === undefined
 		) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 			await files_subtree_ops_db_start_rebuild(ctx, {
-				kind: "scope",
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
 				membership,
-				roots: [{ node, oldTreePath: node.treePath }],
+				roots: [node],
 				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 				now,
 			});

@@ -633,7 +633,7 @@ async function db_purge_organization_workspace_content_batch(
 		const purged = await files_archive_runs_db_delete_run_batch(ctx, { runId: archiveRun._id });
 		return { done: false, deletedCount: purged.deletedCount };
 	}
-	// The runs above delete their own ops. A move or scope op has no run, so delete it and its
+	// The runs above delete their own ops. A scope op has no run, so delete it and its
 	// Activity here. The files it walks go away with the workspace.
 	const subtreeOp = await ctx.db
 		.query("files_subtree_ops")

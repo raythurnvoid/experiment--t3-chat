@@ -411,9 +411,8 @@ describe("Move write reservations", () => {
 				origin: { kind: "rename" },
 				rename: {
 					inputPath: "missing/final.txt",
-					source: { parentId: "root", name: "old.txt", path: "/old.txt", archiveOperationId: null },
+					source: { parentId: "root", name: "old.txt", path: "/old.txt" },
 					parentPath: "/target",
-					parentArchiveOperationId: null,
 				},
 			});
 			await ctx.db.patch("files_move_cohorts", f.cohortId, {
@@ -422,7 +421,6 @@ describe("Move write reservations", () => {
 					segmentIndex: 0,
 					parentId: f.parentId,
 					parentPath: "/target",
-					parentArchiveOperationId: null,
 				}),
 			});
 		});
@@ -455,6 +453,7 @@ describe("Move write reservations", () => {
 			});
 		expect(
 			await f.t.run((ctx) => files_move_reservations_db_is_rename_allocation(ctx.db, { cohortId: f.cohortId, node })),
+			"the current Rename cursor must allow its accepted parent",
 		).toBe(true);
 		await expect(allocate({ ...node, name: "another" })).rejects.toThrow("This item is being moved");
 		await expect(allocate({ ...node, contentType: "text/plain" })).rejects.toThrow("This item is being moved");
@@ -465,7 +464,6 @@ describe("Move write reservations", () => {
 					segmentIndex: 1,
 					parentId: f.parentId,
 					parentPath: "/target",
-					parentArchiveOperationId: null,
 				}),
 			}),
 		);

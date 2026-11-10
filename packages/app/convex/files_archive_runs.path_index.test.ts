@@ -127,7 +127,7 @@ describe("files_archive_runs_db_check_fast path index", () => {
 		expect(await check_fast(f, tree.topId)).toMatchObject({ isFast: false, indexPending: false });
 	});
 
-	test("a queued move blocks its old path but leaves a sibling prefix clear", async () => {
+	test("a queued scope op blocks its path but leaves a sibling prefix clear", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "selected", folderCount: 0, filesPerFolder: 0 });
 		const sibling = await seed_tree(f, { name: "selected-other", folderCount: 0, filesPerFolder: 0 });
@@ -137,12 +137,11 @@ describe("files_archive_runs_db_check_fast path index", () => {
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
 					userId: f.db.userId,
-					kind: "move",
+					kind: "scope",
 					status: "queued",
 					blockedByOpId: null,
 					rootNodeIds: [],
-					treePaths: ["/moved/"],
-					oldTreePaths: ["/selected/"],
+					treePaths: ["/selected/"],
 				},
 				now: Date.now(),
 			}),
@@ -153,7 +152,7 @@ describe("files_archive_runs_db_check_fast path index", () => {
 		expect(await check_fast(f, sibling.topId)).toMatchObject({ isFast: true, indexPending: false });
 	});
 
-	test.each(["move", "scope"] as const)("a running %s still guards the whole workspace", async (kind) => {
+	test("a running scope op still guards the whole workspace", async () => {
 		const f = await fixture();
 		const tree = await seed_tree(f, { name: "selected", folderCount: 0, filesPerFolder: 0 });
 		await f.t.run((ctx) =>
@@ -162,11 +161,11 @@ describe("files_archive_runs_db_check_fast path index", () => {
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
 					userId: f.db.userId,
+					kind: "scope",
 					status: "running",
 					blockedByOpId: null,
 					rootNodeIds: [],
 					treePaths: ["/elsewhere/"],
-					...(kind === "move" ? { kind, oldTreePaths: ["/before/"] } : { kind }),
 				},
 				now: Date.now(),
 			}),

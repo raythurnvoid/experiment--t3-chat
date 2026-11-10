@@ -464,7 +464,6 @@ export async function files_move_reservations_db_is_rename_allocation(
 				segmentIndex: v.number(),
 				parentId: v.string(),
 				parentPath: v.string(),
-				parentArchiveOperationId: v.union(v.string(), v.null()),
 			}),
 			cursor,
 		) ||
@@ -488,11 +487,7 @@ export async function files_move_reservations_db_is_rename_allocation(
 			parent.workspaceId !== cohort.workspaceId)
 	)
 		return false;
-	if (
-		(parent?.path ?? "/") !== cursor.parentPath ||
-		(parent?.archiveOperationId ?? null) !== cursor.parentArchiveOperationId
-	)
-		return false;
+	if ((parent?.path ?? "/") !== cursor.parentPath || (parent?.archiveOperationId ?? null) !== null) return false;
 	const name = segments[cursor.segmentIndex]!;
 	const path = cursor.parentPath === "/" ? `/${name}` : `${cursor.parentPath}/${name}`;
 	return (
@@ -506,7 +501,7 @@ export async function files_move_reservations_db_is_rename_allocation(
 		node.path === path &&
 		node.treePath === `${path}/` &&
 		node.pathDepth === path_extract_segments_from(path).length &&
-		node.archiveOperationId === cursor.parentArchiveOperationId &&
+		node.archiveOperationId === null &&
 		node.restrictedScopeNodeId === (parent?.restrictedScopeNodeId ?? null) &&
 		!node.isRestrictedScopeRoot &&
 		!node.readOnly &&

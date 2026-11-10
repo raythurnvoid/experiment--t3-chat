@@ -1,7 +1,6 @@
-// A move, archive, restore, restrict, or copy of a folder changes every item inside it, and a big
-// folder does not fit in one mutation. So the request writes what people must see now, for example
-// the moved folder itself, and inserts one op. Steps then walk the folder by `parentId` and fix the
-// stored copies inside, a few items per step. The last step deletes the op.
+// An archive, restore, purge, or scope change can touch every item inside a folder, and a big folder
+// does not fit in one mutation. The request starts one op. Steps then walk the folder by `parentId`
+// and apply the change, a few items per step. The last step deletes the op.
 //
 // Each step reads the parent again and writes each child from it. So a person may move, rename, or
 // archive an item inside while the op runs. The walk follows the live tree and never puts it back.
@@ -11,13 +10,13 @@
 // stays small. Each row keeps where its next page starts and the children a full step did not reach
 // (`pending`).
 //
-// Move, rename, archive, and restrict start at once. Copy and restore wait while an op they overlap
+// Archive and scope changes start at once. Copy and restore wait while an op they overlap
 // is still there. A waiting op is `queued`. It writes nothing until the op before it ends.
 //
 // This module runs each step (`advance`). The queue and walk helpers that every op kind shares live in
-// files_subtree_ops_db.ts. Move and scope ops start, and rewrite the items inside, in
+// files_subtree_ops_db.ts. Scope ops start, and rewrite the items inside, in
 // files_subtree_ops_rebuild.ts. The sharing doors import that module, so they do not load the archive
-// and copy modules that this module imports.
+// and copy modules that this module imports. Move and Rename use files_move_cohorts.ts.
 
 import { v } from "convex/values";
 import {
@@ -71,12 +70,11 @@ export const extend_node = internalMutation({
 		if (!organization) throw should_never_happen("Extended node has no organization", args);
 		// Some callers (an install, a plugin setup) have no person, so the job runs as the organization owner.
 		await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "scope",
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: organization.ownerUserId,
 			membership: null,
-			roots: [{ node, oldTreePath: node.treePath }],
+			roots: [node],
 			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 			now: Date.now(),
 		});
@@ -101,7 +99,6 @@ export const advance = internalMutation({
 
 		const now = Date.now();
 		switch (op.kind) {
-			case "move":
 			case "scope": {
 				if (await files_subtree_ops_db_pause_for_move(ctx, op)) return null;
 				if (
@@ -155,7 +152,6 @@ export const promote = internalMutation({
 				await files_transfer_db_promote(ctx, { op, now });
 				return null;
 			}
-			case "move":
 			case "scope":
 			case "archive": {
 				throw should_never_happen("This op kind never waits", { opId: op._id, kind: op.kind });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
-import type { Doc } from "./_generated/dataModel.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	files_subtree_op_paths_db_advance,
 	files_subtree_op_paths_db_has_pending,
@@ -230,26 +230,28 @@ describe("files_subtree_op_paths_db_replace", () => {
 		expect(await read_paths(f)).toEqual(Array.from({ length: 5 }, (_, index) => `/new-${index}/`));
 	});
 
-	test("stages the largest two-array op in at most 512 small docs", async () => {
+	test("stages the largest Copy op in at most 512 small docs", async () => {
 		const f = await fixture();
-		const oldTreePaths = Array.from({ length: 8192 }, (_, index) => `/old-${index}/`);
+		const sourceTreePaths = Array.from({ length: 8192 }, (_, index) => `/source-${index}/`);
 		const treePaths = Array.from({ length: 8192 }, (_, index) => `/new-${index}/`);
 		const metrics = await f.t.run(async (ctx) => {
 			await ctx.db.replace("files_subtree_ops", f.opId, {
 				...f.scope,
 				userId: f.db.userId,
-				kind: "move",
+				kind: "copy",
+				// This test runs only the path index, never the Copy worker.
+				transferRunId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
 				status: "running",
 				blockedByOpId: null,
 				rootNodeIds: [],
 				treePaths,
-				oldTreePaths,
+				sourceTreePaths,
 			});
 			await files_subtree_op_paths_db_replace(ctx, {
 				...f.scope,
 				opId: f.opId,
 				oldTreePaths: [],
-				treePaths: [...oldTreePaths, ...treePaths],
+				treePaths: [...sourceTreePaths, ...treePaths],
 				now: Date.now(),
 			});
 			return await ctx.meta.getTransactionMetrics();

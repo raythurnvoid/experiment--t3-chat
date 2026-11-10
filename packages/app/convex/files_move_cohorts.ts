@@ -1049,7 +1049,6 @@ async function db_rename_parents(
 				segmentIndex: 0,
 				parentId: run.rename.source.parentId,
 				parentPath: run.rename.parentPath,
-				parentArchiveOperationId: run.rename.parentArchiveOperationId,
 			}),
 		});
 		return Result({ _yay: { done: false } });
@@ -1058,16 +1057,14 @@ async function db_rename_parents(
 		segmentIndex: number;
 		parentId: Doc<"files_nodes">["parentId"];
 		parentPath: string;
-		parentArchiveOperationId: string | null;
 	};
 	const parent =
 		cursor.parentId === "root"
 			? null
 			: await files_saved_placement_db_get_node(ctx.db, cursor.parentId, { cohortId: cohort._id, view: "after" });
-	if (
-		(parent?.path ?? "/") !== cursor.parentPath ||
-		(parent?.archiveOperationId ?? null) !== cursor.parentArchiveOperationId
-	)
+	// A folder keeps its path when it moves to Trash, so check its delete id too. Every folder on the
+	// cursor was live when the Rename started.
+	if ((parent?.path ?? "/") !== cursor.parentPath || (parent?.archiveOperationId ?? null) !== null)
 		return Result({
 			_nay: { name: "destination_changed", message: "The destination changed. Review this Rename again." },
 		});
@@ -1195,7 +1192,6 @@ async function db_rename_parents(
 			segmentIndex: cursor.segmentIndex + 1,
 			parentId: folder._id,
 			parentPath: folder.path,
-			parentArchiveOperationId: folder.archiveOperationId,
 		}),
 	});
 	return Result({ _yay: { done: false } });

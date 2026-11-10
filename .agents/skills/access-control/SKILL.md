@@ -170,6 +170,9 @@ Its exact lookup uses `by_pair_rootNode_open(pairId, null, true)`; it creates no
 file anchor or per-file grants. Ended workspace consent still identifies its scope.
 New consent checks Read before reporting file state. A denied check must not
 reveal a current path inside a locked folder.
+Choosing an item in Trash is refused before writing a pair, consent or anchor. Restore
+it first. A choice saved while the item was live keeps working after it goes to Trash;
+its applied level still follows the person's access. Removing that choice stays allowed.
 
 **Gradual access is intentional.** Changes to a person's access reach these grants
 in small background steps. Both reads and writes use the applied level until its
@@ -252,8 +255,9 @@ Finished jobs are deleted; `recover_due` retries failed callbacks by `by_dueAt`.
 
 Cleanup drains consents before their pair or saved root. User, installation and
 workspace drains use their pair indexes. Workspace consent has no anchor to retire.
-Empty extended roots retire through the
-normal scope worker. See the [deletion spec](../data-deletion/SKILL.md).
+Empty live extended roots retire through the normal scope worker. A root in Trash
+keeps its saved inheritance pointers after its last share or consent ends. The
+empty root gives no access. See the [deletion spec](../data-deletion/SKILL.md).
 
 ## Service accounts
 
@@ -1226,6 +1230,11 @@ The model:
   the stored pointer uses this one helper: the permission check, the list filter,
   `access_control_db_can_act_on_file_node`, the service account grant state, and
   `get_node_share_state`.
+- The share dialog names a deleted restricted folder instead of saying the item is open to the
+  workspace. That missing folder gives no base access through workspace roles. The owner still
+  gets in, and existing added people may still get in through the item's saved extended chain.
+  Trash keeps Restrict, Unrestrict and a first Add disabled, with a Restore-first explanation.
+  Existing people lists stay editable.
 - Grants are always written on a **scope root**: a restricted root, or an extended root (see "Add
   people" below). A grant on any other item makes that item an extended root first.
 - Three levels — `read`, `write`, `manage` — each a superset of the last, saved as one grant doc per

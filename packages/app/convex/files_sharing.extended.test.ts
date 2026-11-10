@@ -261,6 +261,41 @@ test("removing the last added person un-extends the folder after the job", async
 	expect((await get_node(f, fileId)).extendedScopeNodeId).toBe(null);
 });
 
+test.each(["user", "service_account"] as const)("removing the last %s grant keeps Trash frozen", async (kind) => {
+	const f = await fixture();
+	const { folderId, fileId } = await seed_restricted(f);
+	const principal =
+		kind === "user"
+			? ({ kind, userId: f.memberId } as const)
+			: ({ kind, serviceAccountId: await create_account(f) } as const);
+	const shared =
+		principal.kind === "user"
+			? await share_with(f, folderId, "read")
+			: await share_with_account(f, folderId, principal.serviceAccountId, "read");
+	expect(shared._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	await reset_rate_limits(f.t, [f.db.userId]);
+	const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+		membershipId: f.db.membershipId,
+		nodeIds: [String(folderId)],
+	});
+	expect(archived._nay).toBeUndefined();
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+	const subject = principal.kind === "user" ? member(f) : principal;
+	expect(await can(f, subject, fileId)).toBe(true);
+	const before = [await get_node(f, folderId), await get_node(f, fileId)];
+
+	await unshare(f, folderId, principal);
+	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+	expect(await can(f, subject, folderId), "the removed grant must give no folder access").toBe(false);
+	expect(await can(f, subject, fileId), "the removed grant must give no child access").toBe(false);
+	expect(
+		[await get_node(f, folderId), await get_node(f, fileId)],
+		"removing the last grant must keep every frozen Trash field",
+	).toEqual(before);
+});
+
 test("restricting an extended folder keeps its people and apps", async () => {
 	const f = await fixture();
 	const folderId = await seed_folder(f, "/open");
@@ -794,6 +829,9 @@ test("an item in Trash refuses restrict, unrestrict and a first added person, an
 	const { restrictedId, folderId } = await seed_restricted(f);
 	const openId = await seed_folder(f, "/open");
 	const serviceAccountId = await create_account(f);
+	const share_state = (nodeId: Id<"files_nodes">) =>
+		f.asOwner.query(api.files_sharing.get_node_share_state, { membershipId: f.db.membershipId, nodeId });
+	expect(await share_state(openId)).toMatchObject({ canRestrict: true, canAddPeople: true, trash: null });
 	for (const nodeId of [restrictedId, openId]) {
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const archived = await f.asOwner.mutation(api.files_nodes.archive_nodes, {
@@ -804,6 +842,18 @@ test("an item in Trash refuses restrict, unrestrict and a first added person, an
 	}
 	await f.t.finishAllScheduledFunctions(vi.runAllTimers);
 	const refusal = { _nay: { message: "This item is in Trash. Restore it before you change who can open it." } };
+	expect(await share_state(openId), "the Trash dialog must disable restrict and first added people").toMatchObject({
+		canRestrict: false,
+		canAddPeople: false,
+		trash: { restrictedFolderDeleted: false },
+	});
+	expect(await share_state(restrictedId), "a restricted Trash folder must keep its people list editable").toMatchObject(
+		{
+			canRestrict: false,
+			canAddPeople: true,
+			trash: { restrictedFolderDeleted: false },
+		},
+	);
 	const call = async (restricted: boolean, nodeId: Id<"files_nodes">) => {
 		await reset_rate_limits(f.t, [f.db.userId]);
 		const args = { membershipId: f.db.membershipId, nodeId };

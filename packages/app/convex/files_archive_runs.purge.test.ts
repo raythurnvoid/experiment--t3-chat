@@ -499,7 +499,7 @@ describe("files_nodes.purge_nodes", () => {
 		expect(await list_workspace_paths(f)).toEqual([]);
 	});
 
-	test("an older Trash item of a deleted restricted folder stays closed and lists in the area above", async () => {
+	test.each([false, true])("a deleted restricted folder leaves the item's own sharing (%s)", async (shared) => {
 		const f = await fixture();
 		const member = await add_member(f);
 		const restrictedId = await folder(f, "/r");
@@ -513,6 +513,17 @@ describe("files_nodes.purge_nodes", () => {
 			}),
 		).toEqual({ _yay: null });
 		await test_finish_saved_scope_jobs(f.t);
+		if (shared) {
+			expect(
+				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: f.db.membershipId,
+					nodeId: itemId,
+					principal: { kind: "user", userId: member.userId },
+					level: "read",
+				}),
+			).toEqual({ _yay: null });
+			await test_finish_saved_scope_jobs(f.t);
+		}
 		expect(await archive(f, [itemId])).toEqual({ _yay: null });
 		// The live folder leaves `/r` without its Trash item. Then `/r` is empty and goes for good.
 		expect(
@@ -538,9 +549,21 @@ describe("files_nodes.purge_nodes", () => {
 		expect(await rows(f.asOwner, f.db.membershipId), "the owner finds the item in the area above").toEqual([
 			`${itemId}:open`,
 		]);
-		expect(await rows(member.asUser, member.membershipId), "a member cannot open the item").toEqual([
-			`${itemId}:locked`,
+		expect(await rows(member.asUser, member.membershipId), "only the item's own sharing still grants access").toEqual([
+			`${itemId}:${shared ? "open" : "locked"}`,
 		]);
+		expect(
+			await f.asOwner.query(api.files_sharing.get_node_share_state, {
+				membershipId: f.db.membershipId,
+				nodeId: itemId,
+			}),
+			"the share dialog must name the deleted restricted folder instead of workspace access",
+		).toMatchObject({
+			trash: { restrictedFolderDeleted: true },
+			canRestrict: false,
+			canAddPeople: shared,
+			callerCoverage: { base: null },
+		});
 	});
 
 	test("an older Trash item lists in the open area when the area above its folder is gone too", async () => {

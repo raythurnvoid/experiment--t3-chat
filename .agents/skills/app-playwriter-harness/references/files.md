@@ -338,6 +338,15 @@ replaces a Read-only file" row in the qa-data catalog. Verified 2026-11-01.
 - Pending row controls inherit disabled state from their fieldsets. Use `locator.isDisabled()` or `element.matches(":disabled")`; `button.disabled` only reads the button's own attribute. Check focus after a focused action becomes pending, then check menu and arrow access again after it finishes.
 - Trashed rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> in Trash`. Reveal them first with the sidebar `More options` `menuitemcheckbox` `Show items in Trash` (named `Hide items in Trash` while on).
 - Trash items are frozen at delete time (2026-11-10). `F2` on a Trash row opens no rename field (focus stays on the row), and the Trash view menu has only `Restore`, `Delete permanently…` and `Copy path`. To check the freeze, rename the live folder above a Trash item, then read the Trash view row: it keeps the old folder path. Verified 2026-11-10 in `chitchat-qa/copy-qa-0922`.
+- For sharing after a restricted folder is deleted, reuse the kept `shared` Trash fixture in the
+  `qa-data` catalog. Its own Can view share lets `qa.perm.member` open the direct Files link in a
+  scratch browser, even though its restricted folder is gone. The owner is not a refusal check.
+  Compare Share's base-access text with the person's actual access; a missing folder must not look
+  like open workspace access or imply that its own added people lost access.
+- To check last-share or last-consent cleanup, start with a live empty folder. Add the share or
+  plugin choice, wait for it to apply, then confirm Move to Trash. Read both extended-scope pointers
+  before and after native Remove. Distinguish an absent parent pointer from null. Keep the archive
+  ID and path in the readback too. Removing access must not rewrite the frozen pointers.
 - A restricted folder's row button also gains a suffix: `More actions for <name> restricted`. So an `exact: true` locator stops matching right after you restrict it. Use a prefix regex such as `/^More actions for copy-4( |$)/`, scoped to `getByRole("tree", { name: "Files" })`, because the folder explorer shows the same button name.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 

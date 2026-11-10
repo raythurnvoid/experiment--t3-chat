@@ -151,24 +151,6 @@ async function insert_scope_op(
 	});
 }
 
-describe("files_subtree_ops schema", () => {
-	test("refuses a move op without its old paths", async () => {
-		const { t, scope } = await fixture();
-		const move = {
-			kind: "move" as const,
-			...scope,
-			status: "running" as const,
-			blockedByOpId: null,
-			rootNodeIds: [],
-			treePaths: ["/b/a/"],
-		};
-
-		// @ts-expect-error A move op must keep the paths its roots had before.
-		await expect(t.run((ctx) => ctx.db.insert("files_subtree_ops", move))).rejects.toThrow("Validator error");
-		expect(await t.run((ctx) => ctx.db.insert("files_subtree_ops", { ...move, oldTreePaths: ["/a/"] }))).toBeTruthy();
-	});
-});
-
 describe("files_subtree_ops_db_schedule_step", () => {
 	test("schedules a short retry for the same step", async () => {
 		const { t, scope } = await fixture();
@@ -191,18 +173,17 @@ describe("files_subtree_ops_db_schedule_step", () => {
 });
 
 describe("files_subtree_ops_db_find_blocker", () => {
-	test("a move is busy on its old path too, and a longer sibling name does not overlap", async () => {
+	test("a scope op holds each path, and a longer sibling name does not overlap", async () => {
 		const { t, scope } = await fixture();
-		const moveId = await t.run((ctx) =>
+		const scopeId = await t.run((ctx) =>
 			files_subtree_ops_db_insert(ctx, {
 				op: {
-					kind: "move",
+					kind: "scope",
 					...scope,
 					status: "running",
 					blockedByOpId: null,
 					rootNodeIds: [],
-					treePaths: ["/b/a/"],
-					oldTreePaths: ["/a/"],
+					treePaths: ["/a/", "/b/a/"],
 				},
 				now: Date.now(),
 			}),
@@ -210,8 +191,8 @@ describe("files_subtree_ops_db_find_blocker", () => {
 
 		const find = (treePaths: string[]) =>
 			t.run(async (ctx) => (await files_subtree_ops_db_find_blocker(ctx, { ...scope, treePaths, waiter: null }))?._id);
-		expect(await find(["/a/x/"])).toBe(moveId);
-		expect(await find(["/b/"])).toBe(moveId);
+		expect(await find(["/a/x/"])).toBe(scopeId);
+		expect(await find(["/b/"])).toBe(scopeId);
 		expect(await find(["/a-other/"])).toBeNull();
 		const other = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),

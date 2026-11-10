@@ -1839,10 +1839,8 @@ export async function files_transfer_db_start_rename(
 				parentId: source.parentId,
 				name: source.name,
 				path: source.path,
-				archiveOperationId: source.archiveOperationId,
 			},
 			parentPath: parent?.path ?? "/",
-			parentArchiveOperationId: parent?.archiveOperationId ?? null,
 		},
 	});
 	if (started._nay) return started;

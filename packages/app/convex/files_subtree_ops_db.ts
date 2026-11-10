@@ -1,7 +1,7 @@
 // The queue and walk helpers that every subtree op kind shares: insert, schedule and delete an op, find
 // the ops that overlap a path, queue its folders, read the next children, and wait while a Move holds
-// the workspace. Each kind keeps its own writes in its owner: files_subtree_ops_rebuild.ts (move and
-// scope), files_archive_runs.ts (archive and restore) and files_transfer.ts (copy).
+// the workspace. Each kind keeps its own writes in its owner: files_subtree_ops_rebuild.ts (scope),
+// files_archive_runs.ts (archive, restore and purge) and files_transfer.ts (copy).
 
 import type { WithoutSystemFields } from "convex/server";
 import { internal } from "./_generated/api.js";
@@ -45,11 +45,7 @@ export async function files_subtree_ops_db_is_near_limits(ctx: MutationCtx) {
 }
 
 export function files_subtree_ops_busy_tree_paths(op: WithoutSystemFields<Doc<"files_subtree_ops">>) {
-	return [
-		...op.treePaths,
-		...(op.kind === "move" ? op.oldTreePaths : []),
-		...(op.kind === "copy" ? op.sourceTreePaths : []),
-	];
+	return [...op.treePaths, ...(op.kind === "copy" ? op.sourceTreePaths : [])];
 }
 
 /**
@@ -68,7 +64,7 @@ export async function files_subtree_ops_db_find_repair(
 	ctx: QueryCtx | MutationCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
-	for (const kind of ["move", "scope", "archive", "restore"] as const) {
+	for (const kind of ["scope", "archive", "restore"] as const) {
 		const op = await ctx.db
 			.query("files_subtree_ops")
 			.withIndex("by_organization_workspace_kind_status", (q) =>

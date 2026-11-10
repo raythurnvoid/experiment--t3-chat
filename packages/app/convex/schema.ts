@@ -6524,10 +6524,16 @@ const app_convex_schema = defineSchema({
 					parentId: files_saved_placement_fields.parentId,
 					name: v.string(),
 					path: v.string(),
-					archiveOperationId: v.union(v.string(), v.null()),
+					/**
+					 * Legacy delete id. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
+					 */
+					archiveOperationId: v.optional(v.union(v.string(), v.null())),
 				}),
 				parentPath: v.string(),
-				parentArchiveOperationId: v.union(v.string(), v.null()),
+				/**
+				 * Legacy delete id. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
+				 */
+				parentArchiveOperationId: v.optional(v.union(v.string(), v.null())),
 			}),
 		),
 		targetParent: files_pending_parent_validator,
@@ -7078,9 +7084,10 @@ const app_convex_schema = defineSchema({
 
 	// #region files subtree ops
 	/**
-	 * One change to a folder and everything inside it that goes on after the request: move, archive,
-	 * restore, restrict, or copy. The request writes what people must see now, like the moved folder
-	 * itself. Steps then fix the stored copies inside, like each child's `path`.
+	 * One change to a folder and everything inside it that goes on after the request: archive, restore,
+	 * Delete permanently, a scope change (restrict, unrestrict, added people), or copy. The request writes
+	 * what people must see now, like the folder itself. Steps then fix the stored copies inside, like each
+	 * child's scope.
 	 *
 	 * Queue blocker checks read the ops of their workspace. Trash's fast check uses the path tree below.
 	 * Walk steps leave this doc alone, except when Restore or Empty Trash replaces its covered paths.
@@ -7089,15 +7096,6 @@ const app_convex_schema = defineSchema({
 	 */
 	files_subtree_ops: defineTable(
 		v.union(
-			v.object({
-				...files_subtree_op_shared_fields,
-				kind: v.literal("move"),
-				/**
-				 * The `treePath` of each root before the move. Children keep it until a step rewrites them,
-				 * so the op is busy on these paths too.
-				 */
-				oldTreePaths: v.array(v.string()),
-			}),
 			v.object({
 				...files_subtree_op_shared_fields,
 				kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
@@ -9305,12 +9303,15 @@ const app_convex_schema = defineSchema({
 				force: v.optional(v.boolean()),
 			}),
 			/**
-			 * A move or restrict whose op has no run doc of its own. A restrict Activity is not in the feed.
+			 * A scope change whose op has no run doc of its own. This Activity is not in the feed.
 			 */
 			v.object({
 				kind: v.literal("files_subtree_op"),
 				id: v.id("files_subtree_ops"),
-				opKind: v.union(v.literal("move"), v.literal("scope")),
+				/**
+				 * Legacy op kind. Remove after `migrations:run_remove_trash_freeze_leftovers` is audited.
+				 */
+				opKind: v.optional(v.union(v.literal("move"), v.literal("scope"))),
 			}),
 			/**
 			 * A background bash job (`cmd &`). The extra fields let `jobs` read this small

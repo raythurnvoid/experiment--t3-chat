@@ -18,7 +18,6 @@ import {
 	files_pending_update_has_asset_content,
 	files_pending_update_has_yjs_content,
 	files_MAX_YJS_WIRE_BYTES,
-	files_ROOT_ID,
 } from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { organizations_is_global_organization_id } from "../shared/organizations.ts";
@@ -327,38 +326,6 @@ export async function files_db_get_visible_node_by_path(
 			return await files_saved_placement_db_get_path(ctx.db, args, { cohortId: view.cohortId, view: view.view });
 		}
 	}
-	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old
-	// `path`. Then find the item by name from the root, like the tree does. Without a move op, one
-	// index read is enough. Global and mount scopes never have ops.
-	const moveOp =
-		organizations_is_global_organization_id(organizationId) || scope.kind !== "workspace"
-			? null
-			: await ctx.db
-					.query("files_subtree_ops")
-					.withIndex("by_organization_workspace_kind", (q) =>
-						q.eq("organizationId", organizationId).eq("workspaceId", scope.workspaceId).eq("kind", "move"),
-					)
-					.first();
-	if (moveOp) {
-		let parentId: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
-		let node: Doc<"files_nodes"> | null = null;
-		for (const name of args.path.split("/").filter(Boolean)) {
-			node = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-					q
-						.eq("organizationId", organizationId)
-						.eq("workspaceId", workspaceId).eq("moveCohortId", undefined)
-						.eq("parentId", parentId)
-						.eq("name", name)
-						.eq("archiveOperationId", null),
-				)
-				.first();
-			if (!node) return null;
-			parentId = node._id;
-		}
-		return node ? files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node)) : null;
-	}
 
 	const node = await ctx.db
 		.query("files_nodes")
@@ -375,7 +342,6 @@ export async function files_db_get_visible_node_by_path(
 
 /**
  * Path lookups for one request. A Move pins its selected view and uses exact path indexes.
- * A move op still walks names while it rewrites stored paths.
  */
 export async function files_db_create_path_lookups(
 	ctx: QueryCtx | MutationCtx,
@@ -386,73 +352,22 @@ export async function files_db_create_path_lookups(
 ) {
 	const { organizationId, workspaceId } = args;
 	const scope = files_db_resolve_scope(ctx, workspaceId);
-	// Global and mount scopes never have a Move or a move op.
+	// Global and mount scopes never have a Move.
 	const workspace =
 		!organizations_is_global_organization_id(organizationId) && scope.kind === "workspace"
 			? { organizationId, workspaceId: scope.workspaceId }
 			: null;
 	const view = workspace ? await files_saved_placement_db_get_view(ctx.db, workspace) : null;
 	const fixedView = view?.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : undefined;
-	// While a move op rewrites stored paths, an item inside the moved folder can still carry its old `path`.
-	const moveOp =
-		workspace && !fixedView
-			? await ctx.db
-					.query("files_subtree_ops")
-					.withIndex("by_organization_workspace_kind", (q) =>
-						q
-							.eq("organizationId", workspace.organizationId)
-							.eq("workspaceId", workspace.workspaceId)
-							.eq("kind", "move"),
-					)
-					.first()
-			: null;
 	const nodes = new Map<string, Doc<"files_nodes"> | null>();
 	// The folders the request names: each found parent and each new folder.
 	const named = new Set<string>();
-
-	// Walk the first `count` names from the root and keep each prefix. A missing name or a file ends the
-	// walk, so the last node found is the deepest one that exists.
-	async function walk_names(names: string[], count: number) {
-		let found: { node: Doc<"files_nodes"> | null; depth: number } = { node: null, depth: 0 };
-		let path = "";
-		for (let index = 0; index < count; index++) {
-			const name = names[index]!;
-			const parentId = found.node?._id ?? files_ROOT_ID;
-			path += `/${name}`;
-			let node = nodes.get(path);
-			if (node === undefined) {
-				node = await ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("moveCohortId", undefined)
-							.eq("parentId", parentId)
-							.eq("name", name)
-							.eq("archiveOperationId", null),
-					)
-					.first();
-				if (node) node = files_saved_content_apply_header(node, await files_saved_content_db_get_head(ctx.db, node));
-				nodes.set(path, node);
-			}
-			if (!node) break;
-			found = { node, depth: index + 1 };
-			if (node.kind !== "folder") break;
-		}
-		return found;
-	}
 
 	/**
 	 * Look up one path.
 	 */
 	async function get(path: string) {
 		if (path === "/") return null;
-		if (moveOp) {
-			const names = path.slice(1).split("/");
-			const found = await walk_names(names, names.length);
-			return found.depth === names.length ? found.node : null;
-		}
 		let node = nodes.get(path);
 		if (node === undefined) {
 			node = fixedView
@@ -483,7 +398,6 @@ export async function files_db_create_path_lookups(
 	 */
 	async function find_existing_parent(path: string) {
 		const segments = path_extract_segments_from(path);
-		if (moveOp) return await walk_names(segments, segments.length - 1);
 		if (fixedView) {
 			const parentDepth = segments.length - 1;
 			if (parentDepth < 1) return { node: null, depth: 0 };

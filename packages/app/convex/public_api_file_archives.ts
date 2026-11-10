@@ -177,7 +177,7 @@ export async function public_api_file_archives_db_archive(
 	},
 ) {
 	const scope = { organizationId: args.organizationId, workspaceId: args.workspaceId };
-	for (const kind of ["move", "scope", "restore"] as const) {
+	for (const kind of ["scope", "restore"] as const) {
 		const repair = await ctx.db
 			.query("files_subtree_ops")
 			.withIndex("by_organization_workspace_kind_status", (q) =>

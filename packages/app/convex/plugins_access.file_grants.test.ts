@@ -82,19 +82,32 @@ describe("personal plugin file grants", () => {
 		).toEqual({ _yay: null });
 	});
 
-	test("a choice of an open folder in Trash makes it no anchor", async () => {
+	test.each(["read", "write"] as const)("refuses a new %s choice in Trash without changing consent", async (level) => {
 		const f = await fixture();
+		const before = await f.t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", f.nodes.archivedFolderId),
+			pairs: await ctx.db.query("plugins_file_pairs").collect(),
+			consents: await ctx.db.query("plugins_file_consents").collect(),
+			ops: await ctx.db.query("files_subtree_ops").collect(),
+		}));
 		const granted = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
 			membershipId: f.owner.membershipId,
 			installationId: f.installationId,
 			rootNodeId: f.nodes.archivedFolderId,
-			level: "read",
+			level,
 		});
-		expect(granted._nay).toBeUndefined();
+		expect(granted._nay?.message, "a Trash choice must ask the person to restore it first").toBe(
+			`${before.node!.path} is in Trash. Restore it before you choose it for a plugin.`,
+		);
 		expect(
-			(await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodes.archivedFolderId)))?.parentExtendedScopeNodeId,
-			"the Trash folder keeps its delete-time access fields",
-		).toBeUndefined();
+			await f.t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", f.nodes.archivedFolderId),
+				pairs: await ctx.db.query("plugins_file_pairs").collect(),
+				consents: await ctx.db.query("plugins_file_consents").collect(),
+				ops: await ctx.db.query("files_subtree_ops").collect(),
+			})),
+			"a refused Trash choice must change no file, pair, consent or scope job",
+		).toEqual(before);
 	});
 
 	test("accepts a narrow read grant and refuses edit without the person's write access", async () => {
@@ -600,6 +613,50 @@ describe("personal plugin file grants", () => {
 			areaEligible: false,
 			state: "ended",
 		});
+	});
+
+	test.each([false, true])("removing consent keeps only a frozen anchor (Trash: %s)", async (inTrash) => {
+		const f = await fixture();
+		const args = { membershipId: f.owner.membershipId, installationId: f.installationId };
+		const selected = await f.asOwner.mutation(api.plugins_access.grant_file_access_as_me, {
+			...args,
+			rootNodeId: f.nodes.openSubId,
+			level: "read",
+		});
+		if (selected._nay) throw new Error(selected._nay.message);
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		if (inTrash) {
+			expect(
+				(
+					await f.asOwner.mutation(api.files_nodes.archive_nodes, {
+						membershipId: args.membershipId,
+						nodeIds: [String(f.nodes.openSubId)],
+					})
+				)._nay,
+			).toBeUndefined();
+			await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		}
+		const before = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodes.openSubId));
+		expect(before).toMatchObject({ extendedScopeNodeId: f.nodes.openSubId, parentExtendedScopeNodeId: null });
+		expect(
+			await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
+				...args,
+				consentId: selected._yay.consentId,
+			}),
+		).toEqual({ _yay: null });
+		await f.t.finishAllScheduledFunctions(vi.runAllTimers);
+		expect(await f.t.run((ctx) => ctx.db.get("plugins_file_consents", selected._yay.consentId))).toMatchObject({
+			open: false,
+			appliedLevel: null,
+			state: "ended",
+		});
+		const after = await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodes.openSubId));
+		if (inTrash) {
+			expect(after, "removing consent must keep the Trash item's frozen pointers").toEqual(before);
+		} else {
+			expect(after?.parentExtendedScopeNodeId, "an empty live anchor still retires").toBeUndefined();
+			expect(after?.extendedScopeNodeId).toBeNull();
+		}
 	});
 
 	test("allows removal after the person loses read access", async () => {

@@ -1071,7 +1071,7 @@ describe("paged folder moves and scope jobs", () => {
 		).toBeUndefined();
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").first())).toMatchObject({ kind: "scope" });
 		const activity = await t.run((ctx) => ctx.db.query("activities").first());
-		expect(activity).toMatchObject({ source: { kind: "files_subtree_op", opKind: "scope" }, feedVisible: false });
+		expect(activity).toMatchObject({ source: { kind: "files_subtree_op" }, feedVisible: false });
 		expect(
 			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && name !== trashName && scope !== source._id),
 			"the first step leaves one child for the job",

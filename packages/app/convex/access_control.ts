@@ -1005,8 +1005,8 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  * A pointer at a deleted node, or at a node of another organization or workspace, also keeps the
  * node's stored scope, so it stays closed. Only a Trash item can point at a deleted node: Delete
  * permanently removes a restricted folder only from Trash, after its live items have left it. Such a
- * Trash item stays closed to everyone except the owner, instead of opening to every member. No grant
- * names a node of another workspace, so a crossed pointer is closed too.
+ * Trash item gets no workspace-role access. The owner and its own added people may still get in.
+ * No grant names a node of another workspace, so a crossed pointer is closed too.
  *
  * Every permission check and list filter reads `restrictedScopeNodeId` through here, so the rule for
  * "is this pointer real" exists once. A second copy of it would let the permission check and the list
@@ -1050,7 +1050,7 @@ export async function access_control_db_resolve_live_restricted_scope(
  *
  * The resolved folder can also be deleted for good already, for example when an outer restricted
  * folder was purged before this one. Then list the entry in the open area. Only the entry moves: the
- * item keeps its pointer, so it stays closed to everyone except the owner.
+ * item keeps its pointer, so listing it here adds no workspace-role access.
  */
 export async function access_control_db_resolve_trash_entry_area(
 	ctx: QueryCtx | MutationCtx,

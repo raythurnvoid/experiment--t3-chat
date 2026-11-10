@@ -606,8 +606,17 @@ export const get_node_share_state = query({
 			access: v.union(v.literal("restricted_root"), v.literal("extended_root"), v.literal("inherits")),
 			/** "Everyone in this workspace can view" on this node. Only a restricted root can have it. */
 			workspaceView: v.boolean(),
-			/** Whether the caller may add people here. Any item can get added people. */
+			/**
+			 * Whether the caller may add people here. Any live item can get added people. An open item in
+			 * Trash cannot get its first one.
+			 */
 			canAddPeople: v.boolean(),
+			/**
+			 * Null for a live item. An item in Trash keeps the access of its delete time, so the dialog
+			 * offers no restrict or unrestrict. `restrictedFolderDeleted` is true when its restricted folder
+			 * is deleted for good: workspace roles give no access, but added people still can.
+			 */
+			trash: v.union(v.null(), v.object({ restrictedFolderDeleted: v.boolean() })),
 			/**
 			 * The people on this node itself. Empty for an item that only inherits. `coverage` is null when
 			 * the caller cannot manage the node.
@@ -624,8 +633,9 @@ export const get_node_share_state = query({
 			 */
 			callerRoles: v.array(doc(app_convex_schema, "access_control_role_assignments").fields.role),
 			/**
-			 * The access the node has without its own list: `null` for the workspace roles, or the restricted
-			 * folder above. For a restricted root this is where an unrestrict falls back to.
+			 * The access the node has without its own list: the restricted folder above, or `null` for
+			 * workspace roles. If `trash.restrictedFolderDeleted` is true, `null` gives no base access.
+			 * For a live restricted root this is where an unrestrict falls back to.
 			 */
 			baseScope: v.union(
 				v.null(),
@@ -644,7 +654,8 @@ export const get_node_share_state = query({
 			/** Whether a file inside this restricted folder has a public link. An unrestrict ends it. */
 			linksInside: v.boolean(),
 			/**
-			 * Where the rest of the access comes from. `restricted` null means everyone in the workspace.
+			 * Where the rest of the access comes from. `restricted` null means workspace roles, unless
+			 * `trash.restrictedFolderDeleted` is true: then it gives no base access.
 			 * `extended` lists the folders with added people above the node, nearest first.
 			 */
 			inheritedFrom: v.object({
@@ -713,17 +724,20 @@ export const get_node_share_state = query({
 		// `restrict_node` applies. Asked here so the dialog does not offer a button that always fails.
 		// The owner holds no grants and passes every check earlier than this one. Without manage the
 		// answer is no, so skip the check: on a deep path each permission costs a walk of the chain.
+		// `restrict_node` refuses an item in Trash for everybody.
+		const inTrash = node.archiveOperationId !== null;
 		const canRestrict =
-			userAuth.id === organization.ownerUserId ||
-			(canManage &&
-				(await caller_can_hand_out_level(ctx, {
-					organization,
-					defaultWorkspaceId,
-					workspaceId: membership.workspaceId,
-					node,
-					userId: userAuth.id,
-					level: "manage",
-				})) === null);
+			!inTrash &&
+			(userAuth.id === organization.ownerUserId ||
+				(canManage &&
+					(await caller_can_hand_out_level(ctx, {
+						organization,
+						defaultWorkspaceId,
+						workspaceId: membership.workspaceId,
+						node,
+						userId: userAuth.id,
+						level: "manage",
+					})) === null));
 
 		// Same reason as `canRestrict`: do not offer a choice that always fails. Read at the default
 		// workspace, like the ceiling itself, because the question is what the caller's organization
@@ -807,6 +821,7 @@ export const get_node_share_state = query({
 		});
 		const scopeNode = scopeNodeId ? await ctx.db.get("files_nodes", scopeNodeId) : null;
 		const scopeIsLive = scopeNode !== null && scopeNode.restrictedScopeNodeId === scopeNode._id;
+		const trash = inTrash ? { restrictedFolderDeleted: scopeNodeId !== null && !scopeIsLive } : null;
 		const access =
 			scopeIsLive && scopeNode._id === node._id
 				? ("restricted_root" as const)
@@ -1017,6 +1032,8 @@ export const get_node_share_state = query({
 					new Set(access_control_FILE_SHARE_PERMISSIONS.filter((permission) => permissions?.includes(permission))),
 				);
 			}
+			// A deleted restricted folder does not fall back to workspace roles.
+			if (trash?.restrictedFolderDeleted) base = null;
 
 			// A row matches its own key, and a person or app also matches the rows of their roles.
 			const keys = new Set([
@@ -1105,7 +1122,8 @@ export const get_node_share_state = query({
 				serviceGrantableLevels,
 				access,
 				workspaceView,
-				canAddPeople: canManage,
+				canAddPeople: canManage && (!inTrash || access !== "inherits"),
+				trash,
 				entries: listedEntries,
 				callerUserId: userAuth.id,
 				callerCoverage,
@@ -1137,7 +1155,8 @@ export const get_node_share_state = query({
 			serviceGrantableLevels,
 			access,
 			workspaceView,
-			canAddPeople: canManage,
+			canAddPeople: canManage && (!inTrash || access !== "inherits"),
+			trash,
 			entries: listedEntries,
 			callerUserId: userAuth.id,
 			callerCoverage,
@@ -1340,12 +1359,11 @@ export const set_node_share_grant = mutation({
 			// An op gives the items inside the new chain. Its first step runs here, so a small folder is done now,
 			// unless a Move holds the workspace.
 			await files_subtree_ops_db_start_rebuild(ctx, {
-				kind: "scope",
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
 				membership,
-				roots: [{ node, oldTreePath: node.treePath }],
+				roots: [node],
 				budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 				now,
 			});
@@ -1368,7 +1386,7 @@ export const set_node_share_grant = mutation({
 /**
  * Take a person, a role or an account off a node's share list.
  *
- * When the last one leaves an extended root, the item stops being one and inherits again.
+ * When the last one leaves a live extended root, the item stops being one and inherits again.
  */
 export const remove_node_share_grant = mutation({
 	args: {
@@ -1456,17 +1474,17 @@ export const remove_node_share_grant = mutation({
 			});
 		}
 
-		if (node.parentExtendedScopeNodeId !== undefined) {
+		// The people list is live, but a Trash item keeps its saved inheritance pointers.
+		if (node.archiveOperationId === null && node.parentExtendedScopeNodeId !== undefined) {
 			// Read after the delete above. A mutation sees its own writes.
 			if (!(await files_nodes_db_has_extended_grants(ctx, { nodeId: node._id }))) {
 				await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: false });
 				await files_subtree_ops_db_start_rebuild(ctx, {
-					kind: "scope",
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					userId: userAuth.id,
 					membership,
-					roots: [{ node, oldTreePath: node.treePath }],
+					roots: [node],
 					budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 					now: Date.now(),
 				});
@@ -1566,12 +1584,11 @@ async function db_restrict_node(
 	// An op gives the descendants the new scope. Its first step runs here, so a small folder is done now,
 	// unless a Move holds the workspace.
 	await files_subtree_ops_db_start_rebuild(ctx, {
-		kind: "scope",
 		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
 		userId: userAuth.id,
 		membership,
-		roots: [{ node, oldTreePath: node.treePath }],
+		roots: [node],
 		budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 		now,
 	});
@@ -1840,12 +1857,11 @@ export const unrestrict_node = mutation({
 
 		// One op gives the items inside both the new scope and the new chain.
 		await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "scope",
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
 			membership,
-			roots: [{ node, oldTreePath: node.treePath }],
+			roots: [node],
 			budget: { nodes: files_subtree_ops_STEP_MAX_NODES, hasPaginated: false },
 			now: Date.now(),
 		});

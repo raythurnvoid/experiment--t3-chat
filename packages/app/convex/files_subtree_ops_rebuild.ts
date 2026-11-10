@@ -1,4 +1,4 @@
-// Give the live items inside a moved or newly scoped folder the path and access area of their live
+// Give the live items inside a newly scoped folder the path and access area of their live
 // parent. Items in Trash keep what they had at delete time. The request changes the folder itself, then
 // starts an op here. The first step runs in the same mutation, so a small folder is done at once. Later
 // steps run in `advance` in files_subtree_ops.ts. The archive job also calls `files_nodes_db_rebuild_node`
@@ -242,13 +242,12 @@ export async function files_subtree_ops_db_rebuild_walk(args: {
 }
 
 /**
- * Start the walk after the request changed the roots. A transfer defers the first walk so root
- * publication has its own budget. Return null when the walk finished in this request.
+ * Start the scope walk after the request changed the roots' scope fields. A caller with no budget
+ * left defers the first walk to a step. Return null when the walk finished in this request.
  */
 export async function files_subtree_ops_db_start_rebuild(
 	ctx: MutationCtx,
 	args: {
-		kind: "move" | "scope";
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
@@ -258,42 +257,37 @@ export async function files_subtree_ops_db_start_rebuild(
 		 */
 		membership: Doc<"organizations_workspaces_users"> | null;
 		/**
-		 * The roots as the request left them. `oldTreePath` is where each one was before.
+		 * The roots as the request left them.
 		 */
-		roots: Array<{ node: Doc<"files_nodes">; oldTreePath: string }>;
+		roots: Array<Doc<"files_nodes">>;
 		budget: { nodes: number; hasPaginated: boolean };
 		deferWalk?: boolean;
 		now: number;
 	},
 ) {
-	const folders = args.roots.filter((root) => root.node.kind === "folder");
+	const folders = args.roots.filter((root) => root.kind === "folder");
 	if (folders.length === 0) {
 		return null;
 	}
 
-	const shared = {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		userId: args.userId,
-		status: "running" as const,
-		blockedByOpId: null,
-		rootNodeIds: folders.map((root) => root.node._id),
-		treePaths: folders.map((root) => root.node.treePath),
-	};
 	const opId = await files_subtree_ops_db_insert(ctx, {
-		op:
-			args.kind === "move"
-				? { ...shared, kind: "move", oldTreePaths: folders.map((root) => root.oldTreePath) }
-				: { ...shared, kind: "scope" },
+		op: {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			status: "running",
+			blockedByOpId: null,
+			rootNodeIds: folders.map((root) => root._id),
+			treePaths: folders.map((root) => root.treePath),
+			kind: "scope",
+		},
 		now: args.now,
 	});
 	// Each root remembers its newest scope op. Only that op's end may stop it being a boundary.
-	if (args.kind === "scope") {
-		for (const root of folders) await ctx.db.patch("files_nodes", root.node._id, { scopeOpId: opId });
-	}
+	for (const root of folders) await ctx.db.patch("files_nodes", root._id, { scopeOpId: opId });
 	await files_subtree_ops_db_enqueue_nodes(ctx, {
 		opId,
-		nodes: folders.map((root) => ({ nodeId: root.node._id, nodeDone: true })),
+		nodes: folders.map((root) => ({ nodeId: root._id, nodeDone: true })),
 	});
 
 	const op = (await ctx.db.get("files_subtree_ops", opId))!;
@@ -316,13 +310,13 @@ export async function files_subtree_ops_db_start_rebuild(
 					membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, args.membership),
 				}
 			: {}),
-		source: { kind: "files_subtree_op", id: opId, opKind: args.kind },
+		source: { kind: "files_subtree_op", id: opId },
 		// Keep names and paths out of the title. The requester may lose access to the items later.
-		title: args.kind === "move" ? "Move files" : "Restrict files",
+		title: "Restrict files",
 		targets: [],
 		visibility: "requester",
-		// A transfer owns the visible card. Keep this Activity for recovery after Stop.
-		feedVisible: args.kind === "move" && !args.deferWalk,
+		// The request that changed the scope owns what people see. Keep this Activity for recovery only.
+		feedVisible: false,
 		status: "running",
 		resultKind: "saved",
 		deadlineAt: args.now + files_subtree_ops_RECOVER_AFTER_MS,

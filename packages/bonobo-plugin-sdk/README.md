@@ -359,6 +359,8 @@ permissions** for this installation. Whole workspace covers current and future o
 saved files. Restricted folders need separate consent. Calls use the applied
 Can view / Can edit level. Changes apply in background steps; calls keep the current
 applied level until its step finishes.
+Restore an item in Trash before selecting it. Existing selections keep working after
+their item goes to Trash while applied consent allows it. Removal stays available.
 Account grants and owner rights do not add plugin access. Credentials still require
 a live installation and the same membership lifetime. Ordinary Files sharing decides
 which people can open plugin output.

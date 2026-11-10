@@ -4,11 +4,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_finish_transfer_run } from "./setup.test.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_insert } from "./files_subtree_ops_db.ts";
-import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	fixture,
 	seed_tree,
-	seed_same_path,
 	read_state,
 	expect_consistent,
 	read_activity,
@@ -79,110 +77,6 @@ describe("unarchive_nodes", () => {
 		expect(ended.activity.status).toBe("succeeded");
 		expect((await read_node(f, first.fileIds[0]!)).archiveOperationId).toBeNull();
 		expect((await read_node(f, second.fileIds[0]!)).archiveOperationId).toBeNull();
-	});
-
-	test("discovery refreshes a selected item's path before checking blockers", async () => {
-		const f = await fixture();
-		const archived = await seed_same_path(f, { name: "cursor", count: 51, archiveOperationId: crypto.randomUUID() });
-		const restored = await restore(f, archived.fileIds);
-		expect(restored._nay).toBeUndefined();
-		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
-		// Change the stored path before discovery reaches this selected id. Public Rename waits for Restore.
-		await f.t.run((ctx) =>
-			ctx.db.patch("files_nodes", archived.fileIds.at(-1)!, {
-				name: "a.md",
-				sortName: files_sort_text_key("a.md"),
-				path: "/cursor/a.md",
-				treePath: "/cursor/a.md",
-			}),
-		);
-		expect((await read_node(f, archived.fileIds.at(-1)!)).treePath).toBe("/cursor/a.md");
-		const blockerId = await f.t.run((ctx) =>
-			files_subtree_ops_db_insert(ctx, {
-				op: {
-					kind: "scope",
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					userId: f.db.userId,
-					status: "running",
-					blockedByOpId: null,
-					rootNodeIds: [archived.fileIds.at(-1)!],
-					treePaths: ["/cursor/a.md"],
-				},
-				now: Date.now(),
-			}),
-		);
-
-		await step(f, restored._yay!.runId);
-		const op = await f.t.run((ctx) =>
-			ctx.db
-				.query("files_subtree_ops")
-				.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId))
-				.unique(),
-		);
-		expect(op?.treePaths).toContain("/cursor/a.md");
-		expect(op).toMatchObject({ status: "queued", blockedByOpId: blockerId });
-	});
-
-	test("a queued restore checks a stored-path change while it waited", async () => {
-		const f = await fixture();
-		const archived = await seed_same_path(f, { name: "queued", count: 51, archiveOperationId: crypto.randomUUID() });
-		const blocker = (treePath: string) =>
-			f.t.run((ctx) =>
-				files_subtree_ops_db_insert(ctx, {
-					op: {
-						kind: "scope",
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						userId: f.db.userId,
-						status: "running",
-						blockedByOpId: null,
-						rootNodeIds: [archived.fileIds[0]!],
-						treePaths: [treePath],
-					},
-					now: Date.now(),
-				}),
-			);
-		const restored = await restore(f, archived.fileIds);
-		expect(restored._nay).toBeUndefined();
-		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", restored._yay!.runId)))?.phase).toBe("discover");
-		const firstBlockerId = await blocker("/queued/same.md");
-		await step(f, restored._yay!.runId);
-		const opId = await f.t.run(
-			async (ctx) =>
-				(await ctx.db
-					.query("files_subtree_ops")
-					.withIndex("by_archiveRun", (q) => q.eq("archiveRunId", restored._yay!.runId))
-					.unique())!._id,
-		);
-		expect(await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId))).toMatchObject({
-			status: "queued",
-			blockedByOpId: firstBlockerId,
-		});
-		// Change the stored path while this job waits. Public Rename waits for the scope blocker.
-		await f.t.run((ctx) =>
-			ctx.db.patch("files_nodes", archived.fileIds[1]!, {
-				name: "a.md",
-				sortName: files_sort_text_key("a.md"),
-				path: "/queued/a.md",
-				treePath: "/queued/a.md",
-			}),
-		);
-		expect((await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId)))?.treePaths).not.toContain("/queued/a.md");
-		const secondBlockerId = await blocker("/queued/a.md");
-		await f.t.run((ctx) => files_subtree_ops_db_delete(ctx, { opId: firstBlockerId, now: Date.now() }));
-		expect((await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId)))?.blockedByOpId).toBeNull();
-		await f.t.mutation(internal.files_subtree_ops.promote, { opId });
-		for (let count = 0; count < 3; count++) {
-			const op = await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId));
-			if (op?.status !== "running") break;
-			await step(f, restored._yay!.runId);
-		}
-
-		const op = await f.t.run((ctx) => ctx.db.get("files_subtree_ops", opId));
-		expect(op).toMatchObject({ status: "queued", blockedByOpId: secondBlockerId });
-		expect(op?.treePaths).toContain("/queued/a.md");
-		expect((await read_node(f, archived.fileIds[0]!)).archiveOperationId).not.toBeNull();
 	});
 
 	test("a big restore runs as a job, and no node is ever active inside an archived folder", async () => {

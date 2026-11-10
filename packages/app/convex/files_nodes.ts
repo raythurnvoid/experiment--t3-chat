@@ -3907,8 +3907,7 @@ export async function files_nodes_db_restore_named_nodes(
 ) {
 	const { membership } = args;
 
-	// Keep every selected id. Move may change which selections overlap before the job starts.
-	// The input has at most 500 items, so this list is bounded.
+	// Keep every selected id, including separate deletes at the same path. The input has at most 500 items.
 	const rootsByOperationId = new Map<string, Doc<"files_archive_runs">["restoreRoots"]>();
 	for (const fileNode of args.nodes.toSorted((a, b) =>
 		a.treePath < b.treePath ? -1 : a.treePath > b.treePath ? 1 : 0,

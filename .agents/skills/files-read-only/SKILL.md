@@ -276,9 +276,10 @@ Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore sim
   areas of the pointers (`access_control_db_resolve_live_restricted_scope`), not the raw pointers. So
   an unrestrict above a Trash item keeps its added people and plugin choices (see the
   `access-control` skill). A plugin's choice of an open folder still matches by path.
-- A pointer at a node that was deleted for good stays closed: only the owner can open the item. Only
-  a Trash item can hold such a pointer, because a restricted folder is deleted for good only from
-  Trash, when no live item is inside it.
+- A pointer at a node that was deleted for good gives no access through that restricted folder or
+  workspace roles. The owner still gets in. Existing added people may still get in through the
+  item's saved extended chain. Only a Trash item can hold such a pointer, because a restricted
+  folder is deleted for good only from Trash, when no live item is inside it.
 - Delete permanently checks the items inside a named folder by parent id, not by path. A Restore
   refuses an item that a Delete permanently queued or started to delete (`This item is being
   deleted.`), because that job holds only the folder's path, not the item's delete-time path. The
@@ -302,8 +303,11 @@ Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore sim
   view" for an open Trash item, because that restricts it. A first added person or service account
   on an open Trash item is refused with the same text, because it would make the item a shared root
   and change its children. More people on a Trash item that already has some, and every removal,
-  stay allowed: the people list is live, not frozen. A plugin's choice of an open folder in Trash is
-  accepted, but the folder gets no anchor. The choice reaches its Trash items by path.
+  stay allowed: the people list is live, not frozen. The share dialog keeps refused actions disabled
+  and explains that the person must restore the item first. A new plugin choice of an item in Trash
+  is refused too. Existing choices keep working in Trash while applied consent allows them.
+- Removing the last person, service account or plugin choice from a Trash root leaves its saved
+  access pointers unchanged. The empty root grants no access. Empty live roots still retire.
 
 Accepted as designed (reviewed 2026-11-10):
 

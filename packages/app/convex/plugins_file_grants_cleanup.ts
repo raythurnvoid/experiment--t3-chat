@@ -14,6 +14,8 @@ export async function plugins_file_grants_db_retire_anchor(
 ) {
 	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!node?.workspaceId || node.purgeRunId || node.parentExtendedScopeNodeId === undefined) return;
+	// Removing consent gives no access, but a Trash item keeps its saved inheritance pointers.
+	if (node.archiveOperationId !== null) return;
 	const workspaceId = ctx.db.normalizeId("organizations_workspaces", node.workspaceId);
 	if (!workspaceId) return;
 	const workspace = await ctx.db.get("organizations_workspaces", workspaceId);
@@ -21,12 +23,11 @@ export async function plugins_file_grants_db_retire_anchor(
 	if (await files_nodes_db_has_extended_grants(ctx, { nodeId: node._id })) return;
 	await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: false });
 	await files_subtree_ops_db_start_rebuild(ctx, {
-		kind: "scope",
 		organizationId: workspace.organizationId,
 		workspaceId: workspace._id,
 		userId: args.userId,
 		membership: null,
-		roots: [{ node, oldTreePath: node.treePath }],
+		roots: [node],
 		budget: { nodes: 0, hasPaginated: false },
 		deferWalk: true,
 		now: Date.now(),

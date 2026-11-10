@@ -534,9 +534,9 @@ async function data_deletion_test_start_archive_run(
 }
 
 /**
- * Start a move op that has not taken a step yet, so it stays until a step runs.
+ * Start a scope op that has not taken a step yet, so it stays until a step runs.
  */
-async function data_deletion_test_start_move_op(
+async function data_deletion_test_start_scope_op(
 	t: ReturnType<typeof test_convex>,
 	args: {
 		userId: Id<"users">;
@@ -556,14 +556,13 @@ async function data_deletion_test_start_move_op(
 			.unique();
 		if (!membership) throw new Error("Expected workspace membership");
 		const started = await files_subtree_ops_db_start_rebuild(ctx, {
-			kind: "move",
 			...scope,
 			membership,
-			roots: [{ node, oldTreePath: node.treePath }],
+			roots: [node],
 			budget: { nodes: 0, hasPaginated: false },
 			now: Date.now(),
 		});
-		if (!started) throw new Error("Expected a move op");
+		if (!started) throw new Error("Expected a scope op");
 		return { ...started, membershipId: membership._id };
 	});
 }
@@ -4205,7 +4204,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.controlActivity).toMatchObject({ status: "awaiting_input" });
 	});
 
-	test("drains move ops and keeps sibling ops", async () => {
+	test("drains scope ops and keeps sibling ops", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -4223,17 +4222,17 @@ describe("process_workspace_deletion_request", () => {
 			}),
 		);
 		if (sibling._nay) throw new Error(sibling._nay.message);
-		const victim = await data_deletion_test_start_move_op(t, {
+		const victim = await data_deletion_test_start_scope_op(t, {
 			userId: user.userId,
 			organizationId: user.defaultOrganizationId,
 			workspaceId: user.defaultWorkspaceId,
-			tag: "move-victim",
+			tag: "scope-victim",
 		});
-		const control = await data_deletion_test_start_move_op(t, {
+		const control = await data_deletion_test_start_scope_op(t, {
 			userId: user.userId,
 			organizationId: user.defaultOrganizationId,
 			workspaceId: sibling._yay.workspaceId,
-			tag: "move-control",
+			tag: "scope-control",
 		});
 		const requestId = await t.run((ctx) =>
 			data_deletion_db_request(ctx, {
@@ -8524,19 +8523,19 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.membership).toBeNull();
 	});
 
-	test("does not wait for a move op, which still ends without the user", async () => {
+	test("does not wait for a scope op, which still ends without the user", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
-				clerkUserId: "clerk-user-delete-move-op",
-				displayName: "Move Op",
+				clerkUserId: "clerk-user-delete-scope-op",
+				displayName: "Scope Op",
 			}),
 		);
-		const op = await data_deletion_test_start_move_op(t, {
+		const op = await data_deletion_test_start_scope_op(t, {
 			userId: victim.userId,
 			organizationId: victim.defaultOrganizationId,
 			workspaceId: victim.defaultWorkspaceId,
-			tag: "move-finalize",
+			tag: "scope-finalize",
 		});
 
 		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
