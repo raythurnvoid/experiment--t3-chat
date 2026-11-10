@@ -539,8 +539,6 @@ const files_saved_placement_fields = {
 	archivedPathLength: v.optional(v.number()),
 	// Same as the `files_nodes` field.
 	archivedPath: v.optional(v.string()),
-	// Same as the `files_nodes` field. Old saved places may hold it until the migration ends.
-	archiveTopNodeId: v.optional(v.id("files_nodes")),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
 	// Same as the `files_nodes` fields.
@@ -5321,11 +5319,6 @@ const app_convex_schema = defineSchema({
 		 * Restore lands a top item at this path and creates its missing folders, like `mkdir -p`.
 		 */
 		archivedPath: v.optional(v.string()),
-		/**
-		 * Being removed. No code sets it, and a Move no longer copies it. Old docs keep it until the
-		 * `run_remove_files_nodes_archive_top_node_id` migration ends. Then delete this field.
-		 */
-		archiveTopNodeId: v.optional(v.id("files_nodes")),
 		/**
 		 * The purge run that is deleting this node for good. Set in its first delete step, and the
 		 * node doc goes away with it. Missing: no purge has started on the node. Every write refuses
