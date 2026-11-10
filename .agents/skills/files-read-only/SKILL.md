@@ -271,8 +271,7 @@ folder's path and area. Each item left in Trash alone gets its Trash entry.
 The ending brings back nothing more and keeps every delete stamp and the Restore counts. It keeps
 its op until this ends, so queued jobs still wait. A refusal inside a page first saves that page,
 so folders the page already changed keep their queue rows. The same rule holds for app, key and
-plugin jobs. No app flow has shown the missing repair yet; this is a safeguard (decided
-2026-11-09). Known limit: workspace deletion (`files_archive_runs_db_delete_run_batch`) ends the job
+plugin jobs. Known limit: workspace deletion (`files_archive_runs_db_delete_run_batch`) ends the job
 at once and drops the repair. So does user deletion while the job's op waits in the queue.
 
 - The item stays in place when its live parent still has the Trash parent path, or when it was at

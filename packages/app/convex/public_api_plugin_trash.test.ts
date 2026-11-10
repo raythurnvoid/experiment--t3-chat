@@ -774,103 +774,6 @@ test.each(["list", "areas"] as const)(
 	},
 );
 
-test("files/restore gives a plugin run the Restore scope only with Restore consent", async () => {
-	const f = await fixture();
-	const body = { paths: ["/restore-me"], requestId: "scope-matrix" };
-	const accept = (p: Awaited<ReturnType<typeof plugin>>, capabilities: plugins_Capability[]) =>
-		f.t.run(async (ctx) => {
-			await ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: capabilities });
-			await ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: capabilities });
-		});
-
-	const restorer = await plugin(f);
-	await accept(restorer, ["workspace.files.read", "workspace.files.write", "workspace.files.restore"]);
-	expect(
-		await post(f, restorer.runToken, "restore", body),
-		"a run with Restore consent passes the scope checks",
-	).toMatchObject({
-		status: 200,
-		// The run chose no files, so its pair cannot open the path.
-		body: { jobIds: [], refused: [{ path: "/restore-me", message: "Permission denied" }] },
-	});
-	expect(await calls_of(f, restorer.runId), "the plugin answer closes its call").toEqual([
-		expect.objectContaining({ status: "succeeded", responseStatus: 200 }),
-	]);
-	expect((await post(f, restorer.token, "restore", body)).status, "plugin pages cannot restore").toBe(403);
-	await f.t.run((ctx) =>
-		ctx.db.patch("plugins_workspace_installations", restorer.installationId, {
-			acceptedCapabilities: ["workspace.files.read", "workspace.files.write"],
-		}),
-	);
-	expect(await post(f, restorer.runToken, "restore", body), "the installation must accept Restore too").toMatchObject({
-		status: 403,
-		body: { message: "Permission denied" },
-	});
-
-	// An upload run gets `files:write` for its sibling outputs. That scope must not open Restore.
-	const uploader = await plugin(f);
-	const sourceId = await test_run_with_flush(f.t, (ctx) =>
-		ctx.db.insert("files_nodes", {
-			...test_mocks.files.base(),
-			organizationId: f.db.organizationId,
-			workspaceId: f.db.workspaceId,
-			createdBy: f.db.userId,
-			updatedBy: f.db.userId,
-			parentId: "root",
-			kind: "file",
-			name: "source.md",
-			sortName: "source.md",
-			path: "/source.md",
-			treePath: "/source.md",
-			pathDepth: 1,
-		}),
-	);
-	await f.t.run((ctx) =>
-		ctx.db.patch("plugins_event_runs", uploader.runId, { event: "files.upload.completed", fileNodeId: sourceId }),
-	);
-	expect(
-		await post(f, uploader.runToken, "restore", body),
-		"an upload run's files:write does not restore",
-	).toMatchObject({ status: 403, body: { message: "Permission denied" } });
-
-	const scheduled = await plugin(f, { scheduled: true });
-	await accept(scheduled, [
-		"workspace.files.read",
-		"workspace.files.write",
-		"workspace.files.restore",
-		"plugin.schedule.run",
-	]);
-	expect(
-		await post(f, scheduled.runToken, "restore", body),
-		"a scheduled run cannot restore even with Restore consent",
-	).toMatchObject({ status: 403, body: { message: "Scheduled plugin runs cannot use Trash yet." } });
-
-	for (const runId of [restorer.runId, uploader.runId, scheduled.runId]) {
-		expect(
-			(await calls_of(f, runId)).every((call) => call.status !== "started"),
-			"every Restore call is settled",
-		).toBe(true);
-	}
-
-	// A key keeps its `files:write` rule.
-	await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-restore-scope-owner" }));
-	vi.advanceTimersByTime(60_000);
-	const key = await f.asOwner.mutation(api.public_api.api_credential_create, {
-		serviceAccountId: null,
-		membershipId: f.db.membershipId,
-		name: "Restore key",
-		scopes: ["files:list", "files:write"],
-	});
-	if (key._nay) throw new Error(key._nay.message);
-	const trashed = await folder(f, "/restore-me");
-	const archived = await archive(f, [trashed]);
-	expect(archived._nay).toBeUndefined();
-	if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
-	expect((await post(f, key._yay.credential, "restore", body)).status, "a key with files:write still restores").toBe(
-		200,
-	);
-});
-
 test("a restricted child stays locked inside a selected folder", async () => {
 	const f = await fixture();
 	const p = await plugin(f);
@@ -946,20 +849,37 @@ describe("files_nodes_db_restore_named_nodes", () => {
 		});
 	}
 
-	test("a folder choice restores every item of a multi-step job", async () => {
+	test("Keep both renames a chosen folder, and every item inside still comes back", async () => {
 		const f = await fixture();
 		const p = await restorer(f);
-		const chosen = await folder(f, "/chosen");
+		const chosen = await folder_with_files(f, "/chosen");
 		await select(f, p.pairId, chosen, false, "write");
-		const big = await folder_with_files(f, "/chosen/big");
-		await to_trash(f, [big]);
+		await to_trash(f, [chosen]);
+		await folder(f, "/chosen");
 
-		const restored = await restore_as(f, p, [big]);
+		const restored = await restore_as(f, p, [chosen]);
 		expect(restored.refusals).toEqual([]);
 		const ended = await run_to_end(f, restored.jobs[0]!);
-		expect(await count_restored(f, "/chosen/big/"), "restores every item of a multi-step job").toBe(41);
 		expect(ended.steps, "the job runs more than one step").toBeGreaterThan(1);
-		expect(ended.activity.status).toBe("succeeded");
+		expect((await read_node(f, chosen)).treePath).toBe("/chosen-2/");
+		expect(ended.activity.status, "items with the old path are checked in the renamed folder").toBe("succeeded");
+		expect(await count_restored(f, "/chosen-2/")).toBe(41);
+	});
+
+	test("a chosen folder does not reach another deleted folder with its own path", async () => {
+		const f = await fixture();
+		const p = await restorer(f);
+		const older = await folder(f, "/notes");
+		await to_trash(f, [older]);
+		const chosen = await folder(f, "/notes");
+		await select(f, p.pairId, chosen, false, "write");
+
+		const restored = await restore_as(f, p, [older]);
+		expect(restored.jobs).toEqual([]);
+		expect(restored.refusals, "the older folder is not inside the chosen one").toEqual([
+			expect.objectContaining({ nay: expect.objectContaining({ message: "Permission denied" }) }),
+		]);
+		expect((await read_node(f, older)).archiveOperationId).not.toBeNull();
 	});
 
 	test("a later job checks each item against the plugin's choices at that step", async () => {
@@ -1268,6 +1188,106 @@ describe("files/restore for a plugin run", () => {
 			(run) => run.kind === "restore",
 		);
 	}
+
+	test("a run gets the Restore scope only with Restore consent", async () => {
+		const f = await fixture();
+		const body = { paths: ["/restore-me"], requestId: "scope-matrix" };
+		const accept = (p: Awaited<ReturnType<typeof plugin>>, capabilities: plugins_Capability[]) =>
+			f.t.run(async (ctx) => {
+				await ctx.db.patch("plugins_workspace_installations", p.installationId, { acceptedCapabilities: capabilities });
+				await ctx.db.patch("plugins_event_runs", p.runId, { acceptedCapabilities: capabilities });
+			});
+
+		const withRestore = await plugin(f);
+		await accept(withRestore, ["workspace.files.read", "workspace.files.write", "workspace.files.restore"]);
+		expect(
+			await post(f, withRestore.runToken, "restore", body),
+			"a run with Restore consent passes the scope checks",
+		).toMatchObject({
+			status: 200,
+			// The run chose no files, so its pair cannot open the path.
+			body: { jobIds: [], refused: [{ path: "/restore-me", message: "Permission denied" }] },
+		});
+		expect(await calls_of(f, withRestore.runId), "the plugin answer closes its call").toEqual([
+			expect.objectContaining({ status: "succeeded", responseStatus: 200 }),
+		]);
+		expect((await post(f, withRestore.token, "restore", body)).status, "plugin pages cannot restore").toBe(403);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", withRestore.installationId, {
+				acceptedCapabilities: ["workspace.files.read", "workspace.files.write"],
+			}),
+		);
+		expect(
+			await post(f, withRestore.runToken, "restore", body),
+			"the installation must accept Restore too",
+		).toMatchObject({
+			status: 403,
+			body: { message: "Permission denied" },
+		});
+
+		// An upload run gets `files:write` for its sibling outputs. That scope must not open Restore.
+		const uploader = await plugin(f);
+		const sourceId = await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				createdBy: f.db.userId,
+				updatedBy: f.db.userId,
+				parentId: "root",
+				kind: "file",
+				name: "source.md",
+				sortName: "source.md",
+				path: "/source.md",
+				treePath: "/source.md",
+				pathDepth: 1,
+			}),
+		);
+		await f.t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", uploader.runId, { event: "files.upload.completed", fileNodeId: sourceId }),
+		);
+		expect(
+			await post(f, uploader.runToken, "restore", body),
+			"an upload run's files:write does not restore",
+		).toMatchObject({ status: 403, body: { message: "Permission denied" } });
+
+		const scheduled = await plugin(f, { scheduled: true });
+		await accept(scheduled, [
+			"workspace.files.read",
+			"workspace.files.write",
+			"workspace.files.restore",
+			"plugin.schedule.run",
+		]);
+		expect(
+			await post(f, scheduled.runToken, "restore", body),
+			"a scheduled run cannot restore even with Restore consent",
+		).toMatchObject({ status: 403, body: { message: "Scheduled plugin runs cannot use Trash yet." } });
+
+		for (const runId of [withRestore.runId, uploader.runId, scheduled.runId]) {
+			expect(
+				(await calls_of(f, runId)).every((call) => call.status !== "started"),
+				"every Restore call is settled",
+			).toBe(true);
+		}
+
+		// A key keeps its `files:write` rule.
+		await f.t.run((ctx) => ctx.db.patch("users", f.db.userId, { clerkUserId: "clerk-restore-scope-owner" }));
+		vi.advanceTimersByTime(60_000);
+		const key = await f.asOwner.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: f.db.membershipId,
+			name: "Restore key",
+			scopes: ["files:list", "files:write"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const trashed = await folder(f, "/restore-me");
+		const archived = await archive(f, [trashed]);
+		expect(archived._nay).toBeUndefined();
+		if (archived._yay) expect((await run_to_end(f, archived._yay)).activity.status).toBe("succeeded");
+		expect((await post(f, key._yay.credential, "restore", body)).status, "a key with files:write still restores").toBe(
+			200,
+		);
+	});
 
 	test("a run with Restore restores an unlabelled item and closes its call", async () => {
 		const f = await fixture();

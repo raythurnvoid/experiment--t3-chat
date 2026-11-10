@@ -251,8 +251,9 @@ needs `workspace.files.manage-read-only`.
 Each restore job keeps the plugin's pins in `files_archive_runs.plugin`: installation,
 file pair, plugin version, service account and `capabilitiesAcceptedAt`. Every step checks
 them before it writes (`db_get_plugin_write_context` in `files_archive_runs.ts`). The job
-stops with "The plugin that started this job was updated or removed, or it lost access to
-these files." when:
+stops when the list below happens. The person's Activity then says "The plugin that started
+this job was updated or removed, or it lost access to these files." The plugin reads only
+the code `stopped` with its fixed message through `files/jobs/get`. The stop happens when:
 
 - the installation is removed, disabled, upgraded, or accepts its capabilities again;
 - its service account changes;

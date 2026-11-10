@@ -497,14 +497,26 @@ async function db_check_writable_nodes(
 	args: StepArgs & {
 		ctx: MutationCtx;
 		nodes: readonly Doc<"files_nodes">[];
+		/**
+		 * The active folder a Restore brings `nodes` back into. A Keep both may have renamed it, so the
+		 * Trash path of an item inside it is out of date, and a plugin's choices match by path. An item
+		 * with the folder's scopes gets the folder's access when it lands, so check the folder for it.
+		 */
+		landing?: Doc<"files_nodes">;
 	},
 ) {
-	const { ctx, nodes } = args;
+	const { ctx, nodes, landing } = args;
 
 	const membership = args.membership;
 	if (!membership) return MEMBERSHIP_LOST;
 
 	for (const node of nodes) {
+		const accessNode =
+			landing &&
+			landing.restrictedScopeNodeId === node.restrictedScopeNodeId &&
+			landing.extendedScopeNodeId === node.extendedScopeNodeId
+				? landing
+				: node;
 		// Added people change access inside a scope, so the key is the pair. A plugin pair has access per
 		// chosen item, so it keeps no answer per scope. Its checker keeps the answers per item.
 		const scopeKey = args.fileChecker ? null : `${node.restrictedScopeNodeId ?? ""}:${node.extendedScopeNodeId ?? ""}`;
@@ -515,7 +527,7 @@ async function db_check_writable_nodes(
 				workspaceId: membership.workspaceId,
 				writeContext: args.writeContext,
 				membership,
-				node,
+				node: accessNode,
 				permission: "content.write",
 				checker: args.fileChecker,
 			});
@@ -2245,6 +2257,38 @@ async function db_restore_top(
 }
 
 /**
+ * List one item that an API key's or a plugin's restore renamed with Keep both, or left in the Trash
+ * with Skip (`newPath` null). `path` is the path the item had in the Trash. The app asks the person at
+ * each clash, so its jobs list nothing. A plugin's row keeps the node id, so its job reader can check
+ * the plugin's current access before it shows either path.
+ */
+async function db_insert_clash_outcome(
+	args: StepArgs & { ctx: MutationCtx; node: Doc<"files_nodes">; newPath: string | null },
+) {
+	const { ctx, run, progress, node } = args;
+
+	const order = progress.completed + progress.skipped;
+	if (run.plugin !== undefined) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order,
+			kind: "plugin_restore",
+			nodeId: node._id,
+			path: node.path,
+			newPath: args.newPath,
+		});
+	} else if (run.credentialId !== undefined) {
+		await ctx.db.insert("files_archive_run_items", {
+			runId: args.runId,
+			order,
+			kind: "restore",
+			path: node.path,
+			newPath: args.newPath,
+		});
+	}
+}
+
+/**
  * Bring back one item of the operation into `landing`, or into the workspace root when it is null.
  * An active item with the same name there pauses the job until the person chooses. This holds for a
  * top item and for an item inside a restored folder.
@@ -2426,38 +2470,6 @@ async function db_land_node(
 	args.writeState.isWritten = true;
 	progress.completed += 1;
 	return null;
-}
-
-/**
- * List one item that an API key's or a plugin's restore renamed with Keep both, or left in the Trash
- * with Skip (`newPath` null). `path` is the path the item had in the Trash. The app asks the person at
- * each clash, so its jobs list nothing. A plugin's row keeps the node id, so its job reader can check
- * the plugin's current access before it shows either path.
- */
-async function db_insert_clash_outcome(
-	args: StepArgs & { ctx: MutationCtx; node: Doc<"files_nodes">; newPath: string | null },
-) {
-	const { ctx, run, progress, node } = args;
-
-	const order = progress.completed + progress.skipped;
-	if (run.plugin !== undefined) {
-		await ctx.db.insert("files_archive_run_items", {
-			runId: args.runId,
-			order,
-			kind: "plugin_restore",
-			nodeId: node._id,
-			path: node.path,
-			newPath: args.newPath,
-		});
-	} else if (run.credentialId !== undefined) {
-		await ctx.db.insert("files_archive_run_items", {
-			runId: args.runId,
-			order,
-			kind: "restore",
-			path: node.path,
-			newPath: args.newPath,
-		});
-	}
 }
 
 /**
@@ -2671,7 +2683,12 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 				// The run may finish a folder it just restored with the same read-only decision. A later
 				// decision or changed location ends that receipt. Access is checked every time.
 				const refusal =
-					(await db_check_writable_nodes({ ctx, ...args, nodes: [child] })) ??
+					(await db_check_writable_nodes({
+						ctx,
+						...args,
+						nodes: [child],
+						landing: folder.archiveOperationId === null ? folder : undefined,
+					})) ??
 					(folder.archiveOperationId === null
 						? await db_check_restore_folder({
 								ctx,
@@ -2749,9 +2766,9 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
  *
  * First finish the repair the apply still owes. The apply gives a folder its new path or scope, then
  * walks the items inside it in later steps. So when the job stops, the queue can still hold folders
- * whose items keep the old path and scope. No app flow has shown this yet. This repair is a safeguard,
- * so a stopped job never leaves wrong paths behind. It only fixes paths, scopes and Trash entries.
- * It brings back nothing more and keeps every delete stamp.
+ * whose items keep the old path and scope. This happens when a Stop, a refusal, a lost key, plugin or
+ * membership, or a timeout comes between a folder's own step and the walk of its items. The repair only
+ * fixes paths, scopes and Trash entries. It brings back nothing more and keeps every delete stamp.
  *
  * Then read each selected root's items with the same index the apply uses, one native page per step.
  * The walk changes nothing else, so it needs no membership.
@@ -3418,7 +3435,7 @@ export async function files_archive_runs_db_start(
 	const force = args.force ?? false;
 	// A plugin job checks its pins now, like every later step does. For a forced job this also asks for
 	// Read-only management in the installation's current capabilities.
-	const plugin =
+	const pluginCheck =
 		args.plugin &&
 		(args.pluginCheck ??
 			(await files_archive_runs_db_check_plugin_pins(ctx, {
@@ -3427,10 +3444,10 @@ export async function files_archive_runs_db_start(
 				plugin: args.plugin,
 				force,
 			})));
-	if (plugin?.isLost) return Result({ _nay: { message: "Permission denied" } });
+	if (pluginCheck?.isLost) return Result({ _nay: { message: "Permission denied" } });
 	if (
 		force &&
-		!plugin &&
+		!pluginCheck &&
 		(args.credentialId === null ||
 			!(await public_api_credentials_db_is_live(ctx, {
 				credentialId: args.credentialId,
@@ -3575,17 +3592,17 @@ export async function files_archive_runs_db_start(
 		progress,
 		userAuth: args.userAuth,
 		writeContext:
-			plugin?.writeContext ??
+			pluginCheck?.writeContext ??
 			(await public_api_credentials_db_get_write_context(ctx, {
 				credentialId: args.credentialId,
 				userId: args.userAuth.id,
 				force,
 			})),
-		fileChecker: plugin
+		fileChecker: pluginCheck
 			? access_control_create_file_checker(ctx, {
 					organizationId: run.organizationId,
 					workspaceId: run.workspaceId,
-					subject: plugin.writeContext.subject,
+					subject: pluginCheck.writeContext.subject,
 				})
 			: null,
 		membership: args.membership,
@@ -3899,7 +3916,7 @@ export async function files_archive_runs_db_advance(
 		}));
 	// A plugin's Restore job checks its pins at every step, before it writes anything. When a pin fails,
 	// it stops like a lost key, and it never acts as the person.
-	const plugin =
+	const pluginCheck =
 		storedRun.plugin &&
 		(await db_get_plugin_write_context(ctx, {
 			run: storedRun,
@@ -3916,21 +3933,21 @@ export async function files_archive_runs_db_advance(
 		// When the key is lost, the step gets no membership, so no check runs. So read the key only while
 		// it is live. A data purge may have deleted it.
 		writeContext:
-			plugin?.writeContext ??
+			pluginCheck?.writeContext ??
 			(await public_api_credentials_db_get_write_context(ctx, {
 				credentialId: isApiKeyLost ? null : (storedRun.credentialId ?? null),
 				userId: storedRun.userId,
 				force: !isApiKeyLost && storedRun.force,
 			})),
 		fileChecker:
-			plugin && !plugin.isLost
+			pluginCheck && !pluginCheck.isLost
 				? access_control_create_file_checker(ctx, {
 						organizationId: storedRun.organizationId,
 						workspaceId: storedRun.workspaceId,
-						subject: plugin.writeContext.subject,
+						subject: pluginCheck.writeContext.subject,
 					})
 				: null,
-		membership: isApiKeyLost || plugin?.isLost ? null : membership,
+		membership: isApiKeyLost || pluginCheck?.isLost ? null : membership,
 		now: args.now,
 		budget: {
 			nodes: files_archive_runs_STEP_MAX_NODES,
@@ -3948,7 +3965,7 @@ export async function files_archive_runs_db_advance(
 			? stepOutcome
 			: isApiKeyLost
 				? API_KEY_LOST
-				: plugin?.isLost
+				: pluginCheck?.isLost
 					? PLUGIN_LOST
 					: stepOutcome;
 

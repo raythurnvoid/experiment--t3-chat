@@ -1299,7 +1299,13 @@ export function access_control_create_file_checker(
 	 * An item in Trash is matched by its path too, like Dropbox matches deleted files. Trash can hold
 	 * several items with the same path, from different deletes, and a choice reaches all of them. A Move
 	 * or a Restore that is still running gives an item its new path when it reaches it. Until then the
-	 * item keeps the access of its old path, like the scope jobs.
+	 * item keeps the access of its old path, like the scope jobs. A Restore checks an item inside a
+	 * folder it already brought back against that folder, because Keep both may have renamed it
+	 * (`db_check_writable_nodes` in `files_archive_runs.ts`).
+	 *
+	 * A chosen folder reaches only the items inside its path. Another item with the folder's own path,
+	 * such as an older folder of the same name in Trash, is not inside it. Without this rule a choice on
+	 * a top folder would let a plugin restore that other folder at the workspace root, where it has no Edit.
 	 *
 	 * While Trash stamps a big folder, its children that are not stamped yet are still live. If the
 	 * chosen folder itself goes to Trash, those children get no access through it. A chosen folder
@@ -1324,7 +1330,8 @@ export function access_control_create_file_checker(
 				// A chosen folder in Trash reaches only items in Trash, never a new live item at its old path.
 				(root.archiveOperationId === null || full.archiveOperationId !== null) &&
 				// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
-				(root._id === node._id || (root.kind === "folder" && full.treePath.startsWith(root.treePath))) &&
+				(root._id === node._id ||
+					(root.kind === "folder" && full.treePath !== root.treePath && full.treePath.startsWith(root.treePath))) &&
 				root.restrictedScopeNodeId === node.restrictedScopeNodeId &&
 				(consent.appliedLevel === "write" || (permission === "content.read" && consent.appliedLevel === "read"))
 			) {

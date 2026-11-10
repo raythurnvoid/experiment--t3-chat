@@ -138,6 +138,8 @@ function placement_header(node: Doc<"files_nodes">) {
 		moveCohortId: _moveCohortId,
 		scopeOpId: _scopeOpId,
 		purgeRunId: _purgeRunId,
+		// Old docs still hold this field until its migration runs. Drop this line with the schema field.
+		archiveTopNodeId: _archiveTopNodeId,
 		...header
 	} = node;
 	return header;
@@ -154,11 +156,15 @@ function placement_header_from_place(place: Doc<"files_saved_places">) {
 		organizationId: _org,
 		workspaceId: _workspace,
 		contentId: _content,
+		// Old docs still hold this field until its migration runs. Drop this line and the one below with the
+		// schema field.
+		archiveTopNodeId: _archiveTopNodeId,
 		...header
 	} = place;
 	// Explicit optional fields clear values from the other view.
 	return {
 		...header,
+		archiveTopNodeId: undefined,
 		archivedPathLength: place.archivedPathLength,
 		archivedPath: place.archivedPath,
 		parentScopeNodeId: place.parentScopeNodeId,

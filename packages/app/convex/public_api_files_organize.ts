@@ -1846,12 +1846,13 @@ const restore_failure_validator = z.object({
 });
 
 /**
- * The error code that a plugin run's call keeps for each refusal status of `files/restore`.
+ * The error code that a plugin's call keeps for each refusal status of `files/restore` and `files/jobs/get`.
  */
-const RESTORE_ERROR_CODES = {
+const ERROR_CODE_BY_STATUS = {
 	400: "invalid_input",
 	401: "unauthenticated",
 	403: "permission_denied",
+	404: "not_found",
 	409: "conflict",
 	429: "rate_limited",
 } as const;
@@ -1952,7 +1953,7 @@ export const restore_items = internalMutation({
 		let writeContext: files_nodes_WriteContext;
 		// A plugin run: the pins its jobs keep, and its own copy of the force check, which only a new
 		// job needs. Null for a key.
-		let plugin: {
+		let pluginRestore: {
 			pins: NonNullable<Doc<"files_archive_runs">["plugin"]>;
 			canForce: boolean;
 		} | null = null;
@@ -2017,7 +2018,7 @@ export const restore_items = internalMutation({
 				resourceScope: { kind: "workspace" },
 				force: args.force === true,
 			};
-			plugin = {
+			pluginRestore = {
 				pins: {
 					installationId: installation._id,
 					filePairId: subject.pairId,
@@ -2068,7 +2069,7 @@ export const restore_items = internalMutation({
 		}
 		// Guests have no Trash, like on the plugin Trash doors. Check it once, not for each item.
 		if (
-			plugin &&
+			pluginRestore &&
 			(
 				await access_control_db_authorize_membership(ctx, {
 					userAuth: { id: args.userId },
@@ -2087,8 +2088,8 @@ export const restore_items = internalMutation({
 		const requestId =
 			args.requestId === null
 				? null
-				: plugin
-					? `plugin:${plugin.pins.installationId}:${plugin.pins.filePairId}:${args.requestId}`
+				: pluginRestore
+					? `plugin:${pluginRestore.pins.installationId}:${pluginRestore.pins.filePairId}:${args.requestId}`
 					: `api:${credentialId}:${args.requestId}`;
 		// Only opting into force changes the request identity. A paths request hashes the bare paths list,
 		// and a nodes request adds a "nodes" tag, so the two can never share a hash.
@@ -2127,14 +2128,14 @@ export const restore_items = internalMutation({
 				isDone: activities.every((activity) => !activity || !activities_is_active(activity.status)),
 				// A retry starts no work, so it needs no check of force, targets or landing. A plugin sees again
 				// only the paths it may read now.
-				refused: plugin
+				refused: pluginRestore
 					? await db_render_plugin_restore_refusals(ctx, { ...args, refused: previous.apiRequest.refused, checker })
 					: previous.apiRequest.refused,
 			};
 		}
 		// A forced plugin restore needs Read-only management on the run and the installation. Only new work
 		// checks it, so an old forced request still answers its retry after an upgrade took the capability.
-		if (plugin && args.force === true && !plugin.canForce) {
+		if (pluginRestore && args.force === true && !pluginRestore.canForce) {
 			throw fail({ message: "Permission denied", status: 403 });
 		}
 
@@ -2159,7 +2160,7 @@ export const restore_items = internalMutation({
 			const selectors = selectorsByOperationId.get(node.archiveOperationId!) ?? [];
 			selectorsByOperationId.set(node.archiveOperationId!, [...selectors, selector]);
 		};
-		const notFoundMessage = plugin ? files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash : "Not found";
+		const notFoundMessage = pluginRestore ? files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash : "Not found";
 		for (const path of args.paths) {
 			// Two reads are enough to tell one archived item from several.
 			const archived = await ctx.db
@@ -2210,7 +2211,7 @@ export const restore_items = internalMutation({
 
 			// Per node, like Restore in the app. An archived node keeps the restricted scope it had.
 			const node = archived[0]!;
-			const selector: Selector = plugin ? { nodeId: node._id, path } : { path };
+			const selector: Selector = pluginRestore ? { nodeId: node._id, path } : { path };
 			if (
 				!(await files_write_policy_db_has_write_context_permission(ctx, {
 					...args,
@@ -2219,7 +2220,7 @@ export const restore_items = internalMutation({
 					node,
 					permission: "content.write",
 					// A pair has access per chosen item, so its checks share the answer's checker.
-					checker: plugin ? checker : null,
+					checker: pluginRestore ? checker : null,
 				}))
 			) {
 				refused.push({ ...selector, message: "Permission denied" });
@@ -2241,7 +2242,7 @@ export const restore_items = internalMutation({
 				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
 				continue;
 			}
-			const path = plugin ? null : node.path;
+			const path = pluginRestore ? null : node.path;
 			// The item was restored, or restored and deleted again, since the caller listed it. Never restore
 			// another delete than the one the caller saw.
 			if (node.archiveOperationId !== selector.archiveOperationId) {
@@ -2259,7 +2260,7 @@ export const restore_items = internalMutation({
 					membership,
 					node,
 					permission: "content.write",
-					checker: plugin ? checker : null,
+					checker: pluginRestore ? checker : null,
 				}))
 			) {
 				refused.push({ nodeId: selector.nodeId, path, message: "Permission denied" });
@@ -2276,7 +2277,7 @@ export const restore_items = internalMutation({
 			membership,
 			nodes,
 			credentialId,
-			plugin: plugin?.pins,
+			plugin: pluginRestore?.pins,
 			force: args.force === true,
 			// Nobody can answer a question for an API job, so the choice is made up front.
 			applyToRemaining: { file: args.onConflict, folder: args.onConflict },
@@ -2592,7 +2593,7 @@ export async function public_api_files_organize_http_restore(args: {
 			callId: pluginCallId,
 			status: "failed",
 			responseStatus: response.status,
-			errorCode: RESTORE_ERROR_CODES[response.status],
+			errorCode: ERROR_CODE_BY_STATUS[response.status],
 			errorMessage: response.body.message,
 		});
 	}
@@ -3503,16 +3504,6 @@ const plugin_jobs_get_body_validator = z
 	})
 	.strict();
 
-/**
- * The error code that a plugin run's call keeps for each refusal status of `files/jobs/get`.
- */
-const PLUGIN_JOBS_GET_ERROR_CODES = {
-	400: "invalid_input",
-	401: "unauthenticated",
-	403: "permission_denied",
-	404: "not_found",
-} as const;
-
 export async function public_api_files_organize_http_jobs_get(args: {
 	ctx: ActionCtx;
 	request: Request;
@@ -3618,8 +3609,7 @@ export async function public_api_files_organize_http_jobs_get(args: {
 				callId: pluginCallId,
 				status: "failed",
 				responseStatus: response.status,
-				errorCode:
-					"errorCode" in response.body ? response.body.errorCode : PLUGIN_JOBS_GET_ERROR_CODES[response.status],
+				errorCode: "errorCode" in response.body ? response.body.errorCode : ERROR_CODE_BY_STATUS[response.status],
 				errorMessage: response.body.message,
 			});
 		}

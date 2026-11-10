@@ -539,7 +539,7 @@ const files_saved_placement_fields = {
 	archivedPathLength: v.optional(v.number()),
 	// Same as the `files_nodes` field.
 	archivedPath: v.optional(v.string()),
-	// Same as the `files_nodes` field. A Move copies a node's fields here, so keep it until the migration ends.
+	// Same as the `files_nodes` field. Old saved places may hold it until the migration ends.
 	archiveTopNodeId: v.optional(v.id("files_nodes")),
 	restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 	isRestrictedScopeRoot: v.boolean(),
@@ -5322,9 +5322,8 @@ const app_convex_schema = defineSchema({
 		 */
 		archivedPath: v.optional(v.string()),
 		/**
-		 * Being removed. No code sets it, but a Move still copies it from an old doc into
-		 * `files_saved_places`. Old docs keep it until the `run_remove_archive_top_node_id` migration ends.
-		 * Then delete this field.
+		 * Being removed. No code sets it, and a Move no longer copies it. Old docs keep it until the
+		 * `run_remove_files_nodes_archive_top_node_id` migration ends. Then delete this field.
 		 */
 		archiveTopNodeId: v.optional(v.id("files_nodes")),
 		/**

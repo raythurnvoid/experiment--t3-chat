@@ -206,9 +206,8 @@ export async function read_state(f: Fixture) {
 /**
  * The rules the job must keep after every step: each side doc says the same as its node unless the
  * node's saved scope job still runs, no active node sits inside an archived folder, and no two
- * active nodes share a folder and a name. An archive
- * stamps a folder before its children, so while an archive op runs, its folders may still hold active
- * children.
+ * active nodes share a folder and a name. An archive stamps a folder before its children, so while an
+ * archive op runs, its folders may still hold active children.
  */
 export async function expect_consistent(f: Fixture) {
 	const state = await read_state(f);

@@ -207,16 +207,23 @@ A selected folder matches by path, for live items and for items in Trash
 (`pair_choice_allows` in `access_control.ts`). Live paths are unique: creates and Restores
 keep them unique while a Trash or Move job is halfway (see "Trash and Restore" in the
 `files-read-only` skill). A selected folder in Trash gives no live item access, so a new
-item created at its old path stays locked.
+item created at its old path stays locked while it is live. Once that item goes to Trash, the
+selection reaches it like any Trash item at that path.
 
 An item in Trash keeps its path, and a selected folder reaches it when the folder's
-`treePath` starts the item's `treePath`, in the same restricted area. The folder can be
+`treePath` starts the item's `treePath`, in the same restricted area. The item must be inside
+the folder: another item with the folder's own path, such as an older folder of the same name
+in Trash, is not reached. Otherwise a selected top folder would let a plugin restore that
+other folder at the workspace root, where the plugin has no Edit. The folder can be
 live or in Trash. Trash can hold several items with the same path from different deletes,
 and a selection reaches all of them, like Dropbox matches deleted files by path. Matching by
 path reads only the pair's few choices, so a check costs the same for a deep tree as for a flat
 one, and a running Restore locks nothing. A Move or a Restore that is still running gives an
 item its new path when it reaches it. Until then the item keeps the access of its old path,
-like the scope jobs ("One simple rule beats an exact patch" in `CLAUDE.md`).
+like the scope jobs ("One simple rule beats an exact patch" in `CLAUDE.md`). One exception:
+a Restore checks an item inside a folder it already brought back against that folder, when
+both have the same scopes. Keep both may have renamed the folder, so the item's old path
+would match nothing (`db_check_writable_nodes` in `files_archive_runs.ts`).
 
 Design principle (decided 2026-11-10): plugin access to Trash follows paths, and Restore is
 an ordinary file operation. Do not track the "real" folders of a Trash item for access
