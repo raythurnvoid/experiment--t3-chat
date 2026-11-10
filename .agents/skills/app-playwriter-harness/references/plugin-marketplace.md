@@ -581,6 +581,22 @@ job's read names the item that stayed in the Trash ("This item is still in the T
 shows only while the plugin can still read the item. A Whole workspace Can view choice is enough,
 so remove that choice too when you check that names are hidden.
 
+When the installation was updated to 0.5.1 while the job waited (step 5), the job failed with
+errorCode `stopped`. Sending the same request id again from 0.5.1 returns the same job, already done.
+
+### Refuse a plugin Restore for a member
+
+The owner passes every check, so a refusal needs a second person: `qa.perm.member` in a scratch
+browser ([second-user-fixtures.md](second-user-fixtures.md)). Use `/restore-refusal-qa` (qa-data).
+
+- A file choice cannot be higher than the person's own level. With a read share, picking Can edit
+  fails with "You cannot edit X. Ask for Can edit access first." So raise the share to write, let the
+  member pick Can edit, then lower the share to read.
+- After the share drops to read, the member's applied choice drops by itself to `Current: Can view`.
+  The member's plugin Restore then answers "Permission denied" and makes no job.
+- Control: raise the share to write again. The same Restore succeeds. Remove the member's test
+  choices and set the share back to read after.
+
 ## Page agent tools fixture (Gmail 0.3.5 Mail page)
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the

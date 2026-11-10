@@ -37,7 +37,7 @@ means look but do not change anything.
 | Workspace | Reached by | Policy | Use it for |
 | --- | --- | --- | --- |
 | `chitchat-qa/xfer-qa-0914` | QA Edge profile (owner) | reuse | Files UI, editors, copy and move, tree, many files, deep folders, shares. The main place for new Files test data. Gallery is installed (2026-10-22). |
-| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.4.5 is installed here with its `fixture` MCP server and `mcp-echo` skill, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe`. |
+| `chitchat-qa/copy-qa-0922` | QA Edge profile | reuse | Copy checks, plugin Restore checks. Almost empty. MCP and plugin-skill checks: Data Probe 0.5.1 is installed here (2026-11-10; 0.5.0 is also published) with its `fixture` MCP server, `mcp-echo` skill and Restore page, so every chat here gets the fixture tools. The `chitchat-qa` plugin policy allows `data-probe` 0.5.1. `qa.perm.member` is a member since 2026-11-10. |
 | `chitchat-qa/metadata-qa-0906` | QA Edge profile | reuse | Metadata checks. Chitchat 0.8.14 and Council installed (2026-11-06). |
 | `chitchat-qa/home` | QA Edge profile; `qa.perm.member` is a member | reuse | Chitchat 0.8.15 and its transcript files (2026-11-06). Its plan has no file uploads (seen 2026-10-18). Agent chat has credits; `qa.perm.member` cannot restrict here, only the owner can. Empty GitHub Sources service account `rd7tqp8qb5vkfa0jvnp8kgjj398fbctd` remains without grants after both test uninstalls. Reinstall needs permission to manage this account. |
 | `qa-browser/home` | Former `qa.perm.owner` workspace | retired | Erased in the 2026-10-28 cleanup. Do not use its old files, grants, channels or plugin setup. |
@@ -58,7 +58,7 @@ Installed plugin source trees live in `GLOBAL`/`PLUGINS`. Plugin-owned Mounts be
 | (not written here) | The owner's main account. The QA Edge profile is signed in as it. | Never sign it out. |
 | `m575qvj9kyabtdn9jef1dgw0js8ck2dq` | `qa.perm.owner` | Account and default home preserved. Former `qa-browser` owner; that workspace was erased. |
 | `m572b1a4snqa1en3qqp1gfwwnn8cjxya` | `qa.perm.admin` | Personal org only. |
-| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home` and `xfer-qa-0914`. Read current roles, grants and credits before a check. It had no billing row, so agent chat failed with "Insufficient funds". On 2026-10-31 it got 1,000 Free credits through `billing:apply_polar_customer_state_refresh` (test customer `cus_qa_perm_member`). |
+| `m57f7hajv2kgw3rxfnv9z4bagh8ckq06` | `qa.perm.member` | Owns kept `qa-tmp-share/home`. Member of kept `chitchat-qa/home`, `xfer-qa-0914` and `copy-qa-0922`. Read current roles, grants and credits before a check. It had no billing row, so agent chat failed with "Insufficient funds". On 2026-10-31 it got 1,000 Free credits through `billing:apply_polar_customer_state_refresh` (test customer `cus_qa_perm_member`). |
 | `m572qhnpq7xw34askfcy6w97h18ck1f8` | `qa.perm.viewer` | Member of kept `chitchat-qa/home`. Read its current role; the account name does not define it. |
 | `m570f2kgg8jq3qka7snprkpeks8cme94` | `ray-test-1+clerk_test@gmail.com` (2026-08-17) | Member of kept `chitchat-qa/home`. Read current billing and membership before agent chat checks (see `clerk-test-accounts.md`). |
 | `m5754ckhv5yrt02vjf1dt2v4hd8cjsy4` | `import-qa-member` | Deleted: its `users` doc has `deletedAt` (seen 2026-10-21). |
@@ -86,7 +86,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Small Files permission check | Retired: `qa-browser/home:/qa-search-0905`. No kept fixture is claimed to have the same grants. |
 | Markdown, collaboration off | `personal/home:/qa/qa-noncollab/notes.md`, `chitchat-qa/xfer-qa-0914:/u23p/my-file.md` (and the rest of `/u23p`) |
 | Long Markdown (scrolling) | `chitchat-qa/home:/qa-long-scroll.md` (about 50 KB, one 49,000-character paragraph of repeated filler words, so it is not realistic prose for token counts). Read-only 97 KB files: `chitchat-qa/home:/chitchat-ad04c6c85ea7daf62a10960d/qa-rollover-1012299.md` |
-| Markdown with frontmatter | `personal/home:/frontmatter-demo.md` |
+| Markdown with frontmatter | `personal/home:/frontmatter-demo.md` (missing since 2026-10-31, see the change log). Over the old 128-field cap: `chitchat-qa/xfer-qa-0914:/press-api-upload-qa/qa-frontmatter-overcap.md` (`v97e7n6n9fcbf9468m86jwg8p58hy4fa`, 129 fields; all 131 field paths are indexed, 262 metadata docs, checked 2026-11-10). |
 | Markdown over 128 KB | `personal/home:/emails/qa-mail-big-email-2026-10-19.md` (220,514 bytes uploaded, 2026-10-19). An email-shaped file for the Mail page reader (Gmail plugin); it ends with `END-OF-BIG-EMAIL-MARKER`. Reuse it for any whole-file read over 128 KB. |
 | Medium Markdown with sections | `personal/home:/activity-ui-fixture.md` (about 1 KB) |
 | Empty Markdown | `personal/home:/demo/mv-src.md`, `/demo/mv-target.md`, `/demo/cp-target.md` |
@@ -137,6 +137,8 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Deep path (22 levels) | `chitchat-qa/xfer-qa-0914:/g4-u15/d01/…/d20/keeper.txt` |
 | Restore path boundary                    | Retired: all ten folders under `chitchat-qa/home:/restore-path-boundary` were erased in the 2026-11-01 Trash cleanup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Public API restore (`files/restore`)     | Retired: `chitchat-qa/copy-qa-0922:/restore-qa-1021` and its three Markdown files were erased in the 2026-11-01 Trash cleanup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Plugin Restore (Data Probe Restore page) | `chitchat-qa/copy-qa-0922`. `/restore-plugin-qa-2` with folders `sub`, `sub-2`, `sub-3`, `sub-4`; its files `a.md`, `b.md` and `c.md` are in Trash, ready to restore. `/restore-plugin-qa` is an empty folder for name clashes. `/restore-same-path-qa` has folder `X` live and a same-path folder `Y` in Trash. Restore lands at the Trash path, so put a clash folder inside a folder the plugin may edit. Recipe: "Restore fixture plugin" in `plugin-marketplace.md`. |
+| Plugin Restore refusal for a member | `chitchat-qa/copy-qa-0922:/restore-refusal-qa` (`v975j0jzsscrcndgmr6zbt9qt98hz7hh`, restricted) holds `r.md` (`v97b6bktp8nzfy8jkk1gd4t6858hymfb`, live). `qa.perm.member` has a read share on the folder, so its plugin Restore there is refused with "Permission denied". Raise the share to write for the control run, then set it back to read. |
 | Public API Copy and Move | Retired: `f5-repro-org/home:/release-move-check.md` was erased. Pick a small kept source below and read its current state. |
 | Many small subfolders | `chitchat-qa/xfer-qa-0914:/u55/c0` … `c22`, each with `sibling.md` |
 | Deep folder with a Read-only item inside | `chitchat-qa/xfer-qa-0914:/g4-u15` (22 levels, 21 items, `keeper.txt` at `/g4-u15/d01/…/d20/keeper.txt`). For `rm -r` and Move to Trash refusal checks, set Read-only on `keeper.txt` with `files_nodes.read_only_set`, run the check, then clear the flag. The flag is off at rest (checked 2026-11-01). For the rename refusal ("Its folder is read-only"), set the flag on the parent folder `d20` (`v978xmkt9yjbjmmvp2nacprq0h8echv8`) instead and clear it after; also off at rest (checked 2026-11-01). Never Accept a delete of `/g4-u15`. Reuse the chat `QA rm read-only refusal names` (`n1702gm87va5nkq5mwxmt6y0rx8hc650`). |
@@ -182,7 +184,9 @@ Personal file consent was checked on 2026-11-06 in these QA installations:
   are unchanged. Metadata QA Chitchat has Whole workspace Edit and a ready empty
   page; no channel or dataset was created.
 - Copy QA Data Probe has Whole workspace View. Its JSON 200 check passed without
-  writing a file. Its weekly schedule and Run as me grant are unchanged.
+  writing a file. Its weekly schedule and Run as me grant are unchanged. Since
+  2026-11-10 the owner also gave it Edit on `/a.md`, `/restore-same-path-qa` and
+  `/restore-plugin-qa-2` for the Restore checks. Keep them.
 
 ### Repo files for uploads
 
@@ -266,6 +270,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-10: plugin Restore checks in `chitchat-qa/copy-qa-0922` added the Restore folders above, published Data Probe 0.5.0 and 0.5.1 and installed 0.5.1, and added `qa.perm.member` as a member. The member's test file choices were removed. In `chitchat-qa/xfer-qa-0914` the frontmatter index check uploaded `/press-api-upload-qa/qa-frontmatter-overcap.md` (129 fields, all indexed), and `/g4-many` was moved to `/g4-dst` and back. No new tenant or user.
 - 2026-11-08: the plugin Trash check (recipe in `plugin-gallery.md`) ran as `qa.perm.member` in `chitchat-qa/xfer-qa-0914`. It made the empty folders `/b2-live/a/sub`, `/b2-live/b/sub` and `/b2-live/a/new`, and left all of them in Trash. Both Gallery choices it saved are ended. No upload, tenant or user.
 - 2026-11-08: `path_busy` checks as `qa.perm.member` in `chitchat-qa/xfer-qa-0914` moved `/u55` to Trash twice and restored it each time, with the same ids (recipe in `files.md`). The member key `trash path busy qa` (`files:write`) was created and revoked (verify 401). No new file, tenant or user.
 - 2026-11-01: approved Trash cleanup for the new top-item index erased all 7,732 old Trash items across six workspaces. Full readback found zero Trash items. All 84,325 prior active items kept the same saved fields. No tenant or user was created or erased.
