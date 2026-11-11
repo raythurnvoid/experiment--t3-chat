@@ -867,16 +867,16 @@ product decision, so record the answer here before changing the behaviour. An en
   — so refusing them the folder would mean "you may empty the room but not close the door". Moving to Trash
   discloses nothing and changes nobody's read set. Leaving a restricted scope is the separate
   question, and `content.permissions.manage` guards that in Move and `unarchive_nodes`.
-  Recovery is real, not theoretical: `list_tree_children` with `archived: true` lists a folder's
-  trashed children, `access_control_db_filter_readable_file_nodes` lets the owner read everything,
-  and the sidebar has a "Show items in Trash" toggle whose rows carry a Restore action. Known property, not a bug: while
-  the folder sits in Trash nobody can open its share dialog, so restore it first to manage
-  sharing.
+  The separate Trash view lists recoverable entries through `list_trash_entries` and offers
+  Restore. Normal tree and shared-item lists show live items only. A readable Trash item still
+  opens as a preview. Its scope pointers stay frozen; see
+  [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore).
 - **Decided: Delete permanently needs `content.permissions.manage`.** Moving to Trash can be undone, so it
   stays at `content.write`. A permanent delete cannot, so it needs manage: on the workspace for the
   open part, or on the restricted folder the item sits in (or is). OpenViking asks for manage too.
   The job checks it again for each node, and keeps a node the person can no longer manage. A guest
-  with an explicit Can manage share can delete inside that folder. See `../data-deletion/SKILL.md`.
+  with an explicit Can manage share passes this node check. Guests have no Trash list or its menu
+  actions, even for shared items. See `../data-deletion/SKILL.md`.
 - **Removing a member drains direct grants in bounded passes.** `remove_user_from_organization`
   deletes the first indexed batch and writes `pendingOrganizationRemoval: true` while making the
   member's memberships inactive when more grants remain. A scheduled continuation drains the rest
@@ -1024,7 +1024,8 @@ index; its page shape can show only that some unreadable file matches, never whi
 shared with them. The workspace root is locked for them: Bash `ls /`, `ls -R /`, `find /` (also with
 `-name`), `tree /` and API `files/list` of `/` (also `recursive`) say "Permission denied" (403), so
 they reach a shared item by its exact path. The UI root page shows nothing for them, including with
-a custom-field filter; they use "Shared with you". The UI search box still searches from the root
+a custom-field filter; they use "Shared with you". Deleted shares leave that list. Guests get no
+Trash in the app or API; a readable old link still opens a preview. The UI search box searches from the root
 and finds only what they can open. Their
 agent can `cp` and `mv`: each item checks read on its source and write on its destination. Chat, the agent's file tools
 and the public API file routes need only the active membership; each file door checks the node.

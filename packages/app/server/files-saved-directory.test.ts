@@ -41,7 +41,9 @@ function read_directory(
 	const common = { membershipId: f.db.membershipId, kind: "file" as const, ...args };
 	if (door === "tree")
 		return f.asUser.query(api.files_tree.list_tree_children, {
-			...common, archived: false, restricted: false, pageView: common.pageView as files_DirectoryView | undefined,
+			...common,
+			restricted: false,
+			pageView: common.pageView as files_DirectoryView | undefined,
 		});
 	const sorted = {
 		...common,
@@ -65,7 +67,6 @@ describe("saved directory streams", () => {
 			stream: "normal",
 			parentId: "root",
 			kind: "file",
-			archived: false,
 			restricted: false,
 			paginationOpts: { cursor: null, numItems: 1 },
 		});

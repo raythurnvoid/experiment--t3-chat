@@ -70,7 +70,6 @@ function set_root_files() {
 				membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
 				folderId: "root" as app_convex_Id<"files_nodes">,
 				kind,
-				archived: false,
 				stream,
 			});
 			results.set(watch_key(children, { ...streamArgs.children(false), paginationOpts: { cursor: null } }), {
@@ -87,7 +86,6 @@ function set_root_files() {
 			results.set(
 				watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 					membershipId: MEMBERSHIP_ID,
-					archived: false,
 					principalIndex,
 					savedStream: { kind: "normal", generation: 0 },
 					paginationOpts: { cursor: null },

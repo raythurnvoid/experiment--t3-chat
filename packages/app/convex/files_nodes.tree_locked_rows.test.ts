@@ -53,7 +53,6 @@ function read_tree(
 		membershipId: member.membershipId,
 		parentId: args.parentId ?? seeded.parentId,
 		kind: args.kind,
-		archived: false,
 		restricted: args.restricted,
 		paginationOpts: { numItems: args.numItems ?? 50, cursor: args.cursor ?? null },
 	});
@@ -303,7 +302,6 @@ describe("locked rows in folder lists", () => {
 				membershipId: guest.membershipId,
 				parentId: "root",
 				kind: "folder",
-				archived: false,
 				restricted: true,
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
@@ -334,7 +332,6 @@ describe("locked rows in folder lists", () => {
 					membershipId: guest.membershipId,
 					parentId: seeded.parentId,
 					kind: "file",
-					archived: false,
 					restricted: false,
 					paginationOpts: { numItems, cursor: null },
 				});
@@ -396,7 +393,6 @@ describe("locked rows in folder lists", () => {
 						membershipId: f.admin.membershipId,
 						parentId: f.nodes.openId,
 						kind: "folder",
-						archived: false,
 						restricted: true,
 						paginationOpts: { numItems, cursor: null },
 					});
@@ -453,7 +449,6 @@ describe("locked rows in folder lists", () => {
 					membershipId: member.membershipId,
 					parentId: deepestId,
 					kind: "file",
-					archived: false,
 					restricted,
 					paginationOpts: { numItems: 50, cursor: null },
 				});
@@ -529,7 +524,6 @@ describe("locked rows in folder lists", () => {
 					membershipId: f.admin.membershipId,
 					parentId: folderId,
 					kind: "folder",
-					archived: false,
 					restricted: false,
 					paginationOpts: { numItems, cursor: null },
 				});
@@ -585,7 +579,6 @@ describe("locked rows in folder lists", () => {
 					membershipId: member.membershipId,
 					parentId: parent._id,
 					kind: "file",
-					archived: false,
 					restricted: false,
 					paginationOpts: { numItems: 200, cursor },
 				});

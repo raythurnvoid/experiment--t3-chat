@@ -547,7 +547,6 @@ describe("saved placement foundation", () => {
 			stream: "normal",
 			parentId: "root",
 			kind: "file",
-			archived: false,
 			restricted: false,
 		} as const;
 		const search = await f.asUser.query(api.files_nodes.search_saved, {

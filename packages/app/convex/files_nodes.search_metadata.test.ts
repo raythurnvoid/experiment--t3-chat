@@ -2833,22 +2833,16 @@ describe("list_tree_children_sorted", () => {
 	test("the table and the tree fail loudly on a stale restricted scope root flag", async () => {
 		const { t, db, asOwner, parentId, insert_child, read_page } = await seed_folder_table();
 		const nodeId = await insert_child({ name: "stale", kind: "folder", updatedAt: 1 });
-		const archivedId = await insert_child({ name: "stale-archived", kind: "folder", updatedAt: 1 });
 		// A direct patch skips the writer that keeps the flag in step.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
-			await ctx.db.patch("files_nodes", archivedId, {
-				archiveOperationId: "archive-operation-stale",
-				restrictedScopeNodeId: archivedId,
-			});
 		});
-		const read_tree = (archived: boolean) =>
+		const read_tree = () =>
 			asOwner.query(api.files_tree.list_tree_children, {
 				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
-				archived,
 				restricted: false,
 				paginationOpts: { numItems: 10, cursor: null },
 			});
@@ -2860,8 +2854,7 @@ describe("list_tree_children_sorted", () => {
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
 		).rejects.toThrow("files_nodes tree stream row scope is mismatched");
-		await expect(read_tree(false)).rejects.toThrow("files_nodes tree stream row scope is mismatched");
-		await expect(read_tree(true)).rejects.toThrow("files_nodes tree stream row scope is mismatched");
+		await expect(read_tree()).rejects.toThrow("files_nodes tree stream row scope is mismatched");
 	});
 
 	test("a metadata sort leaves out rows whose field docs still wait for the node's new scope", async () => {

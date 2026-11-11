@@ -89,14 +89,6 @@ function create_stream(
 				: db.query("files_nodes").withIndex("by_org_ws_parent_archive_kind_ext_name", (q) =>
 						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
 					),
-		by_parent_kind_restricted_archive_sort_name: (range: (q: SavedRange<["parentId", "kind", "isRestrictedScopeRoot", "archiveOperationId", "sortName", "name"]>) => IndexRange) =>
-			fixedView
-				? db.query("files_saved_places").withIndex("by_view_parent_kind_restricted_archive_sort_name", (q) =>
-						range(q.eq("cohortId", fixedView.cohortId).eq("view", fixedView.view)),
-					)
-				: db.query("files_nodes").withIndex("by_org_ws_parent_kind_restricted_archive_sortName_name", (q) =>
-						range(q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)),
-					),
 		by_parent_archive_restricted_kind_sort_name: (range: (q: SavedRange<["parentId", "archiveOperationId", "isRestrictedScopeRoot", "kind", "sortName", "name"]>) => IndexRange) =>
 			fixedView
 				? db.query("files_saved_places").withIndex("by_view_parent_archive_restricted_kind_sort_name", (q) =>

@@ -57,17 +57,15 @@ function children_key(args: {
 	parentId: string;
 	kind: "folder" | "file";
 	cursor: string | null;
-	archived?: boolean;
 	restricted?: boolean;
 	stream?: "normal" | "cohort";
 	pageView?: files_DirectoryView;
 }) {
-	const { archived = false, cursor, kind, parentId, restricted = false } = args;
+	const { cursor, kind, parentId, restricted = false } = args;
 	const streamArgs = files_tree_stream_args({
 		membershipId: "membership_1" as app_convex_Id<"organizations_workspaces_users">,
 		folderId: parentId as app_convex_Id<"files_nodes">,
 		kind,
-		archived,
 		stream: args.stream ?? "normal",
 	});
 
@@ -88,12 +86,15 @@ function receive_empty_twins(parentId: string) {
 	}
 }
 
-function shared_roots_key(args: { principalIndex: 0 | 1 | 2; archived?: boolean; cursor?: string | null; savedStream?: files_SavedStream }) {
-	const { archived = false, cursor = null, principalIndex } = args;
+function shared_roots_key(args: {
+	principalIndex: 0 | 1 | 2;
+	cursor?: string | null;
+	savedStream?: files_SavedStream;
+}) {
+	const { cursor = null, principalIndex } = args;
 
 	return watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 		membershipId: "membership_1",
-		archived,
 		principalIndex,
 		savedStream: args.savedStream ?? { kind: "normal", generation: 0 },
 		paginationOpts: { cursor },
@@ -124,10 +125,9 @@ function locked_row(id: string, parentId = "root") {
 	return { ...row(id, parentId), locked: true };
 }
 
-function FoldersConsumer(props: { folderIds: string[]; archived?: boolean; pinnedNodeIds?: string[] }) {
+function FoldersConsumer(props: { folderIds: string[]; pinnedNodeIds?: string[] }) {
 	const folders = FilesTreeProvider.useFolders({
 		folderIds: props.folderIds as app_convex_Id<"files_nodes">[],
-		archived: props.archived ?? false,
 		pinnedNodeIds: props.pinnedNodeIds ?? [],
 	});
 	return (
@@ -214,8 +214,12 @@ describe("FilesTreeProvider.useFolders", () => {
 		results.delete(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }));
 		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
 		const key = watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children), {
-			membershipId: "membership_1", parentId: "root", kind: "folder", archived: false, restricted: false,
-			stream: "normal", paginationOpts: { cursor: null },
+			membershipId: "membership_1",
+			parentId: "root",
+			kind: "folder",
+			restricted: false,
+			stream: "normal",
+			paginationOpts: { cursor: null },
 		});
 		expect(listeners.get(key)?.size, "directory pages do not wait for the workspace Move view").toBe(1);
 	});
@@ -552,36 +556,30 @@ describe("FilesTreeProvider.useFolders", () => {
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
 	});
 
-	test("merges archived rows by archive operation, then by name", () => {
+	test("keeps a Trash preview pin without loading extra folder or shared streams", () => {
 		render(
 			<TestWorkspace membershipId="membership_1">
-				<FoldersConsumer folderIds={[]} archived />
+				<FoldersConsumer folderIds={[]} pinnedNodeIds={["gone.md"]} />
 			</TestWorkspace>,
 		);
-		for (const archived of [false, true]) {
-			for (const kind of ["folder", "file"] as const) {
-				if (!(archived && kind === "file")) {
-					receive(children_key({ parentId: "root", kind, cursor: null, archived, restricted: true }), EMPTY_PAGE);
-					receive(children_key({ parentId: "root", kind, cursor: null, archived }), EMPTY_PAGE);
-				}
+		for (const kind of ["folder", "file"] as const) {
+			for (const restricted of [false, true]) {
+				receive(children_key({ parentId: "root", kind, cursor: null, restricted }), EMPTY_PAGE);
 			}
 		}
-		const archived_row = (id: string, archiveOperationId: string) => ({ ...row(id), archiveOperationId });
-		receive(children_key({ parentId: "root", kind: "file", cursor: null, archived: true }), {
-			page: [archived_row("z.md", "op-1"), archived_row("a.md", "op-2")],
-			isDone: true,
-			continueCursor: "",
+		receive(ancestors_key("gone.md"), {
+			node: { ...row("gone.md"), archiveOperationId: "old-delete" },
+			ancestors: [],
 		});
-		receive(children_key({ parentId: "root", kind: "file", cursor: null, archived: true, restricted: true }), {
-			page: [
-				{ ...locked_row("m.md"), archiveOperationId: "op-1" },
-				{ ...locked_row("b.md"), archiveOperationId: "op-2" },
-			],
-			isDone: true,
-			continueCursor: "",
-		});
-
-		expect(screen.getByLabelText("Rows").textContent).toBe("m.md,z.md,a.md,b.md");
+		expect(screen.getByLabelText("Rows").textContent, "the preview keeps its selected Trash node").toBe("gone.md");
+		const listQueries = subscriptions.filter(
+			({ name }) => name === "files_tree:list_tree_children" || name === "files_tree:list_tree_shared_roots",
+		);
+		expect(listQueries, "a preview uses eight live tree streams and three shared streams").toHaveLength(11);
+		expect(
+			listQueries.some(({ args }) => "archived" in args),
+			"list requests have no mixed Trash mode",
+		).toBe(false);
 	});
 
 	test("keeps the Shared with you rows while Convex splits one of their pages", () => {
@@ -611,7 +609,7 @@ describe("FilesTreeProvider.useFolders", () => {
 	test("a Shared with you update keeps the tree rows, so the tree does not rebuild", () => {
 		const rowsByRender: unknown[] = [];
 		function RowsConsumer() {
-			const folders = FilesTreeProvider.useFolders({ folderIds: [], archived: false, pinnedNodeIds: [] });
+			const folders = FilesTreeProvider.useFolders({ folderIds: [], pinnedNodeIds: [] });
 			rowsByRender.push(folders.rows);
 			return <output aria-label="Shared">{folders.sharedRoots.rows.map((node) => node._id).join(",")}</output>;
 		}
@@ -688,25 +686,5 @@ describe("FilesTreeProvider.useFolders", () => {
 			1,
 		);
 		expect(listeners.get(shared_roots_key({ principalIndex: 0 }))?.size).toBe(1);
-	});
-
-	test("adds the archived pagers only while archived rows are shown", () => {
-		const view = render(
-			<TestWorkspace membershipId="membership_1">
-				<FoldersConsumer folderIds={[]} />
-			</TestWorkspace>,
-		);
-		expect(listeners.has(children_key({ parentId: "root", kind: "folder", cursor: null, archived: true }))).toBe(false);
-		expect(listeners.has(shared_roots_key({ principalIndex: 0, archived: true }))).toBe(false);
-
-		view.rerender(
-			<TestWorkspace membershipId="membership_1">
-				<FoldersConsumer folderIds={[]} archived />
-			</TestWorkspace>,
-		);
-		expect(listeners.get(children_key({ parentId: "root", kind: "folder", cursor: null, archived: true }))?.size).toBe(
-			1,
-		);
-		expect(listeners.get(shared_roots_key({ principalIndex: 0, archived: true }))?.size).toBe(1);
 	});
 });

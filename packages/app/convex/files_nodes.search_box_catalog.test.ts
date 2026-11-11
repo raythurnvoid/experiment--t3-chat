@@ -422,7 +422,6 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 			parentId: files_ROOT_ID,
 			kind: "folder",
-			archived: false,
 			restricted: false,
 			paginationOpts: { numItems: 50, cursor: null },
 		});

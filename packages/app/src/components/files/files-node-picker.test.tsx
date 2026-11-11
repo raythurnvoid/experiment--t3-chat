@@ -105,7 +105,6 @@ function set_folder(args: {
 				membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
 				folderId: parentId as app_convex_Id<"files_nodes">,
 				kind,
-				archived: false,
 				stream,
 			});
 			const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
@@ -149,7 +148,6 @@ function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
 		results.set(
 			watch_key(getFunctionName(app_convex_api.files_tree.list_tree_shared_roots), {
 				membershipId: MEMBERSHIP_ID,
-				archived: false,
 				principalIndex,
 				savedStream: NORMAL_STREAM,
 				paginationOpts: { cursor: null },
@@ -627,7 +625,6 @@ describe("FilesNodePicker", () => {
 			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
 			folderId: "root",
 			kind: "file",
-			archived: false,
 			stream: "normal",
 		});
 		const refillKey = watch_key(children, {
@@ -705,7 +702,9 @@ describe("FilesNodePicker", () => {
 		const children = getFunctionName(app_convex_api.files_tree.list_tree_children);
 		const normalArgs = files_tree_stream_args({
 			membershipId: MEMBERSHIP_ID as app_convex_Id<"organizations_workspaces_users">,
-			folderId: "root", kind: "file", archived: false, stream: "normal",
+			folderId: "root",
+			kind: "file",
+			stream: "normal",
 		}).children(false);
 		const cohortArgs = { ...normalArgs, stream: "cohort" };
 		const oldNextKey = watch_key(children, { ...normalArgs, pageView: null, paginationOpts: { cursor: "next" } });

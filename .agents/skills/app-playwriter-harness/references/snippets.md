@@ -753,14 +753,14 @@ the root.
 Rows are saved nodes only, never drafts. Each open row has `_id`, `kind`, `name`, `path`, `parentId`,
 `archiveOperationId`, `restrictedScopeNodeId`, `contentType`, `canWrite`, `writeBlockedReason`, and
 `readOnly`. The internal decision id is not public. This field change is a source contract pending
-native QA. Pass `archived: [false, true]` to get trashed nodes too. Each folder costs about 8 calls,
-so start at the smallest folder that holds your fixture. A big walk takes longer than 5 s, so start
-it in one call and read it in later calls:
+native QA. This walk reads live nodes only. Use the Trash view for deleted entries.
+Each folder costs about 8 calls, so start at the smallest folder that holds your fixture.
+A big walk takes longer than 5 s, so start it in one call and read it in later calls:
 
 ```js
 // Call 1: start the walk and park it on `window`. It returns at once.
 await state.page.evaluate(
-	({ membershipId, startId, archived }) => {
+	({ membershipId, startId }) => {
 		window.__qaTreeWalk = (async () => {
 			const { app_convex, app_convex_api: api } = await import("/src/lib/app-convex-client.ts");
 			// Read every page of one stream. Only `isDone` ends it: a page can be empty.
@@ -787,32 +787,36 @@ await state.page.evaluate(
 				}
 			};
 			if (startId === "root") {
-				for (const a of archived) {
+				const view = await app_convex.query(api.files_tree.get_workspace_move_view, { membershipId });
+				if (!view) throw new Error("Cannot read this workspace");
+				const savedStreams = [{ kind: "normal", generation: view.generation }];
+				if (view.cohortId !== null && view.view !== null) {
+					savedStreams.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
+				}
+				for (const savedStream of savedStreams) {
 					for (const principalIndex of [0, 1, 2]) {
-						add(await readAll(api.files_tree.list_tree_shared_roots, { membershipId, archived: a, principalIndex }));
+						add(await readAll(api.files_tree.list_tree_shared_roots, { membershipId, savedStream, principalIndex }));
 					}
 				}
 			}
 			while (folders.length > 0) {
 				const parentId = folders.shift();
 				for (const kind of ["folder", "file"]) {
-					for (const a of archived) {
-						const args = { membershipId, parentId, kind, archived: a };
-						const pages = await Promise.all(
-							["normal", "cohort"].flatMap((stream) =>
-								[false, true].map((restricted) =>
-									readAll(api.files_tree.list_tree_children, { ...args, stream, restricted }),
-								),
+					const args = { membershipId, parentId, kind };
+					const pages = await Promise.all(
+						["normal", "cohort"].flatMap((stream) =>
+							[false, true].map((restricted) =>
+								readAll(api.files_tree.list_tree_children, { ...args, stream, restricted }),
 							),
-						);
-						add(pages.flat());
-					}
+						),
+					);
+					add(pages.flat());
 				}
 			}
 			return [...byId.values()];
 		})();
 	},
-	{ membershipId: "<membershipId>", startId: "root", archived: [false] },
+	{ membershipId: "<membershipId>", startId: "root" },
 );
 
 // Call 2 (and later): wait up to 4 s. `null` means the walk is still running.

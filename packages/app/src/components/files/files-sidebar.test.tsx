@@ -392,7 +392,6 @@ describe("FilesSidebar", () => {
 				restrictedScopeNodeId: "secret" as app_convex_Id<"files_nodes">,
 				name: "secret",
 				parentId: "hidden" as app_convex_Id<"files_nodes">,
-				archiveOperationId: "archive-1",
 			},
 		];
 		const onPrimaryAction = vi.fn();
@@ -404,11 +403,7 @@ describe("FilesSidebar", () => {
 		const rows = within(group).getAllByRole("button");
 		expect(rows.map((row) => row.getAttribute("data-shared-row-id"))).toEqual(["shared:bravo", "shared:secret"]);
 		expect(rows[0]!.getAttribute("aria-current")).toBe("page");
-		// Named like a tree row, so the "Archived" text does not run into the name.
-		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
-			"bravo restricted",
-			"secret restricted in Trash",
-		]);
+		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["bravo restricted", "secret restricted"]);
 		expect(view.getAllByRole("treeitem", { name: "bravo" })).toHaveLength(1);
 		fireEvent.click(rows[1]!);
 		expect(onPrimaryAction).toHaveBeenCalledWith("secret", "folder");
@@ -495,9 +490,8 @@ describe("FilesSidebar", () => {
 		expect(menu.contains(document.activeElement)).toBe(true);
 	});
 
-	test("Show more focuses the first new active row when archived shares show below", async () => {
-		const archivedShare = { ...share("a1"), archiveOperationId: "archive-1" };
-		treeState.sharedRoots = [share("s1"), archivedShare];
+	test("Show more focuses a new share that sorts before the rows already shown", async () => {
+		treeState.sharedRoots = [share("s2"), share("s3")];
 		treeState.sharedRootsStatus = "more";
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
@@ -506,9 +500,8 @@ describe("FilesSidebar", () => {
 
 		showMore.focus();
 		fireEvent.click(showMore);
-		// The provider lists the active shares first, so the new active row comes before the archived one.
-		set_shared_roots([share("s1"), share("s2"), archivedShare], "done");
-		await waitFor(() => expect(document.activeElement?.getAttribute("data-shared-row-id")).toBe("shared:s2"));
+		set_shared_roots([share("s1"), share("s2"), share("s3")], "done");
+		await waitFor(() => expect(document.activeElement?.getAttribute("data-shared-row-id")).toBe("shared:s1"));
 	});
 
 	test("shows the Shared with you group with only Show more while its loaded pages hold no row", async () => {
@@ -916,28 +909,20 @@ describe("FilesSidebar", () => {
 		);
 	});
 
-	test("does not paste into a focused archived folder", async () => {
+	test("removes a deleted row from Files even while its preview is selected", async () => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
-		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
-		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
-		fireEvent.click(showArchived);
-		fireEvent.keyDown(showArchived, { key: "Escape" });
-		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
-		fireEvent.click(await view.findByRole("button", { name: "More actions for bravo" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
-		await waitFor(() => expect(view.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "alpha" });
 		act(() => {
 			treeState.nodes = treeState.nodes.map((node) =>
 				node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
 			);
 			for (const listener of treeState.listeners) listener();
 		});
-		view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
-		const alpha = await view.findByRole("treeitem", { name: "alpha in Trash" });
-		await waitFor(() => expect(alpha.hasAttribute("data-focused")).toBe(true));
-		fireEvent.keyDown(alpha, { key: "v", code: "KeyV", ctrlKey: true });
-		fireEvent.keyUp(alpha, { key: "v", code: "KeyV", ctrlKey: true });
+		await waitFor(() =>
+			expect(view.queryByRole("treeitem", { name: /^alpha/ }), "Files hides the deleted selected row").toBeNull(),
+		);
+		expect(view.getByRole("treeitem", { name: "bravo" })).toBeTruthy();
 		expect(createNode).not.toHaveBeenCalled();
 	});
 
@@ -1039,56 +1024,65 @@ describe("FilesSidebar", () => {
 		expect(createNode).not.toHaveBeenCalled();
 	});
 
-	test("a locked archived row has no Restore", async () => {
+	test.each(["Back", "Escape"])("opens Trash without a mixed view and returns focus with %s", async (exit) => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
+		);
+		const onPrimaryAction = vi.fn();
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" onPrimaryAction={onPrimaryAction} />);
+		await view.findByRole("treeitem", { name: "bravo" });
+		fireEvent.click(view.getByRole("button", { name: "More options" }));
+		await view.findByRole("menuitem", { name: "Open Trash" });
+		expect(
+			view.queryByRole("menuitemcheckbox", { name: "Show items in Trash" }),
+			"Files has no mixed Trash toggle",
+		).toBeNull();
+		fireEvent.click(view.getByRole("menuitem", { name: "Open Trash" }));
+		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+		const trash = await view.findByRole("region", { name: "Trash" });
+		expect(view.queryByRole("tree", { name: "Files" })).toBeNull();
+		fireEvent.click(within(trash).getByRole("button", { name: "alpha in /" }));
+		expect(onPrimaryAction).toHaveBeenCalledWith("alpha", "folder");
+		const back = within(trash).getByRole("button", { name: "Back to files" });
+		act(() => back.focus());
+		if (exit === "Back") fireEvent.click(back);
+		else fireEvent.keyDown(back, { key: "Escape", code: "Escape" });
+		await waitFor(() => expect(view.queryByRole("region", { name: "Trash" })).toBeNull());
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(document.activeElement, "Leaving Trash returns focus to Files").toBe(bravo));
+		expect(view.queryByRole("treeitem", { name: /^alpha/ })).toBeNull();
+	});
+
+	test("keeps pinned and locked Trash rows out of Files", async () => {
 		treeState.nodes = [...treeState.nodes, locked_node("old", "qa-archive")];
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
+		);
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
-		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
-		fireEvent.click(showArchived);
-		fireEvent.keyDown(showArchived, { key: "Escape" });
-		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
-
-		fireEvent.contextMenu(await view.findByRole("treeitem", { name: "old in Trash, you don't have access" }));
-		await view.findByRole("menuitem", { name: "Copy path" });
-		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
-		expect(view.queryByRole("menuitem", { name: "Restore" })).toBeNull();
+		await view.findByRole("treeitem", { name: "bravo" });
+		expect.soft(view.queryByRole("treeitem", { name: /^alpha/ }), "Files hides its pinned Trash preview").toBeNull();
+		expect.soft(view.queryByRole("treeitem", { name: /^old/ }), "Files hides locked Trash rows").toBeNull();
 	});
 
 	test.each([
-		{ surface: "tree", reason: "read_only", allowed: true },
-		{ surface: "tree", reason: "permission", allowed: false },
-		{ surface: "shared", reason: "read_only", allowed: true },
-		{ surface: "shared", reason: "permission", allowed: false },
-		{ surface: "trash", reason: "read_only", allowed: true },
-	] as const)("Restore in the $surface menu keeps $reason", async ({ surface, reason, allowed }) => {
+		{ reason: "read_only", allowed: true },
+		{ reason: "permission", allowed: false },
+	] as const)("Restore in Trash keeps $reason", async ({ reason, allowed }) => {
 		createNode.mockResolvedValue({ _yay: null });
 		treeState.nodes = treeState.nodes.map((node) =>
 			node._id === "alpha"
 				? { ...node, archiveOperationId: "qa-archive", readOnly: true, canWrite: false, writeBlockedReason: reason }
 				: node,
 		);
-		if (surface === "shared") treeState.sharedRoots = [share("secret")];
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		if (surface === "trash") {
-			fireEvent.click(await view.findByRole("menuitem", { name: "Open Trash" }));
-		} else {
-			const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
-			fireEvent.click(showArchived);
-			fireEvent.keyDown(showArchived, { key: "Escape" });
-		}
+		fireEvent.click(await view.findByRole("menuitem", { name: "Open Trash" }));
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
 
-		const row =
-			surface === "trash"
-				? await view.findByRole("button", { name: "alpha in /" })
-				: surface === "tree"
-					? await view.findByRole("treeitem", { name: "alpha, Read-only in Trash" })
-					: within(view.getByRole("region", { name: "Shared with you" })).getByRole("button", {
-							name: "secret restricted, Read-only in Trash",
-						});
+		const row = await view.findByRole("button", { name: "alpha in /" });
 		fireEvent.contextMenu(row);
 		const restore = await view.findByRole("menuitem", { name: /^Restore/ });
 		expect(restore.matches("[aria-disabled='true']")).toBe(!allowed);
@@ -1097,7 +1091,7 @@ describe("FilesSidebar", () => {
 			await waitFor(() =>
 				expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.unarchive_nodes, {
 					membershipId: "membership",
-					nodeIds: [surface === "shared" ? "secret" : "alpha"],
+					nodeIds: ["alpha"],
 				}),
 			);
 		} else {
@@ -1109,22 +1103,16 @@ describe("FilesSidebar", () => {
 		const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		createNode.mockRejectedValue(new Error("Read too much data"));
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
+		);
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
 		fireEvent.click(await view.findByRole("button", { name: "More options" }));
-		const showArchived = await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" });
-		fireEvent.click(showArchived);
-		fireEvent.keyDown(showArchived, { key: "Escape" });
+		fireEvent.click(await view.findByRole("menuitem", { name: "Open Trash" }));
 		await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
-		act(() => {
-			treeState.nodes = treeState.nodes.map((node) =>
-				node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
-			);
-			for (const listener of treeState.listeners) listener();
-		});
-		await view.findByRole("treeitem", { name: "alpha in Trash" });
-		fireEvent.click(view.getByRole("button", { name: "More actions for alpha in Trash" }));
-		fireEvent.click(await view.findByRole("menuitem", { name: "Restore" }));
+		fireEvent.click(await view.findByRole("button", { name: "More actions for alpha" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Restore/ }));
 
 		await waitFor(() =>
 			expect(createNode).toHaveBeenCalledWith(app_convex_api.files_nodes.unarchive_nodes, {

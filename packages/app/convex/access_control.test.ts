@@ -196,7 +196,7 @@ async function access_control_test_read_tree_child_ids(
 		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 	},
 ) {
-	const stream = { ...args, archived: false, paginationOpts: { numItems: 50, cursor: null } };
+	const stream = { ...args, paginationOpts: { numItems: 50, cursor: null } };
 	const pages = await Promise.all(
 		(["folder", "file"] as const).flatMap((kind) =>
 			[false, true].map((restricted) => as.query(api.files_tree.list_tree_children, { stream: "normal" as const, ...stream, kind, restricted }),
@@ -211,7 +211,6 @@ async function access_control_test_read_tree_child_ids(
 					([0, 1, 2] as const).map((principalIndex) =>
 						as.query(api.files_tree.list_tree_shared_roots, {
 							membershipId: args.membershipId,
-							archived: false,
 							principalIndex,
 							paginationOpts: stream.paginationOpts,
 						}),

@@ -704,7 +704,6 @@ describe("AiChatComposer", () => {
 				membershipId: "membership-1",
 				parentId: "root",
 				kind: "file",
-				archived: false,
 				restricted: false,
 				stream: "normal",
 			},

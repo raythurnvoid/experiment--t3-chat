@@ -287,7 +287,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 describe("list_tree_children", () => {
 	const REFUSED = { page: [], isDone: true, continueCursor: "", directoryView: null };
 
-	test("pages folders then files in the folder table name order, capped at 200 per page", async () => {
+	test("pages live folders then files without their Trash siblings", async () => {
 		const t = test_convex();
 		const fileNames = Array.from(
 			{ length: 450 },
@@ -302,6 +302,16 @@ describe("list_tree_children", () => {
 			await Promise.all(
 				fileNames.map((name) => insert_tree_node({ ctx, owner, parentId: bigId, path: `/big/${name}`, kind: "file" })),
 			);
+			for (const name of fileNames) {
+				await insert_tree_node({
+					ctx,
+					owner,
+					parentId: bigId,
+					path: `/big/old-${name}`,
+					kind: "file",
+					archiveOperationId: "old-delete",
+				});
+			}
 			return { ...owner, bigId };
 		});
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -312,7 +322,6 @@ describe("list_tree_children", () => {
 				membershipId: db.membershipId,
 				parentId: db.bigId,
 				kind,
-				archived: false,
 				restricted: false,
 				paginationOpts: { numItems: 1000, cursor },
 			});
@@ -330,79 +339,31 @@ describe("list_tree_children", () => {
 
 		const names = [...first.page, ...second.page, ...third.page].map((row) => row.name);
 		// Every name has its own key here, so the key alone gives the order.
-		expect(names).toEqual([...fileNames].sort((a, b) => (files_sort_text_key(a) < files_sort_text_key(b) ? -1 : 1)));
+		expect(names, "all live files page once; Trash siblings never enter the tree").toEqual(
+			[...fileNames].sort((a, b) => (files_sort_text_key(a) < files_sort_text_key(b) ? -1 : 1)),
+		);
 		expect(new Set(names).size).toBe(450);
 	});
 
-	test("archived mode returns only archived children of the requested kind", async () => {
+	test("lists live children of the requested kind and leaves Trash out", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
-		const list = (kind: "folder" | "file", archived: boolean) =>
+		const list = (kind: "folder" | "file") =>
 			f.asOwner.query(api.files_tree.list_tree_children, {
 				stream: "normal" as const,
 				membershipId: f.owner.membershipId,
 				parentId: f.nodes.openId,
 				kind,
-				archived,
 				restricted: false,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
 
-		const [activeFiles, activeFolders, archivedFiles, archivedFolders] = await Promise.all([
-			list("file", false),
-			list("folder", false),
-			list("file", true),
-			list("folder", true),
-		]);
+		const [activeFiles, activeFolders] = await Promise.all([list("file"), list("folder")]);
 		expect(activeFiles.page.map((row) => row._id)).toEqual([f.nodes.openFileId]);
 		expect(activeFolders.page.map((row) => row._id)).toEqual([f.nodes.openSubId]);
-		expect(archivedFiles.page.map((row) => row._id)).toEqual([f.nodes.archivedFileId]);
-		expect(archivedFolders.page.map((row) => row._id)).toEqual([f.nodes.archivedFolderId]);
 		// Decision ids stay on the server.
 		expect(activeFiles.page[0]).toMatchObject({ canWrite: true, writeBlockedReason: null, readOnly: false });
 		expect("readOnlyDecisionId" in activeFiles.page[0]).toBe(false);
-	});
-
-	test("archived mode does not read the archived children of the other kind", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const owner = await test_mocks_fill_db_with.membership(ctx);
-			const binId = await insert_tree_node({ ctx, owner, parentId: files_ROOT_ID, path: "/bin", kind: "folder" });
-			// One archive operation, so "file" sorts before "folder" inside it.
-			for (let index = 0; index < 1001; index++)
-				await insert_tree_node({
-					ctx,
-					owner,
-					parentId: binId,
-					path: `/bin/f${index}.md`,
-					kind: "file",
-					archiveOperationId: "op",
-				});
-			const folderId = await insert_tree_node({
-				ctx,
-				owner,
-				parentId: binId,
-				path: "/bin/old",
-				kind: "folder",
-				archiveOperationId: "op",
-			});
-			return { ...owner, binId, folderId };
-		});
-
-		const folders = await t
-			.withIdentity({ issuer: "https://clerk.test", external_id: db.userId })
-			.query(api.files_tree.list_tree_children, {
-				stream: "normal" as const,
-				membershipId: db.membershipId,
-				parentId: db.binId,
-				kind: "folder",
-				archived: true,
-				restricted: false,
-				paginationOpts: { numItems: 50, cursor: null },
-			});
-
-		expect(folders.page.map((row) => row._id)).toEqual([db.folderId]);
-		expect(folders.isDone).toBe(true);
 	});
 
 	test("a folder whose only child is restricted shows it locked to a member and open to the owner", async () => {
@@ -414,7 +375,6 @@ describe("list_tree_children", () => {
 				membershipId,
 				parentId: f.nodes.boxId,
 				kind: "folder",
-				archived: false,
 				restricted,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
@@ -431,24 +391,22 @@ describe("list_tree_children", () => {
 		expect(ownerPage.page.map((row) => [row._id, row.locked])).toEqual([[f.nodes.boxSecretId, false]]);
 	});
 
-	test("the owner reads an archived restricted child in the archived restricted twin only", async () => {
+	test("leaves an archived restricted child out of both live streams", async () => {
 		const { t, db, asOwner, parentId, insert_child } = await seed_folder_table();
 		const nodeId = await insert_child({ name: "gone", kind: "folder", updatedAt: 1, restricted: true });
 		await t.run((ctx) => ctx.db.patch("files_nodes", nodeId, { archiveOperationId: "archive-1" }));
-		const list = (archived: boolean, restricted: boolean) =>
+		const list = (restricted: boolean) =>
 			asOwner.query(api.files_tree.list_tree_children, {
 				stream: "normal" as const,
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
-				archived,
 				restricted,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
 
-		expect((await list(true, true)).page.map((row) => row._id)).toEqual([nodeId]);
-		expect((await list(true, false)).page).toEqual([]);
-		expect((await list(false, true)).page).toEqual([]);
+		expect((await list(true)).page).toEqual([]);
+		expect((await list(false)).page).toEqual([]);
 	});
 
 	// convex-test marks any page that reads more than `numItems` + 1 rows, so this proves the split
@@ -470,7 +428,6 @@ describe("list_tree_children", () => {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
-				archived: false,
 				restricted: true,
 				paginationOpts,
 			});
@@ -503,7 +460,6 @@ describe("list_tree_children", () => {
 				membershipId: f.admin.membershipId,
 				parentId,
 				kind: "folder",
-				archived: false,
 				restricted: false,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
@@ -527,7 +483,6 @@ describe("list_tree_children", () => {
 				membershipId: f.grantOnly.membershipId,
 				parentId,
 				kind,
-				archived: false,
 				restricted: false,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
@@ -549,7 +504,6 @@ describe("list_tree_children", () => {
 			membershipId: f.grantOnly.membershipId,
 			parentId: f.nodes.sharedId,
 			kind: "file" as const,
-			archived: false,
 			restricted: false,
 			paginationOpts: { numItems: 50, cursor: null },
 		};
@@ -649,7 +603,6 @@ describe("list_tree_shared_roots", () => {
 	const read_shared_roots = async (args: {
 		as: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>;
 		membershipId: Id<"organizations_workspaces_users">;
-		archived: boolean;
 		numItems?: number;
 	}) => {
 		const streams: string[][] = [];
@@ -661,7 +614,6 @@ describe("list_tree_shared_roots", () => {
 					api.files_tree.list_tree_shared_roots,
 					{
 						membershipId: args.membershipId,
-						archived: args.archived,
 						principalIndex,
 						paginationOpts: { numItems: args.numItems ?? 50, cursor },
 					},
@@ -688,34 +640,66 @@ describe("list_tree_shared_roots", () => {
 			["/top/hidden/ops"],
 			["/top/hidden/team"],
 		];
-		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, archived: false })).toEqual(
-			active,
-		);
+		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId })).toEqual(active);
 		// One row per page walks the same rows.
-		expect(
-			await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, archived: false, numItems: 1 }),
-		).toEqual(active);
-		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, archived: true })).toEqual([
-			["/top/hidden/old"],
-			[],
-			[],
-		]);
+		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, numItems: 1 })).toEqual(active);
 	});
 
 	test("gives a grant-only member their shares, root children included", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 
+		expect(await read_shared_roots({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId })).toEqual([
+			["/top/hidden/granted", "/shared"],
+			[],
+			[],
+		]);
+	});
+
+	test("pages live shares without their Trash items", async () => {
+		const t = test_convex();
+		const f = await seed_tree_access_fixture(t);
+		const paths = await test_run_with_flush(t, async (ctx) => {
+			const livePaths: string[] = [];
+			const now = Date.now();
+			for (let index = 0; index < 120; index++) {
+				const path = `/open/s-${String(index).padStart(3, "0")}`;
+				const archived = index % 2 === 0;
+				const nodeId = await insert_tree_node({
+					ctx,
+					owner: f.owner,
+					parentId: f.nodes.openId,
+					path,
+					kind: "folder",
+					scope: "self",
+					archiveOperationId: archived ? "old-delete" : undefined,
+				});
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: f.owner.organizationId,
+					workspaceId: f.owner.workspaceId,
+					resourceKind: "file",
+					resourceId: String(nodeId),
+					principalKind: "user",
+					userId: f.grantOnly.userId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+				if (!archived) livePaths.push(path);
+			}
+			return livePaths;
+		});
 		expect(
-			await read_shared_roots({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId, archived: false }),
-		).toEqual([["/top/hidden/granted", "/shared"], [], []]);
+			await read_shared_roots({ as: f.asGrantOnly, membershipId: f.grantOnly.membershipId }),
+			"live shared items page once and Trash items stay out",
+		).toEqual([["/top/hidden/granted", ...paths, "/shared"], [], []]);
 	});
 
 	test("gives the owner, a missing role and refused callers nothing", async () => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
 		const REFUSED = { page: [], isDone: true, continueCursor: "" };
-		const args = { archived: false, principalIndex: 0 as const, paginationOpts: { numItems: 50, cursor: null } };
+		const args = { principalIndex: 0 as const, paginationOpts: { numItems: 50, cursor: null } };
 		// The owner shares a node with themselves, so their own stream has a share row to skip.
 		await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
@@ -768,16 +752,10 @@ describe("list_tree_shared_roots", () => {
 			await ctx.db.delete("access_control_permission_grants", grant!._id);
 		});
 
-		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, archived: false })).toEqual([
+		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId })).toEqual([
 			[],
 			["/top/hidden/ops"],
 			["/top/hidden/team"],
-		]);
-		// The archived node has no archived share row yet, so the archived read does not show it either.
-		expect(await read_shared_roots({ as: f.asAdmin, membershipId: f.admin.membershipId, archived: true })).toEqual([
-			["/top/hidden/old"],
-			[],
-			[],
 		]);
 		expect(consoleError).toHaveBeenCalledWith("files_share_rows copy is mismatched", {
 			shareRowId: expect.any(String),
@@ -821,7 +799,6 @@ describe("list_tree_shared_roots", () => {
 		const read_page = (paginationOpts: { numItems: number; cursor: string | null; endCursor?: string }) =>
 			f.asGrantOnly.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.grantOnly.membershipId,
-				archived: false,
 				principalIndex: 0,
 				paginationOpts,
 			});
@@ -1669,7 +1646,6 @@ test("generated sibling file is visible in the tree query", async () => {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "file",
-		archived: false,
 		restricted: false,
 		paginationOpts: { numItems: 50, cursor: null },
 	});

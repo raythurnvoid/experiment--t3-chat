@@ -33,7 +33,6 @@ type FilesTreePinResult = FunctionReturnType<typeof app_convex_api.files_tree.ge
 
 type FilesTreeFoldersRequest = {
 	folderIds: FilesTreeFolderId[];
-	archived: boolean;
 	/**
 	 * Raw ids, like the route's `nodeId`. The server answers `null` for an id that is not a readable node.
 	 */
@@ -47,14 +46,6 @@ const FILES_TREE_SHARED_ROOTS_PAGE_SIZE = 50;
  */
 const FILES_TREE_CLOSED_FOLDER_KEEP_MS = 5 * 60_000;
 const FILES_TREE_NO_HOISTED_IDS: ReadonlySet<string> = new Set();
-
-function folder_key(folderId: FilesTreeFolderId, archived: boolean) {
-	return `${folderId}:${archived ? "archived" : "active"}`;
-}
-
-function shared_roots_key(archived: boolean) {
-	return `shared-roots:${archived ? "archived" : "active"}`;
-}
 
 /**
  * The results after one pager report. A pager that loads again keeps the rows it has.
@@ -95,22 +86,20 @@ export function files_tree_stream_args(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderId: FilesTreeFolderId;
 	kind: app_convex_Doc<"files_nodes">["kind"];
-	archived: boolean;
 	stream: "normal" | "cohort";
 }) {
-	const { membershipId, folderId, kind, archived, stream } = args;
+	const { membershipId, folderId, kind, stream } = args;
 	return {
-		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, archived, restricted, stream }),
+		children: (restricted: boolean) => ({ membershipId, parentId: folderId, kind, restricted, stream }),
 	};
 }
 
 /**
- * The server order of the tree streams: active rows by `(sortName, name)`, archived rows by
- * `(archiveOperationId, sortName, name)`. The server builds `sortName` with `files_sort_text_key`.
+ * The server order of the live tree streams: `(sortName, name)`.
+ * The server builds `sortName` with `files_sort_text_key`.
  */
 function tree_row_key(row: FilesTreeRow) {
-	const nameKey = [files_sort_text_key(row.name), row.name];
-	return row.archiveOperationId === null ? nameKey : [row.archiveOperationId, ...nameKey];
+	return [files_sort_text_key(row.name), row.name];
 }
 
 /**
@@ -164,7 +153,7 @@ function picker_list(
 const FilesTreeContext = createContext<{
 	folderResults: Map<string, FilesTreeFolderResult>;
 	pinResults: Map<string, FilesTreePinResult>;
-	sharedRoots: { active: FilesTreeFolderResult; archived: FilesTreeFolderResult };
+	sharedRoots: FilesTreeFolderResult;
 	liveFolderIds: ReadonlySet<string>;
 	isOwner: boolean | null;
 	registerFolders: (ownerId: string, request: FilesTreeFoldersRequest) => () => void;
@@ -172,12 +161,10 @@ const FilesTreeContext = createContext<{
 
 type FilesTreeFolderPager_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	folderKey: string;
 	folderId: FilesTreeFolderId;
-	archived: boolean;
 	open: boolean;
 	onResult: (folderKey: string, result: FilesTreeFolderResult | "loading" | null) => void;
-	onExpire: (folderKey: string) => void;
+	onExpire: (folderId: FilesTreeFolderId) => void;
 };
 
 /**
@@ -216,13 +203,13 @@ function useFilesTreeKindStreams(
  * Page one folder: its subfolders and its files, each in the server's name order.
  */
 const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTreeFolderPager_Props) {
-	const { membershipId, folderKey, folderId, archived, open, onResult, onExpire } = props;
-	const wantedScope = JSON.stringify([membershipId, folderKey]);
+	const { membershipId, folderId, open, onResult, onExpire } = props;
+	const wantedScope = JSON.stringify([membershipId, folderId]);
 	// Show the first available rows. Remember their merged count once they settle.
 	const [wanted, setWanted] = useState({ wantedScope, count: 0 });
 	const wantedCount = wanted.wantedScope === wantedScope ? wanted.count : 0;
 
-	const streamArgs = { membershipId, folderId, archived, pageSize: FILES_TREE_PAGE_SIZE, enabled: true };
+	const streamArgs = { membershipId, folderId, pageSize: FILES_TREE_PAGE_SIZE, enabled: true };
 	const folders = useFilesTreeKindStreams({ ...streamArgs, kind: "folder" });
 	// Load the first files page together with the first folders page, so an open folder needs one round
 	// trip. The tree sorts folders first, so a later folders page only adds rows above the files.
@@ -237,7 +224,7 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 			(stream.status === "CanLoadMore" || stream.status === "Exhausted") &&
 			stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
 		)) {
-			onResult(folderKey, "loading");
+			onResult(folderId, "loading");
 			return;
 		}
 
@@ -246,30 +233,30 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 		const rows = [...folderMerge.rows, ...fileMerge.rows];
 		const isDone = streams.every((stream) => stream.status === "Exhausted");
 		if (rows.length < wantedCount && !isDone) {
-			onResult(folderKey, "loading");
+			onResult(folderId, "loading");
 			(folderMerge.blocking ?? fileMerge.blocking)?.loadMore(FILES_TREE_PAGE_SIZE);
 			return;
 		}
 		if (wanted.wantedScope !== wantedScope || rows.length > wantedCount) {
 			setWanted({ wantedScope, count: Math.max(wantedCount, rows.length) });
 		}
-		onResult(folderKey, {
+		onResult(folderId, {
 			rows,
 			status: isDone ? "done" : "more",
 			loadMore: () => setWanted({ wantedScope, count: rows.length + FILES_TREE_PAGE_SIZE }),
 		});
-	}, [folderKey, folders, files, onResult, wantedScope, wanted, wantedCount]);
+	}, [folderId, folders, files, onResult, wantedScope, wanted, wantedCount]);
 
 	// Stop a closed folder only after a while. Opening it again before then clears the timer.
 	useEffect(() => {
 		if (open) {
 			return;
 		}
-		const timer = setTimeout(() => onExpire(folderKey), FILES_TREE_CLOSED_FOLDER_KEEP_MS);
+		const timer = setTimeout(() => onExpire(folderId), FILES_TREE_CLOSED_FOLDER_KEEP_MS);
 		return () => clearTimeout(timer);
-	}, [open, folderKey, onExpire]);
+	}, [open, folderId, onExpire]);
 
-	useEffect(() => () => onResult(folderKey, null), [folderKey, onResult]);
+	useEffect(() => () => onResult(folderId, null), [folderId, onResult]);
 
 	return null;
 });
@@ -279,14 +266,13 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
  */
 function useFilesTreeSharedRootStreams(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	archived: boolean;
 	enabled: boolean;
 }) {
-	const { membershipId, archived, enabled } = args;
+	const { membershipId, enabled } = args;
 	const view = useFilesSavedView(membershipId, enabled);
 	const options = { initialNumItems: FILES_TREE_SHARED_ROOTS_PAGE_SIZE };
 	const sharedArgs = (principalIndex: 0 | 1 | 2, savedStream: files_SavedStream | null) =>
-		enabled && savedStream ? { membershipId, archived, principalIndex, savedStream } : ("skip" as const);
+		enabled && savedStream ? { membershipId, principalIndex, savedStream } : ("skip" as const);
 	const normal = [
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(0, view.normal), options),
 		useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_shared_roots, sharedArgs(1, view.normal), options),
@@ -303,36 +289,34 @@ function useFilesTreeSharedRootStreams(args: {
 
 type FilesTreeSharedRootsPager_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	folderKey: string;
-	archived: boolean;
-	onResult: FilesTreeFolderPager_Props["onResult"];
+	onResult: (result: FilesTreeFolderResult | "loading" | null) => void;
 };
 
 /**
  * Page every share of a member, for the "Shared with you" group. It reports like a folder pager.
  */
 const FilesTreeSharedRootsPager = memo(function FilesTreeSharedRootsPager(props: FilesTreeSharedRootsPager_Props) {
-	const { membershipId, folderKey, archived, onResult } = props;
+	const { membershipId, onResult } = props;
 
-	const streams = useFilesTreeSharedRootStreams({ membershipId, archived, enabled: true });
+	const streams = useFilesTreeSharedRootStreams({ membershipId, enabled: true });
 
 	useEffect(() => {
 		// Report only settled results, like the folder pager: a page split drops the old page before its
 		// two halves arrive.
 		if (!streams.every((stream) => stream.status === "CanLoadMore" || stream.status === "Exhausted")) {
-			onResult(folderKey, "loading");
+			onResult("loading");
 			return;
 		}
 
 		const merge = merge_tree_streams(streams);
-		onResult(folderKey, {
+		onResult({
 			rows: merge.rows,
 			status: streams.every((stream) => stream.status === "Exhausted") ? "done" : "more",
 			loadMore: () => merge.blocking?.loadMore(FILES_TREE_SHARED_ROOTS_PAGE_SIZE),
 		});
-	}, [folderKey, streams, onResult]);
+	}, [streams, onResult]);
 
-	useEffect(() => () => onResult(folderKey, null), [folderKey, onResult]);
+	useEffect(() => () => onResult(null), [onResult]);
 
 	return null;
 });
@@ -394,9 +378,9 @@ const FilesTreeProvider = Object.assign(
 		}, []);
 		// The "Shared with you" group keeps its results apart from `folderResults`, so a group update does
 		// not rebuild the tree rows.
-		const [sharedRootResults, setSharedRootResults] = useState<Map<string, FilesTreeFolderResult>>(new Map());
-		const handleSharedRootsResult = useCallback<FilesTreeFolderPager_Props["onResult"]>((folderKey, result) => {
-			setSharedRootResults((current) => next_results(current, folderKey, result));
+		const [sharedRootResult, setSharedRootResult] = useState<FilesTreeFolderResult | null>(null);
+		const handleSharedRootsResult = useCallback<FilesTreeSharedRootsPager_Props["onResult"]>((result) => {
+			if (result !== "loading") setSharedRootResult(result);
 		}, []);
 
 		const [pinResults, setPinResults] = useState<Map<string, FilesTreePinResult>>(new Map());
@@ -412,18 +396,11 @@ const FilesTreeProvider = Object.assign(
 			});
 		}, []);
 
-		const openFolders = new Map<string, { folderId: FilesTreeFolderId; archived: boolean }>();
+		const openFolders = new Set<FilesTreeFolderId>();
 		const pinnedNodeIds = new Set<string>();
-		let anyArchived = false;
 		for (const request of folderRequests.values()) {
-			if (request.archived) {
-				anyArchived = true;
-			}
 			for (const folderId of [files_ROOT_ID, ...request.folderIds]) {
-				openFolders.set(folder_key(folderId, false), { folderId, archived: false });
-				if (request.archived) {
-					openFolders.set(folder_key(folderId, true), { folderId, archived: true });
-				}
+				openFolders.add(folderId);
 			}
 			for (const nodeId of request.pinnedNodeIds) {
 				pinnedNodeIds.add(nodeId);
@@ -433,46 +410,42 @@ const FilesTreeProvider = Object.assign(
 		// Keep the pager of a closed folder for a while. Its rows stay live, so opening the folder again
 		// shows them at once, without "Loading…". Each closed pager removes itself when its time ends.
 		const [pagerFolders, setPagerFolders] = useState(openFolders);
-		if ([...openFolders.keys()].some((folderKey) => !pagerFolders.has(folderKey))) {
-			setPagerFolders(new Map([...pagerFolders, ...openFolders]));
+		if ([...openFolders].some((folderId) => !pagerFolders.has(folderId))) {
+			setPagerFolders(new Set([...pagerFolders, ...openFolders]));
 		}
-		const handleFolderExpire = useCallback<FilesTreeFolderPager_Props["onExpire"]>((folderKey) => {
+		const handleFolderExpire = useCallback<FilesTreeFolderPager_Props["onExpire"]>((folderId) => {
 			setPagerFolders((current) => {
-				const next = new Map(current);
-				next.delete(folderKey);
+				const next = new Set(current);
+				next.delete(folderId);
 				return next;
 			});
 		}, []);
-		const liveFolderIds = new Set(
-			[...pagerFolders.values()].map((folder) => folder.folderId).filter((folderId) => folderId !== files_ROOT_ID),
-		);
+		const liveFolderIds = new Set([...pagerFolders].filter((folderId) => folderId !== files_ROOT_ID));
 
 		// Every share of a member, for the "Shared with you" group. Its pagers report like a folder pager,
 		// so the group keeps its rows through a page split like a folder. The owner has no shares to read.
-		const get_shared_roots = (archived: boolean): FilesTreeFolderResult =>
+		const sharedRoots: FilesTreeFolderResult =
 			isOwner === true
 				? { rows: [], status: "done", loadMore: () => {} }
-				: (sharedRootResults.get(shared_roots_key(archived)) ?? { rows: [], status: "loading", loadMore: () => {} });
+				: (sharedRootResult ?? { rows: [], status: "loading", loadMore: () => {} });
 
 		return (
 			<FilesTreeContext.Provider
 				value={{
 					folderResults,
 					pinResults,
-					sharedRoots: { active: get_shared_roots(false), archived: get_shared_roots(true) },
+					sharedRoots,
 					liveFolderIds,
 					isOwner,
 					registerFolders,
 				}}
 			>
-				{[...pagerFolders].map(([folderKey, folder]) => (
+				{[...pagerFolders].map((folderId) => (
 					<FilesTreeFolderPager
-						key={folderKey}
+						key={folderId}
 						membershipId={membershipId}
-						folderKey={folderKey}
-						folderId={folder.folderId}
-						archived={folder.archived}
-						open={openFolders.has(folderKey)}
+						folderId={folderId}
+						open={openFolders.has(folderId)}
 						onResult={handleFolderResult}
 						onExpire={handleFolderExpire}
 					/>
@@ -480,16 +453,6 @@ const FilesTreeProvider = Object.assign(
 				{isOwner !== true && folderRequests.size > 0 && (
 					<FilesTreeSharedRootsPager
 						membershipId={membershipId}
-						folderKey={shared_roots_key(false)}
-						archived={false}
-						onResult={handleSharedRootsResult}
-					/>
-				)}
-				{isOwner !== true && anyArchived && (
-					<FilesTreeSharedRootsPager
-						membershipId={membershipId}
-						folderKey={shared_roots_key(true)}
-						archived
 						onResult={handleSharedRootsResult}
 					/>
 				)}
@@ -528,14 +491,14 @@ const FilesTreeProvider = Object.assign(
 			// The loaded rows do not read the pins. Opening a row of the tree pins a node that is already
 			// loaded, so the rows keep their identity and the tree rows do not render again.
 			const { folderResults, pinResults, sharedRoots } = value;
-			const foldersKey = JSON.stringify({ folderIds: request.folderIds, archived: request.archived });
+			const foldersKey = JSON.stringify(request.folderIds);
 			const pinnedKey = JSON.stringify(request.pinnedNodeIds);
 			const loaded = useMemo(() => {
-				const { folderIds, archived } = JSON.parse(foldersKey) as Omit<FilesTreeFoldersRequest, "pinnedNodeIds">;
+				const folderIds = JSON.parse(foldersKey) as FilesTreeFolderId[];
 				const statusByFolderId = new Map<string, FilesTreeFolderResult["status"]>();
 				const rowById = new Map<string, FilesTreeRow>();
 
-				const rootResult = folderResults.get(folder_key(files_ROOT_ID, false));
+				const rootResult = folderResults.get(files_ROOT_ID);
 				if (!rootResult || rootResult.status === "loading") {
 					return {
 						rowById: undefined,
@@ -546,30 +509,15 @@ const FilesTreeProvider = Object.assign(
 				}
 
 				for (const folderId of [files_ROOT_ID, ...folderIds]) {
-					const results = [
-						folderResults.get(folder_key(folderId, false)),
-						archived ? folderResults.get(folder_key(folderId, true)) : undefined,
-					].filter((result) => result !== undefined);
-					statusByFolderId.set(
-						folderId,
-						results.length === 0 || results.some((result) => result.status === "loading")
-							? "loading"
-							: results.some((result) => result.status === "more")
-								? "more"
-								: "done",
-					);
-					for (const result of results) {
-						for (const row of result.rows) {
-							rowById.set(row._id, row);
-						}
+					const result = folderResults.get(folderId);
+					statusByFolderId.set(folderId, result?.status ?? "loading");
+					for (const row of result?.rows ?? []) {
+						rowById.set(row._id, row);
 					}
 				}
 
 				const loadMore = (folderId: FilesTreeFolderId) => {
-					folderResults.get(folder_key(folderId, false))?.loadMore();
-					if (archived) {
-						folderResults.get(folder_key(folderId, true))?.loadMore();
-					}
+					folderResults.get(folderId)?.loadMore();
 				};
 
 				return { rowById, rows: [...rowById.values()], statusByFolderId, loadMore };
@@ -610,21 +558,7 @@ const FilesTreeProvider = Object.assign(
 				};
 			}, [loaded, pinResults, pinnedKey]);
 
-			// Active shares first, then archived ones while the archived items show.
-			const sharedRootsResult: FilesTreeFolderResult = request.archived
-				? {
-						rows: [...sharedRoots.active.rows, ...sharedRoots.archived.rows],
-						status:
-							sharedRoots.active.status === "loading" || sharedRoots.archived.status === "loading"
-								? "loading"
-								: sharedRoots.active.status === "more" || sharedRoots.archived.status === "more"
-									? "more"
-									: "done",
-						loadMore:
-							sharedRoots.active.status === "more" ? sharedRoots.active.loadMore : sharedRoots.archived.loadMore,
-					}
-				: sharedRoots.active;
-			return { ...folders, sharedRoots: sharedRootsResult };
+			return { ...folders, sharedRoots };
 		},
 
 		/**
@@ -706,14 +640,13 @@ const FilesTreeProvider = Object.assign(
 			const streamArgs = {
 				membershipId,
 				folderId: folderId ?? files_ROOT_ID,
-				archived: false,
 				pageSize,
 			};
 			const folders = useFilesTreeKindStreams({ ...streamArgs, kind: "folder", enabled: folderId !== null });
 			const files = useFilesTreeKindStreams({ ...streamArgs, kind: "file", enabled: folderId !== null && withFiles });
 			// The owner reads everything, so the owner has no shares to read.
 			const hasShared = folderId === files_ROOT_ID && isOwner !== true;
-			const shared = useFilesTreeSharedRootStreams({ membershipId, archived: false, enabled: hasShared });
+			const shared = useFilesTreeSharedRootStreams({ membershipId, enabled: hasShared });
 			const children = picker_list(withFiles ? [folders, files] : [folders], pageSize, true);
 			const scope = JSON.stringify([membershipId, folderId, withFiles]);
 			// A short first page is ready. A refreshed view must refill the rows already shown.

@@ -6142,7 +6142,6 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// The whole workspace can hold many thousands of nodes, so never load all of them here.
 	const treeRows = FilesTreeProvider.useFolders({
 		folderIds: loadedFolderId && !isRootNodeSelected ? [loadedFolderId] : [],
-		archived: false,
 		pinnedNodeIds:
 			searchNodeId && !isRootNodeSelected
 				? [searchNodeId]

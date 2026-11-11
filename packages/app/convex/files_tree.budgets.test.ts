@@ -114,11 +114,10 @@ describe("tree page read budgets", () => {
 					};
 					const result =
 						field === "tree"
-							? await ctx.runQuery(api.files_tree.list_tree_children, { ...common, archived: false, restricted })
+							? await ctx.runQuery(api.files_tree.list_tree_children, { ...common, restricted })
 							: field === "roots"
 								? await ctx.runQuery(api.files_tree.list_tree_shared_roots, {
 										membershipId: member.membershipId,
-										archived: false,
 										principalIndex: 2,
 										paginationOpts: common.paginationOpts,
 										...(cohortId && view

@@ -175,7 +175,6 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 					stream: "normal",
 					parentId: "root",
 					kind: "folder",
-					archived: false,
 					restricted: false,
 					paginationOpts: { numItems: 500, cursor: null },
 				}) as unknown as Array<{ _id: string }> | undefined;

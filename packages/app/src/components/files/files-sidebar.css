@@ -155,11 +155,6 @@
 		overflow: hidden;
 	}
 
-	.FilesSidebarSharedGroup-row-archived {
-		font-size: 0.75rem;
-		color: var(--color-fg-07);
-	}
-
 	.FilesSidebarSharedGroup-more {
 		width: 100%;
 	}
@@ -613,11 +608,6 @@
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):active) {
 			color: var(--color-fg-12);
-		}
-
-		&.FilesSidebarTreeItem-content-archived {
-			text-decoration: line-through;
-			color: var(--color-fg-06);
 		}
 	}
 

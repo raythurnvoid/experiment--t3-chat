@@ -4108,7 +4108,6 @@ describe("files_nodes public read-only view", () => {
 				membershipId: args.membershipId,
 				parentId: args.parentId,
 				kind: args.kind,
-				archived: false,
 				restricted: args.restricted,
 				paginationOpts: { numItems: 50, cursor: null },
 			});
@@ -4120,7 +4119,6 @@ describe("files_nodes public read-only view", () => {
 			list_children({ ...member, parentId: files_ROOT_ID, kind: "folder" }),
 			f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.memberMembershipId,
-				archived: false,
 				principalIndex: 0,
 				paginationOpts: { numItems: 50, cursor: null },
 			}),
@@ -4276,7 +4274,6 @@ describe("member controls on plugin-labeled nodes", () => {
 				membershipId: db.membershipId,
 				parentId,
 				kind: "folder",
-				archived: false,
 				restricted: false,
 				paginationOpts: { numItems: 50, cursor: null },
 			});

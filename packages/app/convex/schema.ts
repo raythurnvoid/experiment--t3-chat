@@ -2953,18 +2953,6 @@ const app_convex_schema = defineSchema({
 			"nodeCreationTime",
 			"nodeId",
 		])
-		.index("by_view_parent_kind_restricted_archive_sort_name", [
-			"cohortId",
-			"view",
-			"parentId",
-			"kind",
-			"isRestrictedScopeRoot",
-			"archiveOperationId",
-			"sortName",
-			"name",
-			"nodeCreationTime",
-			"nodeId",
-		])
 		.index("by_view_parent_archive_restricted_kind_sort_name", [
 			"cohortId",
 			"view",
@@ -5349,20 +5337,6 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"archiveOperationId",
 			"kind",
-			"name",
-		])
-		// The archived sidebar pages one kind of one folder's archived children, the readable ones
-		// (`isRestrictedScopeRoot: false`) or the restricted ones, in the folder table name order.
-		// `kind` sits before `archiveOperationId`, so the archived range never reads the other kind.
-		.index("by_org_ws_parent_kind_restricted_archive_sortName_name", [
-			"organizationId",
-			"workspaceId",
-			"moveCohortId",
-			"parentId",
-			"kind",
-			"isRestrictedScopeRoot",
-			"archiveOperationId",
-			"sortName",
 			"name",
 		])
 		// The public files list pages one folder's direct files with one extension.

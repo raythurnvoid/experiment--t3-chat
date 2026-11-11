@@ -30,7 +30,6 @@ import { create } from "zustand";
 import { fromEvent, type FileWithPath } from "file-selector";
 import {
 	Archive,
-	ArchiveRestore,
 	ChevronDown,
 	ChevronRight,
 	EllipsisVertical,
@@ -47,7 +46,6 @@ import {
 	Link2,
 	Lock,
 	LockKeyhole,
-	Trash2,
 	Upload,
 	UserRound,
 	Users,
@@ -86,7 +84,6 @@ import {
 	type FilesArchiveModal_Props,
 } from "./files-archive-modal.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
-import { FilesPurgeModal, type FilesPurgeModal_Props, type FilesPurgeModal_Request } from "./files-purge-modal.tsx";
 import { FilesSidebarArchive } from "./files-sidebar-archive.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
 import { FilesClipboardMenuItems, FilesClipboardProvider } from "./files-clipboard.tsx";
@@ -100,8 +97,6 @@ import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-t
 import { MyButton } from "@/components/my-button.tsx";
 import {
 	MyMenu,
-	MyMenuCheckboxItem,
-	MyMenuCheckboxItemControl,
 	MyMenuItem,
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
@@ -282,20 +277,13 @@ function can_rename_item(args: {
 }
 
 /**
- * Mirror `unarchive_nodes` for this selected item. An active direct parent keeps it in place.
- * With an archived parent, the item comes back at its Trash path. The backend creates the missing
- * folders in the nearest active folder above it, or at the root. That needs write access there and
- * permission to leave the item's restricted scope. A live Read-only folder blocks the landing.
- * A folder the sidebar has not loaded is left to the backend. So is an active folder renamed after
- * the delete: the sidebar does not get the Trash path.
- * Without this gate a write-only sharee sees an enabled Restore that the backend always refuses.
+ * Mirror Restore's item and loaded live-parent checks. The tree has no Trash parents.
+ * The backend checks the landing when the parent is in Trash, missing, or renamed after delete.
  */
 function can_unarchive_item(args: {
 	item: FilesSidebarItem;
 	itemById: Map<string, FilesSidebarItem> | undefined;
 	canWriteItem: (item: FilesSidebarItem) => boolean;
-	canWriteRoot: boolean;
-	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
 }) {
 	// Restore keeps the item's own flag. A read_only reason means its ACL already allowed writing.
 	if (!is_open_node(args.item) || (!args.canWriteItem(args.item) && args.item.writeBlockedReason !== "read_only")) {
@@ -306,72 +294,10 @@ function can_unarchive_item(args: {
 		return true;
 	}
 	const parentItem = args.itemById?.get(args.item.parentId);
-	if (parentItem != null) {
-		if (!is_open_node(parentItem)) {
-			return false;
-		}
-		if (parentItem.archiveOperationId === null) {
-			return parentItem.writeBlockedReason !== "read_only" && args.canWriteItem(parentItem);
-		}
-		// An archived parent has no live child list. Its own Read-only flag does not block Restore.
-		if (!args.canWriteItem(parentItem) && parentItem.writeBlockedReason !== "read_only") {
-			return false;
-		}
-	} else {
-		return true;
-	}
-
-	let landing: FilesSidebarItem | null = parentItem;
-	while (landing && landing.archiveOperationId !== null) {
-		if (landing.parentId === files_ROOT_ID) {
-			landing = null;
-			break;
-		}
-		const next: FilesSidebarItem | undefined = args.itemById?.get(landing.parentId);
-		if (next == null) {
-			return true;
-		}
-		landing = next;
-	}
-	if (landing && !is_open_node(landing)) {
-		return false;
-	}
-	const canWriteLanding = landing
-		? landing.writeBlockedReason !== "read_only" && args.canWriteItem(landing)
-		: args.canWriteRoot;
-
-	// A node that carries its own restriction keeps it wherever it lands, so the backend skips
-	// the scope-leave check for it. The new folders still need write access.
-	if (args.item.restrictedScopeNodeId === args.item._id) {
-		return canWriteLanding;
-	}
-
 	return (
-		canWriteLanding &&
-		files_can_move_node_between_restricted_scopes({
-			nodeId: args.item._id,
-			sourceRestrictedScopeNodeId: args.item.restrictedScopeNodeId,
-			targetRestrictedScopeNodeId: landing?.restrictedScopeNodeId ?? null,
-			canManageRestrictedScope: args.canManageRestrictedScope,
-		})
+		!parentItem ||
+		(is_open_node(parentItem) && parentItem.writeBlockedReason !== "read_only" && args.canWriteItem(parentItem))
 	);
-}
-
-/**
- * Mirror the `purge_nodes` check. Delete permanently needs Can manage: on the item's restricted
- * folder when it is in one, else on the workspace.
- */
-function can_delete_permanently_item(args: {
-	item: Pick<files_VisibleTreeNode, "archiveOperationId" | "restrictedScopeNodeId">;
-	workspaceManagePermission: boolean | undefined;
-	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
-}) {
-	if (args.item.archiveOperationId === null) {
-		return false;
-	}
-	return args.item.restrictedScopeNodeId
-		? args.canManageRestrictedScope(args.item.restrictedScopeNodeId)
-		: args.workspaceManagePermission === true;
 }
 
 function get_clipboard_source_ids(nodes: files_VisibleTreeNode[]) {
@@ -1427,15 +1353,10 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	 * The user cannot open the node. The menu then has only Copy path and Properties.
 	 */
 	isLocked?: boolean;
-	archiveOperationId: string | null;
 	canCreate: boolean;
 	canRename: boolean;
 	canShare: boolean;
 	canArchive: boolean;
-	/**
-	 * Shown for an archived node only. Needs Can manage on the node, like the server.
-	 */
-	canDeletePermanently: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -1452,8 +1373,6 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
 	onArchive: () => void;
-	onUnarchive: () => void;
-	onDeletePermanently: () => void;
 };
 
 const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPopover(
@@ -1463,12 +1382,10 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		kind,
 		label,
 		isLocked,
-		archiveOperationId,
 		canCreate,
 		canRename,
 		canShare,
 		canArchive,
-		canDeletePermanently,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -1485,24 +1402,13 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onExpandSubtree,
 		onCollapseSubtree,
 		onArchive,
-		onUnarchive,
-		onDeletePermanently,
 	} = props;
-	const isArchived = archiveOperationId !== null;
 
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		// Let the menu finish closing and give the focus back to the row before Headless Tree enters rename mode.
 		setTimeout(() => {
 			onRename();
 		}, 0);
-	});
-
-	const handleArchiveUnarchiveClick = useFn<MyMenuItem_Props["onClick"]>(() => {
-		if (isArchived) {
-			onUnarchive();
-		} else {
-			onArchive();
-		}
 	});
 
 	// The menu can open only after the tree has mounted, so render nothing before the element exists.
@@ -1666,32 +1572,14 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					</MyMenuItem>
 				</MyMenuItemsGroup>
 				<MyMenuItemsGroup separator>
-					<MyMenuItem
-						variant={isArchived ? "default" : "destructive"}
-						disabled={!canArchive}
-						hideOnClick
-						onClick={handleArchiveUnarchiveClick}
-					>
+					<MyMenuItem variant="destructive" disabled={!canArchive} hideOnClick onClick={onArchive}>
 						<MyMenuItemContent>
-							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Move to Trash"}</MyMenuItemContentPrimary>
+							<MyMenuItemContentIcon>
+								<Archive />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Move to Trash</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuItem>
-					{isArchived ? (
-						<MyMenuItem
-							variant="destructive"
-							disabled={!canDeletePermanently}
-							hideOnClick
-							onClick={onDeletePermanently}
-						>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Trash2 />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Delete permanently…</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					) : null}
 				</MyMenuItemsGroup>
 			</MyMenuPopoverContent>
 		</MyContextMenuPopover>,
@@ -2307,7 +2195,6 @@ function tree_item_get_hidden_track_file_ids_for_descendants(item?: FilesSidebar
 type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
-	| "FilesSidebarTreeItem-content-archived"
 	| "FilesSidebarTreeItem-content-cut"
 	| "FilesSidebarTreeItem-content-locked"
 	| "FilesSidebarTreeItem-content-renaming"
@@ -2340,8 +2227,6 @@ type FilesSidebarTreeItem_Props = {
 	 */
 	menusPortalHost: HTMLElement | null;
 	canWrite: boolean;
-	canUnarchive: boolean;
-	canDeletePermanently: boolean;
 	canWriteRoot: boolean;
 	hasVisibleProtectedDescendant: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
@@ -2358,8 +2243,6 @@ type FilesSidebarTreeItem_Props = {
 	onShare: (nodeId: string) => void;
 	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
 	onArchive: (nodeId: string) => void;
-	onUnarchive: (nodeId: string) => void;
-	onDeletePermanently: (nodeId: string) => void;
 };
 
 const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSidebarTreeItem_Props) {
@@ -2559,8 +2442,6 @@ const FilesSidebarTreeRow = memo(
 			expandedFolderActionsVisible,
 			menusPortalHost,
 			canWrite,
-			canUnarchive,
-			canDeletePermanently,
 			hasVisibleProtectedDescendant,
 			protectedDescendantIds,
 			hasPublicLink,
@@ -2575,8 +2456,6 @@ const FilesSidebarTreeRow = memo(
 			onShare,
 			onProperties,
 			onArchive,
-			onUnarchive,
-			onDeletePermanently,
 		} = props;
 
 		// The wrapper owns the tree semantics and focus. Its overlay only handles pointer and drag events.
@@ -2594,7 +2473,6 @@ const FilesSidebarTreeRow = memo(
 			...itemInteractionProps
 		} = itemProps;
 		const isRenaming = renameInputProps !== null;
-		const isArchived = itemData.archiveOperationId !== null;
 		const { clipboard } = FilesClipboardProvider.useContext();
 		const isCut = clipboard?.mode === "cut" && clipboard.sourceIds.includes(itemId as app_convex_Id<"files_nodes">);
 		// A menu on a selected row acts on the whole selection, not just that row.
@@ -2634,7 +2512,7 @@ const FilesSidebarTreeRow = memo(
 		const isUploading = useFilesInFlightUploads(
 			(state) => is_open_node(itemData) && state.nodeIds.includes(itemData._id),
 		);
-		const canRename = is_open_node(itemData) && !isArchived && capabilities.canRelocateOrRename && !isUploading;
+		const canRename = is_open_node(itemData) && capabilities.canRelocateOrRename && !isUploading;
 		// One row the person can archive is enough, like the header "Archive N selected" action. The
 		// archive refuses the other rows and lists them on its Activity.
 		const canArchiveItems = sourceItems.some(
@@ -2670,7 +2548,7 @@ const FilesSidebarTreeRow = memo(
 					writeBlockedReason: itemData.writeBlockedReason,
 					readOnly: itemData.readOnly,
 				});
-		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " in Trash" : ""}${isLocked ? ", you don't have access" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isLocked ? ", you don't have access" : ""}${isCut ? ", ready to move" : ""}${isUploading ? ", uploading" : ""}${hasPublicLink ? ", public link" : ""}`;
 
 		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 			onCreateNode(itemId, "file");
@@ -2736,14 +2614,6 @@ const FilesSidebarTreeRow = memo(
 
 		const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
 			onArchive(itemId);
-		});
-
-		const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
-			onUnarchive(itemId);
-		});
-
-		const handleDeletePermanentlyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onDeletePermanently"]>(() => {
-			onDeletePermanently(itemId);
 		});
 
 		const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
@@ -2833,7 +2703,6 @@ const FilesSidebarTreeRow = memo(
 							className={cn(
 								"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
 								isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
-								isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
 								isCut && ("FilesSidebarTreeItem-content-cut" satisfies FilesSidebarTreeItem_ClassNames),
 								isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
 								isLocked && ("FilesSidebarTreeItem-content-locked" satisfies FilesSidebarTreeItem_ClassNames),
@@ -2939,12 +2808,10 @@ const FilesSidebarTreeRow = memo(
 						kind={itemData.kind}
 						label={label}
 						isLocked={isLocked}
-						archiveOperationId={itemData.archiveOperationId}
 						canCreate={capabilities.canReceiveChildren}
 						canRename={canRename}
 						canShare={canShare}
-						canArchive={isArchived ? canUnarchive : canArchiveItems}
-						canDeletePermanently={canDeletePermanently}
+						canArchive={canArchiveItems}
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -2956,7 +2823,7 @@ const FilesSidebarTreeRow = memo(
 								canCopy={canCopyItems}
 								targetParentId={itemData.kind === "folder" ? itemData._id : null}
 								targetName={itemData.kind === "folder" ? itemData.name : null}
-								canPaste={!isArchived && capabilities.canReceiveChildren}
+								canPaste={capabilities.canReceiveChildren}
 							/>
 						}
 						onCreateFile={handleCreateFileClick}
@@ -2970,8 +2837,6 @@ const FilesSidebarTreeRow = memo(
 						onExpandSubtree={handleExpandSubtreeClick}
 						onCollapseSubtree={handleCollapseSubtreeClick}
 						onArchive={handleArchiveClick}
-						onUnarchive={handleUnarchiveClick}
-						onDeletePermanently={handleDeletePermanentlyClick}
 					/>
 				</MyContextMenu>
 
@@ -3306,8 +3171,6 @@ type FilesSidebarTree_Props = {
 	 */
 	renamingNameByNodeId: Map<string, string>;
 	canWriteItem: (item: FilesSidebarItem) => boolean;
-	canUnarchiveItem: (item: FilesSidebarItem) => boolean;
-	canDeletePermanentlyItem: (item: FilesSidebarItem) => boolean;
 	canWriteRoot: boolean;
 	protectedDescendantIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	/**
@@ -3334,8 +3197,6 @@ type FilesSidebarTree_Props = {
 	onShare: (nodeId: string) => void;
 	onProperties: FilesSidebarTreeItem_Props["onProperties"];
 	onArchive: (nodeId: string) => void;
-	onUnarchive: (nodeId: string) => void;
-	onDeletePermanently: (nodeId: string) => void;
 };
 
 type FilesSidebarTree_DivProps = ComponentProps<"div">;
@@ -3361,8 +3222,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		renameErrorByNodeId,
 		renamingNameByNodeId,
 		canWriteItem,
-		canUnarchiveItem,
-		canDeletePermanentlyItem,
 		canWriteRoot,
 		protectedDescendantIds,
 		publicLinkNodeIds,
@@ -3378,8 +3237,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onShare,
 		onProperties,
 		onArchive,
-		onUnarchive,
-		onDeletePermanently,
 	} = props;
 
 	const treeContainerProps = tree().getContainerProps("Files");
@@ -3791,8 +3648,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										expandedFolderActionsVisible={expandedFolderActionsVisible}
 										menusPortalHost={menusPortalHost}
 										canWrite={canWriteItem(itemData)}
-										canUnarchive={canUnarchiveItem(itemData)}
-										canDeletePermanently={canDeletePermanentlyItem(itemData)}
 										canWriteRoot={canWriteRoot}
 										hasVisibleProtectedDescendant={is_open_node(itemData) && protectedDescendantIds.has(itemData._id)}
 										protectedDescendantIds={protectedDescendantIds}
@@ -3813,8 +3668,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										onShare={onShare}
 										onProperties={onProperties}
 										onArchive={onArchive}
-										onUnarchive={onUnarchive}
-										onDeletePermanently={onDeletePermanently}
 									/>
 								</div>
 							);
@@ -3920,14 +3773,7 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	canArchiveSelection: boolean;
 	canWriteUploadTarget: boolean;
 	selectedNodeIdsCount: number;
-	/**
-	 * The selected archived items the person may delete permanently.
-	 */
-	purgeSelectionCount: number;
-	showArchived: boolean;
-	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
-	onPurgeSelectionClick: () => void;
 	onOpenArchiveClick: () => void;
 	onUploadFileClick: () => void;
 	onImportFolderClick: () => void;
@@ -3944,25 +3790,15 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		canArchiveSelection,
 		canWriteUploadTarget,
 		selectedNodeIdsCount,
-		purgeSelectionCount,
-		showArchived,
-		onArchiveToggleClick,
 		onArchiveSelectionClick,
-		onPurgeSelectionClick,
 		onOpenArchiveClick,
 		onUploadFileClick,
 		onImportFolderClick,
 	} = props;
 
-	// The tree loads folder by folder, so it does not know how many archived items exist.
-	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} items in Trash`;
 	const selectedItemsArchiveLabel = `Move ${selectedNodeIdsCount} selected ${
 		selectedNodeIdsCount === 1 ? "item" : "items"
 	} to Trash`;
-
-	const handleArchiveToggleClick = useFn(() => {
-		onArchiveToggleClick();
-	});
 
 	const handleArchiveSelectionClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		onArchiveSelectionClick();
@@ -4008,19 +3844,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 								</MyMenuItemContent>
 							</MyMenuItem>
 						) : null}
-						{/* Archived rows of the selection only. The active rows are left out. */}
-						{isMultiSelectionActive && purgeSelectionCount > 0 ? (
-							<MyMenuItem variant="destructive" disabled={isBusy} hideOnClick onClick={onPurgeSelectionClick}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<Trash2 />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>
-										{`Delete ${purgeSelectionCount} ${purgeSelectionCount === 1 ? "item" : "items"} in Trash permanently…`}
-									</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						) : null}
 						{isMultiSelectionActive ? null : (
 							<>
 								<MyMenuItem disabled={isBusy || isUploadingFile || !canWriteUploadTarget} onClick={onUploadFileClick}>
@@ -4044,12 +3867,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 					</MyMenuItemsGroup>
 					{isMultiSelectionActive ? null : (
 						<MyMenuItemsGroup separator>
-							<MyMenuCheckboxItem checked={showArchived} disabled={isBusy} onClick={handleArchiveToggleClick}>
-								<MyMenuItemContent>
-									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy} />
-									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuCheckboxItem>
 							<MyMenuItem disabled={isBusy} hideOnClick onClick={onOpenArchiveClick}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
@@ -4086,8 +3903,6 @@ type FilesSidebarTopSection_Props = {
 	canWriteRoot: boolean;
 	canWriteUploadTarget: boolean;
 	canArchiveSelection: boolean;
-	purgeSelectionCount: FilesSidebarTopSectionMoreAction_Props["purgeSelectionCount"];
-	showArchived: boolean;
 	initialSearchQuery: string;
 	isSearchLoading: boolean;
 	searchMatchCount: number | null;
@@ -4100,9 +3915,7 @@ type FilesSidebarTopSection_Props = {
 	onClearSelectionClick: () => void;
 	onCreateRootFileClick: () => void;
 	onCreateRootFolderClick: () => void;
-	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
-	onPurgeSelectionClick: () => void;
 	onOpenArchiveClick: () => void;
 	onUploadFileClick: () => void;
 	onImportFolderClick: () => void;
@@ -4119,8 +3932,6 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		canWriteRoot,
 		canWriteUploadTarget,
 		canArchiveSelection,
-		purgeSelectionCount,
-		showArchived,
 		initialSearchQuery,
 		isSearchLoading,
 		searchMatchCount,
@@ -4133,9 +3944,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		onClearSelectionClick,
 		onCreateRootFileClick,
 		onCreateRootFolderClick,
-		onArchiveToggleClick,
 		onArchiveSelectionClick,
-		onPurgeSelectionClick,
 		onOpenArchiveClick,
 		onUploadFileClick,
 		onImportFolderClick,
@@ -4251,11 +4060,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						canArchiveSelection={canArchiveSelection}
 						canWriteUploadTarget={canWriteUploadTarget}
 						selectedNodeIdsCount={selectedNodeIdsCount}
-						purgeSelectionCount={purgeSelectionCount}
-						showArchived={showArchived}
-						onArchiveToggleClick={onArchiveToggleClick}
 						onArchiveSelectionClick={onArchiveSelectionClick}
-						onPurgeSelectionClick={onPurgeSelectionClick}
 						onOpenArchiveClick={onOpenArchiveClick}
 						onUploadFileClick={onUploadFileClick}
 						onImportFolderClick={onImportFolderClick}
@@ -4585,7 +4390,6 @@ type FilesSidebarSharedGroup_ClassNames =
 	| "FilesSidebarSharedGroup-list"
 	| "FilesSidebarSharedGroup-row"
 	| "FilesSidebarSharedGroup-row-name"
-	| "FilesSidebarSharedGroup-row-archived"
 	| "FilesSidebarSharedGroup-more";
 
 type FilesSidebarSharedGroup_CustomAttributes = {
@@ -4611,14 +4415,11 @@ type FilesSidebarSharedGroup_Row = Pick<
 type FilesSidebarSharedGroupRow_Props = {
 	row: FilesSidebarSharedGroup_Row;
 	isCurrent: boolean;
-	canDeletePermanently: boolean;
 	menusPortalHost: HTMLElement | null;
 	onOpen: (nodeId: string, kind: string) => void;
 	onShare: (nodeId: string) => void;
 	onProperties: (nodeId: app_convex_Id<"files_nodes">, returnFocusElement: HTMLElement | null) => void;
 	onArchive: (row: FilesSidebarSharedGroup_Row, rowElement: HTMLElement | null) => void;
-	onUnarchive: (nodeId: string) => void;
-	onDeletePermanently: (row: FilesSidebarSharedGroup_Row, rowElement: HTMLElement | null) => void;
 };
 
 /**
@@ -4628,21 +4429,9 @@ type FilesSidebarSharedGroupRow_Props = {
  * the share reveals it in the tree instead.
  */
 const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(props: FilesSidebarSharedGroupRow_Props) {
-	const {
-		row,
-		isCurrent,
-		canDeletePermanently,
-		menusPortalHost,
-		onOpen,
-		onShare,
-		onProperties,
-		onArchive,
-		onUnarchive,
-		onDeletePermanently,
-	} = props;
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { row, isCurrent, menusPortalHost, onOpen, onShare, onProperties, onArchive } = props;
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const buttonRef = useRef<HTMLButtonElement | null>(null);
-	const isArchived = row.archiveOperationId !== null;
 
 	// Built like the tree row label. Every share is a restricted root.
 	const readOnlyLabels = files_get_read_only_row_labels({
@@ -4652,14 +4441,7 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 	});
 	// A share can sit on a restricted folder or on an item with added people. Only the first is restricted.
 	const isRestricted = row.restrictedScopeNodeId === row._id;
-	// A restricted folder in this group is often outside the tree, where the sidebar has no share state.
-	// So the row reads its own, like a row of the Archive view.
-	const ownShareState = useQuery(
-		app_convex_api.files_sharing.get_node_share_state,
-		isArchived && isRestricted && !canDeletePermanently ? { membershipId, nodeId: row._id } : "skip",
-	);
-	const canDeletePermanentlyRow = canDeletePermanently || ownShareState?.canManage === true;
-	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " in Trash" : ""}`;
+	const label = `${row.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}`;
 
 	const handleOpenClick = useFn(() => {
 		onOpen(row._id, row.kind);
@@ -4699,14 +4481,6 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 		onArchive(row, buttonRef.current);
 	});
 
-	const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
-		onUnarchive(row._id);
-	});
-
-	const handleDeletePermanentlyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onDeletePermanently"]>(() => {
-		onDeletePermanently(row, buttonRef.current);
-	});
-
 	const handleNoAction = useFn(() => {});
 
 	return (
@@ -4727,23 +4501,16 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 						<span className={"FilesSidebarSharedGroup-row-name" satisfies FilesSidebarSharedGroup_ClassNames}>
 							{row.name}
 						</span>
-						{isArchived && (
-							<span className={"FilesSidebarSharedGroup-row-archived" satisfies FilesSidebarSharedGroup_ClassNames}>
-								In Trash
-							</span>
-						)}
 					</MyButton>
 				</MyContextMenuTrigger>
 				<FilesSidebarTreeItemMenuPopover
 					kind={row.kind}
 					label={label}
-					archiveOperationId={row.archiveOperationId}
 					canCreate={false}
 					canRename={false}
 					canShare
 					// The parent is hidden, so the server checks the rest.
-					canArchive={row.canWrite || (isArchived && row.writeBlockedReason === "read_only")}
-					canDeletePermanently={canDeletePermanentlyRow}
+					canArchive={row.canWrite}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -4753,10 +4520,10 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 							sourceIds={[row._id]}
 							// Moving a share needs write access on its hidden parent.
 							canCut={false}
-							canCopy={!isArchived}
+							canCopy
 							targetParentId={row.kind === "folder" ? row._id : null}
 							targetName={row.kind === "folder" ? row.name : null}
-							canPaste={!isArchived && row.canWrite}
+							canPaste={row.canWrite}
 						/>
 					}
 					onCreateFile={handleNoAction}
@@ -4770,8 +4537,6 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 					onExpandSubtree={handleNoAction}
 					onCollapseSubtree={handleNoAction}
 					onArchive={handleArchiveClick}
-					onUnarchive={handleUnarchiveClick}
-					onDeletePermanently={handleDeletePermanentlyClick}
 				/>
 			</MyContextMenu>
 		</li>
@@ -4782,14 +4547,11 @@ type FilesSidebarSharedGroup_Props = {
 	rows: FilesSidebarSharedGroup_Row[];
 	status: "loading" | "more" | "done";
 	selectedNodeId: string | null;
-	canDeletePermanentlyRow: (row: FilesSidebarSharedGroup_Row) => boolean;
 	onOpen: FilesSidebarSharedGroupRow_Props["onOpen"];
 	onLoadMore: () => void;
 	onShare: FilesSidebarSharedGroupRow_Props["onShare"];
 	onProperties: FilesSidebarSharedGroupRow_Props["onProperties"];
 	onArchive: FilesSidebarSharedGroupRow_Props["onArchive"];
-	onUnarchive: FilesSidebarSharedGroupRow_Props["onUnarchive"];
-	onDeletePermanently: FilesSidebarSharedGroupRow_Props["onDeletePermanently"];
 };
 
 /**
@@ -4797,19 +4559,7 @@ type FilesSidebarSharedGroup_Props = {
  * outside the tree, so its rows never mix with the tree's node ids. A row opens the shared node.
  */
 const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: FilesSidebarSharedGroup_Props) {
-	const {
-		rows,
-		status,
-		selectedNodeId,
-		canDeletePermanentlyRow,
-		onOpen,
-		onLoadMore,
-		onShare,
-		onProperties,
-		onArchive,
-		onUnarchive,
-		onDeletePermanently,
-	} = props;
+	const { rows, status, selectedNodeId, onOpen, onLoadMore, onShare, onProperties, onArchive } = props;
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement | null>(null);
 	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
@@ -4833,8 +4583,7 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 		) {
 			return;
 		}
-		// While archived items show, the active rows come first, so a new active row sits before the old
-		// archived rows. Find the first new row by id, not by position.
+		// Find the first new row by id: another share may sort before the rows already shown.
 		const firstNewRow = rows.find((row) => !loadMoreFromIds.has(row._id)) ?? rows.at(-1);
 		if (firstNewRow) {
 			sectionRef.current
@@ -4873,14 +4622,11 @@ const FilesSidebarSharedGroup = memo(function FilesSidebarSharedGroup(props: Fil
 						key={`shared:${row._id}`}
 						row={row}
 						isCurrent={row._id === selectedNodeId}
-						canDeletePermanently={canDeletePermanentlyRow(row)}
 						menusPortalHost={menusPortalHost}
 						onOpen={onOpen}
 						onShare={onShare}
 						onProperties={onProperties}
 						onArchive={onArchive}
-						onUnarchive={onUnarchive}
-						onDeletePermanently={onDeletePermanently}
 					/>
 				))}
 			</ul>
@@ -5036,12 +4782,10 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 					kind={row.kind}
 					label={name}
 					isLocked={row.locked}
-					archiveOperationId={null}
 					canCreate={false}
 					canRename={false}
 					canShare
 					canArchive={canWrite}
-					canDeletePermanently={false}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -5067,8 +4811,6 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 					onExpandSubtree={handleNoAction}
 					onCollapseSubtree={handleNoAction}
 					onArchive={handleArchiveClick}
-					onUnarchive={handleNoAction}
-					onDeletePermanently={handleNoAction}
 				/>
 			</MyContextMenu>
 		</li>
@@ -5077,7 +4819,6 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 
 type FilesSidebarSearchResults_Props = {
 	search: ReturnType<typeof useFilesSearchSaved>;
-	showArchived: boolean;
 	selectedNodeId: string | null;
 	canWrite: boolean;
 	onOpen: FilesSidebarSearchResultsRow_Props["onOpen"];
@@ -5091,7 +4832,7 @@ type FilesSidebarSearchResults_Props = {
  * the tree. Opening a match selects it, and the tree reveals it once the search closes.
  */
 const FilesSidebarSearchResults = memo(function FilesSidebarSearchResults(props: FilesSidebarSearchResults_Props) {
-	const { search, showArchived, selectedNodeId, canWrite, onOpen, onShare, onProperties, onArchive } = props;
+	const { search, selectedNodeId, canWrite, onOpen, onShare, onProperties, onArchive } = props;
 	const list = search.names;
 	const sectionRef = useRef<HTMLElement | null>(null);
 	const [menusPortalHost, setMenusPortalHost] = useState<HTMLElement | null>(null);
@@ -5149,12 +4890,6 @@ const FilesSidebarSearchResults = memo(function FilesSidebarSearchResults(props:
 			aria-label="Search results"
 			className={"FilesSidebarSearchResults" satisfies FilesSidebarSearchResults_ClassNames}
 		>
-			{/* Search reads the active rows only, so say so while the tree shows archived rows. */}
-			{showArchived ? (
-				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>
-					Search does not show items in Trash.
-				</p>
-			) : null}
 			{statusText !== null ? (
 				<p className={"FilesSidebarSearchResults-state" satisfies FilesSidebarSearchResults_ClassNames}>{statusText}</p>
 			) : (
@@ -5474,7 +5209,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
-	const [showArchived, setShowArchived] = useState(false);
 	/**
 	 * The Archive view shows in place of the tree. A search still wins: it shows while the box has text.
 	 */
@@ -5505,7 +5239,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		folderIds: expandedItems.filter(
 			(itemId) => shownFolderIds.has(itemId) || liveFolderIds.has(itemId),
 		) as app_convex_Id<"files_nodes">[],
-		archived: showArchived,
 		// The open node is pinned, so a node opened from the search shows in the tree once the search
 		// closes, with the folders above it.
 		pinnedNodeIds: [
@@ -5558,13 +5291,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const focusRowAfterArchiveRef = useRef(false);
 	/** Set by `handleArchived` for an archive from the "Shared with you" group or the search list. The same effect clears it. */
 	const focusGroupElementAfterArchiveRef = useRef<HTMLElement | null>(null);
-	/** The archived items whose Delete permanently dialog is open, or `null` when it is closed. */
-	const [purgeRequest, setPurgeRequest] = useState<FilesPurgeModal_Request | null>(null);
-	const purgeReturnFocusRef = useRef<HTMLElement | null>(null);
-	/** Set when the tree takes focus once the Delete permanently dialog or the Archive view has closed. */
+	/** Set when the tree takes focus once the Trash view has closed. */
 	const focusTreeAfterCloseRef = useRef(false);
-	/** Set by `handlePurged` for a delete from the "Shared with you" group. The same effect clears it. */
-	const focusGroupElementAfterPurgeRef = useRef<HTMLElement | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesReturnFocusRef = useRef<HTMLElement | null>(null);
 	const isImportingFiles = useFilesImportStore((state) => state.phase !== "idle");
@@ -5587,10 +5315,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
 		membershipId,
 		permission: "content.write",
-	});
-	const workspaceManagePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
-		membershipId,
-		permission: "content.permissions.manage",
 	});
 	const workspaceLinks = useQuery(app_convex_api.files_share_links.list_workspace_links, { membershipId });
 	const publicLinkNodeIds = new Set<string>(workspaceLinks?.map((link) => link.nodeId));
@@ -5672,11 +5396,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const shareState = restrictedScopeShareStates[scopeNodeId];
 		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
 	});
-	// Render-time twin of `canManageRestrictedScope`, for the same reason as `canWriteItemInRender`.
-	const canManageRestrictedScopeInRender = (scopeNodeId: app_convex_Id<"files_nodes">) => {
-		const shareState = restrictedScopeShareStates[scopeNodeId];
-		return shareState != null && !(shareState instanceof Error) && shareState.canManage;
-	};
 
 	// Resolve updater ids through shared anagraphic queries. Memoize by hand like the
 	// restricted-scope queries above: Convex `useQueries` re-subscribes with a render-phase
@@ -5746,14 +5465,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		const shownItemIds = new Set<string>([files_ROOT_ID]);
 		for (const item of treeItemsList) {
-			if (item._id !== files_ROOT_ID && (item.archiveOperationId === null || showArchived)) {
+			if (item._id !== files_ROOT_ID && item.archiveOperationId === null) {
 				shownItemIds.add(item._id);
 			}
 		}
 
 		// Collect all items from the list to the maps
 		for (const item of treeItemsList) {
-			if (item._id === files_ROOT_ID || (item.archiveOperationId !== null && !showArchived)) {
+			if (item._id === files_ROOT_ID || item.archiveOperationId !== null) {
 				continue;
 			}
 
@@ -5810,7 +5529,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		return result;
-	}, [treeItemsList, showArchived, hoistedTreeItemIds]);
+	}, [treeItemsList, hoistedTreeItemIds]);
 	const canWriteParentId = useFn((parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID) => {
 		const parentItem = parentId === files_ROOT_ID ? files_SYNTHETIC_ROOT_FOLDER : treeItems?.itemById.get(parentId);
 		return parentItem ? getItemCapabilities(parentItem).canReceiveChildren : false;
@@ -5820,17 +5539,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			item,
 			itemById: treeItems?.itemById,
 			canWriteItem,
-			canWriteRoot: canWriteParentId(files_ROOT_ID),
-			canManageRestrictedScope,
 		}),
-	);
-
-	const canDeletePermanentlyItem = useFn(
-		(item: FilesSidebarItem) =>
-			is_open_node(item) && can_delete_permanently_item({ item, workspaceManagePermission, canManageRestrictedScope }),
-	);
-	const canDeletePermanentlySharedRow = useFn((row: FilesSidebarSharedGroup_Row) =>
-		can_delete_permanently_item({ item: row, workspaceManagePermission, canManageRestrictedScope }),
 	);
 
 	const canExpandAll = ((/* iife */) => {
@@ -6828,18 +6537,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			const item = treeItems?.itemById.get(itemId);
 			return item != null && canWriteItemInRender(item);
 		});
-	const purgeSelectionCount = [...selectedNodeIds].filter((itemId) => {
-		const item = treeItems?.itemById.get(itemId);
-		return (
-			item != null &&
-			is_open_node(item) &&
-			can_delete_permanently_item({
-				item,
-				workspaceManagePermission,
-				canManageRestrictedScope: canManageRestrictedScopeInRender,
-			})
-		);
-	}).length;
 	const selectionAnchorNodeId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
 	// Collapsing a folder does not clear its selected children.
 	const selectedSourceItems = tree()
@@ -7365,7 +7062,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		handleArchive(firstSelectedNodeId);
 	});
 
-	const handleUnarchive = useFn<FilesSidebarTree_Props["onUnarchive"]>((nodeId) => {
+	const handleUnarchive = useFn((nodeId: string) => {
 		markFileAsPending(nodeId);
 		convex
 			.mutation(app_convex_api.files_nodes.unarchive_nodes, {
@@ -7397,86 +7094,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.finally(() => {
 				unmarkFileAsPending(nodeId);
 			});
-	});
-
-	// Delete permanently asks first. Like Archive, a row in the selection acts on the whole selection:
-	// its archived rows that the person may delete. The active rows are left out.
-	const handleDeletePermanently = useFn<FilesSidebarTree_Props["onDeletePermanently"]>((nodeId) => {
-		const nodes: FilesArchiveModal_Node[] = [];
-		for (const itemId of selectedNodeIds.has(nodeId) ? selectedNodeIds : [nodeId]) {
-			const item = treeItems?.itemById.get(itemId);
-			if (item && is_open_node(item) && canDeletePermanentlyItem(item)) {
-				nodes.push({ _id: item._id, name: item.name, path: item.path, kind: item.kind });
-			}
-		}
-		if (nodes.length === 0) {
-			return;
-		}
-		purgeReturnFocusRef.current = null;
-		setPurgeRequest({ kind: "items", nodes });
-	});
-
-	// A row of the "Shared with you" group is not in the tree selection, so it deletes itself only.
-	const handleSharedGroupDeletePermanently = useFn<FilesSidebarSharedGroup_Props["onDeletePermanently"]>(
-		(row, rowElement) => {
-			purgeReturnFocusRef.current = rowElement;
-			setPurgeRequest({ kind: "items", nodes: [{ _id: row._id, name: row.name, path: row.path, kind: row.kind }] });
-		},
-	);
-
-	const handlePurgeSelectionClick = useFn(() => {
-		const firstSelectedNodeId = selectedNodeIds.values().next().value;
-		if (firstSelectedNodeId) {
-			handleDeletePermanently(firstSelectedNodeId);
-		}
-	});
-
-	const handlePurgeModalClose = useFn(() => {
-		// Like the archive dialog: a tree row gets focus back through the tree, a group row from the dialog.
-		const firstNodeId = purgeRequest?.kind === "items" ? purgeRequest.nodes[0]?._id : undefined;
-		if (!purgeReturnFocusRef.current && firstNodeId && treeItems?.itemById.has(firstNodeId)) {
-			tree().getItemInstance(firstNodeId).setFocused();
-			tree().updateDomFocus();
-		}
-		setPurgeRequest(null);
-	});
-
-	const handlePurged = useFn<FilesPurgeModal_Props["onDeleted"]>(() => {
-		const deletedNodeIds: string[] = purgeRequest?.kind === "items" ? purgeRequest.nodes.map((node) => node._id) : [];
-		if (deletedNodeIds.length > 1) {
-			tree().setSelectedItems([]);
-		}
-		// Leave the open file when it is deleted, like after an archive.
-		if (selectedNodeId && deletedNodeIds.includes(selectedNodeId)) {
-			onArchive(selectedNodeId);
-		}
-
-		// Like after an archive: a delete from the "Shared with you" group keeps focus in the group (the
-		// next row, the row before it, or Show more). A tree row, or a group with no row left, gives focus
-		// to the tree.
-		const groupRow = purgeReturnFocusRef.current;
-		const groupRows = Array.from(
-			groupRow
-				?.closest("ul")
-				?.querySelectorAll<HTMLElement>(
-					`[${"data-shared-row-id" satisfies keyof FilesSidebarSharedGroup_CustomAttributes}]`,
-				) ?? [],
-		);
-		const groupRowIndex = groupRow ? groupRows.indexOf(groupRow) : -1;
-		focusGroupElementAfterPurgeRef.current =
-			groupRows[groupRowIndex + 1] ??
-			groupRows[groupRowIndex - 1] ??
-			groupRow
-				?.closest("section")
-				?.querySelector<HTMLElement>(
-					`.${"FilesSidebarSharedGroup-more" satisfies FilesSidebarSharedGroup_ClassNames}`,
-				) ??
-			null;
-		if (focusGroupElementAfterPurgeRef.current === null) {
-			focusTreeRowAfter(deletedNodeIds);
-			focusTreeAfterCloseRef.current = true;
-		}
-		setPurgeRequest(null);
 	});
 
 	const handleArchiveViewDeleted = useFn((nodeIds: string[]) => {
@@ -7521,10 +7138,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const handleCreateRootFolderClick = useFn(() => {
 		handleCreateNodeClick(files_ROOT_ID, "folder");
-	});
-
-	const handleArchiveToggleClick = useFn(() => {
-		setShowArchived((oldValue) => !oldValue);
 	});
 
 	// Picked uploads land in the selected folder when one is selected, otherwise in the root.
@@ -7776,15 +7389,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		tree().updateDomFocus();
 	}, [archiveNodes]);
 
-	// Focus the tree once the Delete permanently dialog or the Archive view has closed, like the effect above.
+	// Focus the tree once the Trash view has closed, like the effect above.
 	useEffect(() => {
-		if (purgeRequest !== null || isArchiveViewOpen) return;
-		focusGroupElementAfterPurgeRef.current?.focus();
-		focusGroupElementAfterPurgeRef.current = null;
+		if (isArchiveViewOpen) return;
 		if (!focusTreeAfterCloseRef.current) return;
 		focusTreeAfterCloseRef.current = false;
 		tree().updateDomFocus();
-	}, [purgeRequest, isArchiveViewOpen]);
+	}, [isArchiveViewOpen]);
 
 	useGlobalCustomEvent("files::reveal_node", (event) => {
 		if (event.detail.membershipId !== membershipId) return;
@@ -7871,8 +7482,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				canWriteRoot={canWriteRoot}
 				canWriteUploadTarget={canWriteUploadTarget}
 				canArchiveSelection={canArchiveSelection}
-				purgeSelectionCount={purgeSelectionCount}
-				showArchived={showArchived}
 				initialSearchQuery={searchQuery}
 				isSearchLoading={search.mode === "search" && search.names.status === "loading"}
 				searchMatchCount={search.mode === "search" ? search.names.rows.length : null}
@@ -7885,9 +7494,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onClearSelectionClick={handleClearSelectionClick}
 				onCreateRootFileClick={handleCreateRootFileClick}
 				onCreateRootFolderClick={handleCreateRootFolderClick}
-				onArchiveToggleClick={handleArchiveToggleClick}
 				onArchiveSelectionClick={handleArchiveSelectionClick}
-				onPurgeSelectionClick={handlePurgeSelectionClick}
 				onOpenArchiveClick={handleOpenArchiveClick}
 				onUploadFileClick={handleUploadFileClick}
 				onImportFolderClick={handleImportFolderClick}
@@ -7900,14 +7507,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					rows={sharedRootRows}
 					status={treeFolders.sharedRoots.status}
 					selectedNodeId={selectedNodeId}
-					canDeletePermanentlyRow={canDeletePermanentlySharedRow}
 					onOpen={onPrimaryAction}
 					onLoadMore={treeFolders.sharedRoots.loadMore}
 					onShare={handleSharedGroupShare}
 					onProperties={handleProperties}
 					onArchive={handleSharedGroupArchive}
-					onUnarchive={handleUnarchive}
-					onDeletePermanently={handleSharedGroupDeletePermanently}
 				/>
 			)}
 
@@ -7932,7 +7536,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					{isSearchActive ? (
 						<FilesSidebarSearchResults
 							search={search}
-							showArchived={showArchived}
 							selectedNodeId={selectedNodeId}
 							canWrite={workspaceWritePermission === true}
 							onOpen={onPrimaryAction}
@@ -7958,8 +7561,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							renameErrorByNodeId={renameErrorByNodeId}
 							renamingNameByNodeId={renamingNameByNodeId}
 							canWriteItem={canWriteItem}
-							canUnarchiveItem={canUnarchiveItem}
-							canDeletePermanentlyItem={canDeletePermanentlyItem}
 							canWriteRoot={canWriteRoot}
 							protectedDescendantIds={protectedDescendantIds}
 							publicLinkNodeIds={publicLinkNodeIds}
@@ -7975,8 +7576,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							onShare={handleShare}
 							onProperties={handleProperties}
 							onArchive={handleArchive}
-							onUnarchive={handleUnarchive}
-							onDeletePermanently={handleDeletePermanently}
 						/>
 					)}
 				</div>
@@ -7984,12 +7583,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
 			<FilesArchiveModal nodes={archiveNodes} onClose={handleArchiveModalClose} onArchived={handleArchived} />
-			<FilesPurgeModal
-				request={purgeRequest}
-				returnFocusRef={purgeReturnFocusRef}
-				onClose={handlePurgeModalClose}
-				onDeleted={handlePurged}
-			/>
 			<FilesPropertiesModal
 				nodeId={propertiesNodeId}
 				nodeName={propertiesNode?.name ?? "file"}
@@ -8265,8 +7858,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const args = {
 				item: child,
 				canWriteItem: (item: FilesSidebarItem) => is_open_node(item) && item.canWrite,
-				canWriteRoot: true,
-				canManageRestrictedScope: () => false,
 			};
 
 			expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, folder]]) })).toBe(true);
@@ -8293,116 +7884,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					item: archivedChild,
 					itemById: new Map([[activeFolder._id, activeFolder]]),
 					canWriteItem: () => true,
-					canWriteRoot: false,
-					canManageRestrictedScope: () => false,
 				}),
 			).toBe(true);
-		});
-
-		test("only a live Read-only parent blocks the restore", () => {
-			const archivedChild = test_node({
-				id: "file",
-				parentId: "folder",
-				kind: "file",
-				name: "file.md",
-				archiveOperationId: "archive-operation",
-			});
-			const args = {
-				item: archivedChild,
-				canWriteItem: () => true,
-				canWriteRoot: true,
-				canManageRestrictedScope: () => true,
-			};
-
-			for (const archiveOperationId of [undefined, "other-operation"]) {
-				const folder = test_node({
-					id: "folder",
-					parentId: files_ROOT_ID,
-					kind: "folder",
-					name: "folder",
-					archiveOperationId,
-				});
-				const lockedFolder = { ...folder, canWrite: false, writeBlockedReason: "read_only" as const };
-
-				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, lockedFolder]]) })).toBe(
-					archiveOperationId !== undefined,
-				);
-				expect(can_unarchive_item({ ...args, itemById: new Map([[folder._id, folder]]) })).toBe(true);
-			}
-		});
-
-		test("requires root write when the parent is known to be archived", () => {
-			const archivedFolder = test_node({
-				id: "folder",
-				parentId: files_ROOT_ID,
-				kind: "folder",
-				name: "folder",
-				archiveOperationId: "archive-operation",
-			});
-			const archivedChild = test_node({
-				id: "file",
-				parentId: "folder",
-				kind: "file",
-				name: "file.md",
-				archiveOperationId: "child-operation",
-			});
-			const args = {
-				item: archivedChild,
-				itemById: new Map([[archivedFolder._id, archivedFolder]]),
-				canWriteItem: () => true,
-				canManageRestrictedScope: () => false,
-			};
-
-			expect(can_unarchive_item({ ...args, canWriteRoot: false })).toBe(false);
-			expect(can_unarchive_item({ ...args, canWriteRoot: true })).toBe(true);
-
-			// Selecting the child alone leaves its parent in Trash, even with the same operation id.
-			const sameOperationChild = { ...archivedChild, archiveOperationId: "archive-operation" };
-
-			expect(can_unarchive_item({ ...args, item: sameOperationChild, canWriteRoot: false })).toBe(false);
-		});
-
-		test("checks the nearest active folder above an archived parent, not the root", () => {
-			const shared = test_node({ id: "shared", parentId: files_ROOT_ID, kind: "folder", name: "shared" });
-			const archivedFolder = test_node({
-				id: "folder",
-				parentId: "shared",
-				kind: "folder",
-				name: "folder",
-				archiveOperationId: "archive-operation",
-			});
-			const archivedChild = test_node({
-				id: "file",
-				parentId: "folder",
-				kind: "file",
-				name: "file.md",
-				archiveOperationId: "child-operation",
-			});
-			const args = {
-				item: archivedChild,
-				canWriteItem: (item: FilesSidebarItem) => is_open_node(item) && item.canWrite,
-				canWriteRoot: false,
-				canManageRestrictedScope: () => false,
-			};
-
-			expect(
-				can_unarchive_item({
-					...args,
-					itemById: new Map([
-						[archivedFolder._id, archivedFolder],
-						[shared._id, shared],
-					]),
-				}),
-			).toBe(true);
-			expect(
-				can_unarchive_item({
-					...args,
-					itemById: new Map([
-						[archivedFolder._id, archivedFolder],
-						[shared._id, { ...shared, canWrite: false, writeBlockedReason: "read_only" }],
-					]),
-				}),
-			).toBe(false);
 		});
 
 		test("allows Restore when the Trash item's parent is not loaded", () => {
@@ -8419,48 +7902,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					item,
 					itemById: new Map(),
 					canWriteItem: () => true,
-					canWriteRoot: false,
-					canManageRestrictedScope: () => false,
-				}),
-			).toBe(true);
-		});
-
-		test("requires scope manage when the restore-to-root leaves a restricted scope", () => {
-			const archivedScopeFolder = test_node({
-				id: "scope",
-				parentId: files_ROOT_ID,
-				kind: "folder",
-				name: "scope",
-				archiveOperationId: "archive-operation",
-				restrictedScopeNodeId: "scope",
-			});
-			const archivedScopedChild = test_node({
-				id: "file",
-				parentId: "scope",
-				kind: "file",
-				name: "file.md",
-				archiveOperationId: "child-operation",
-				restrictedScopeNodeId: "scope",
-			});
-			const args = {
-				item: archivedScopedChild,
-				itemById: new Map([[archivedScopeFolder._id, archivedScopeFolder]]),
-				canWriteItem: () => true,
-				canWriteRoot: true,
-			};
-
-			expect(can_unarchive_item({ ...args, canManageRestrictedScope: () => false })).toBe(false);
-			expect(can_unarchive_item({ ...args, canManageRestrictedScope: () => true })).toBe(true);
-
-			// The scope folder itself keeps its restriction wherever it lands, so the backend skips
-			// the scope-leave check for it. At the root it lands in place.
-			expect(
-				can_unarchive_item({
-					item: archivedScopeFolder,
-					itemById: new Map(),
-					canWriteItem: () => true,
-					canWriteRoot: false,
-					canManageRestrictedScope: () => false,
 				}),
 			).toBe(true);
 		});
@@ -8479,8 +7920,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					item: archivedFile,
 					itemById: new Map(),
 					canWriteItem: () => false,
-					canWriteRoot: true,
-					canManageRestrictedScope: () => true,
 				}),
 			).toBe(false);
 		});
@@ -9903,8 +9342,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										renameErrorByNodeId={new Map()}
 										renamingNameByNodeId={new Map()}
 										canWriteItem={() => props.canWrite ?? true}
-										canUnarchiveItem={() => true}
-										canDeletePermanentlyItem={() => true}
 										canWriteRoot={props.canWrite ?? true}
 										protectedDescendantIds={new Set()}
 										publicLinkNodeIds={props.publicLinkNodeIds ?? new Set()}
@@ -9920,8 +9357,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 										onShare={handleAction}
 										onProperties={handleAction}
 										onArchive={handleAction}
-										onUnarchive={handleAction}
-										onDeletePermanently={handleAction}
 									/>
 								</div>
 							</FilesClipboardProvider>

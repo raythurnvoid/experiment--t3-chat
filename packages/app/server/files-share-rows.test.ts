@@ -88,7 +88,6 @@ describe("share rows during a Move", () => {
 			f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.member.membershipId,
 				principalIndex: 0,
-				archived: false,
 				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: f.generation },
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
@@ -98,7 +97,6 @@ describe("share rows during a Move", () => {
 				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
-					archived: false,
 					savedStream: { kind: "normal", generation: f.generation },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})
@@ -147,7 +145,6 @@ describe("share rows during a Move", () => {
 				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
-					archived: false,
 					savedStream: { kind: "cohort", cohortId: f.cohortId, view: "after", generation: f.generation },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})

@@ -268,7 +268,7 @@ Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore sim
 - A Move or a Rename reads live children only (archive operation `null`), so it never takes Trash
   items along. They keep their path, `treePath`, ancestors and access pointers of delete time.
 - A Rename of an item in Trash is refused: `This item is in Trash. Restore it before you rename it.`
-  The sidebar does not offer Rename on Trash rows.
+  The Trash view does not offer Rename. Normal Files lists do not show Trash items.
 - A Restore reads only the items of its own delete. Trash items of other deletes inside a restored
   folder stay as they are.
 - Access checks trust a Trash item's frozen pointers. The "Add people" chain trusts the item's first

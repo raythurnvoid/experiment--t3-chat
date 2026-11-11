@@ -899,7 +899,6 @@ describe("tree rows", () => {
 			stream: "normal",
 			parentId: folderId,
 			kind: "file",
-			archived: false,
 			restricted: false,
 			paginationOpts: { numItems: 10, cursor: null },
 		});

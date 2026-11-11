@@ -299,6 +299,14 @@ describe("list_trash_entries", () => {
 		const f = await seed_archive();
 		const member = await f.add_member("clerk_archived_member", "member");
 		const guest = await f.add_member("clerk_archived_guest", null);
+		await f.grant_read({ userId: guest.userId }, [f.ids.locked]);
+		expect(
+			await guest.as.query(api.files_tree.get_tree_ancestors, {
+				membershipId: guest.membershipId,
+				nodeId: f.ids.locked,
+			}),
+			"a guest can still preview a readable deleted share by its old link",
+		).toMatchObject({ node: { _id: f.ids.locked, path: "/locked" } });
 
 		const page = await f.read(member.as, member.membershipId, null, { numItems: 10, cursor: null });
 		expect(page.page.map((row) => [row._id, row.locked])).toEqual([
@@ -308,7 +316,10 @@ describe("list_trash_entries", () => {
 			[f.ids.old, false],
 			[f.ids.oldest, false],
 		]);
-		expect(await f.read(guest.as, guest.membershipId, null, { numItems: 10, cursor: null })).toMatchObject({
+		expect(
+			await f.read(guest.as, guest.membershipId, null, { numItems: 10, cursor: null }),
+			"a readable deleted share does not give a guest a Trash list",
+		).toMatchObject({
 			page: [],
 			isDone: true,
 		});

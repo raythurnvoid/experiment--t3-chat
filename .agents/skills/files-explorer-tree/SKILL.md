@@ -178,29 +178,28 @@ Tree-item components:
 - `pinnedNodeIds` (the selected node, a reveal request, a renamed row) load through
   `get_tree_ancestors`, which returns the node and its readable folders from the top down. Those rows
   show before their folder's page reaches them. When the top readable folder is not at the root,
-  its row is hoisted to the root level.
+  its row is hoisted to the root level. Trash pins still serve preview breadcrumbs, but the sidebar
+  leaves them out of the normal tree.
 - The "Shared with you" group (`FilesSidebarSharedGroup`) sits above the tree and lists every share
   of a member: `list_tree_shared_roots`, 3 paginated streams by `principalIndex`, pages of 50, with a
   Show more button. A share inside a folder the member can open shows there too. The group is outside
   the tree (headless-tree needs one row per node id), so its rows carry `data-shared-row-id="shared:<id>"`
   and a click opens the node. The owner and a member with no shares see no group. It hides during a
-  search, which lists every match itself. Trashed shares join it, after the active ones, while
-  trashed items show.
-  - Its own pager: `FilesTreeSharedRootsPager` reports into its own results map in the provider, not
+  search, which lists every match itself. It lists live shares only.
+  - Its own pager: `FilesTreeSharedRootsPager` reports into its own result state in the provider, not
     into the folder results, so a group update does not rebuild the tree rows. Once the role is known,
     the owner reads no group stream (the owner has no shares).
   - Row menu: the tree row menu, opened by right click, the ContextMenu key or Shift+F10. It acts on
     that row only, with the real node id: Copy path, Copy link, Copy node id, Share, Properties,
-    Move to Trash or Restore, Copy, and Paste into a shared folder. Rename, create, Cut, and expand or
+    Move to Trash, Copy, and Paste into a shared folder. Rename, create, Cut, and expand or
     collapse the subtree are disabled. Move to Trash and Paste need `canWrite`, and Copy and Paste need an
     active share. A row does not expand inline (its children would need tree ids that clash with the tree's
     own rows). Opening it reveals it in the tree.
   - Focus: after Share or a Move to Trash Cancel opened from a group row, focus goes back to that group row,
     not to the share's tree row. After a confirmed Move to Trash, focus goes to the next group row, then the
     row before it, then Show more. When the group is gone, the tree picks a row. Show more keeps focus
-    while more pages remain. Once the last page loads, focus moves to the first new row by id (a new
-    active row sits before the old trashed rows), but only when focus is still in the group or on the
-    page body.
+    while more pages remain. Once the last page loads, focus moves to the first new row by id, but
+    only when focus is still in the group or on the page body.
   - A member with no tree rows sees "No files yet." only when the group is done and empty too.
 - While the root rows load, the tree shows skeleton rows with `aria-busy="true"`. They have the
   shape of real root rows: folder rows first (chevron, icon, name, and three actions, or one action
@@ -220,18 +219,17 @@ Tree-item components:
   The sidebar reads no share state or write permission for it. The client name checks skip locked
   siblings; the server checks every name. The "Shared with you" group never has locked rows.
 - Children sort folders first, then by `(sortName, name)` (`sort_children`), the folder table's
-  file.name A to Z order and the order of the tree indexes: active rows on
-  `by_org_ws_parent_archive_restricted_kind_sortName_name`, trashed rows on
-  `by_org_ws_parent_kind_restricted_archive_sortName_name`. So `file2` sorts before `file10`, case
+  file.name A to Z order and the tree index
+  `by_org_ws_parent_archive_restricted_kind_sortName_name`. So `file2` sorts before `file10`, case
   and accents are ignored, and the raw name breaks ties. This keeps loaded pages in place while later
   pages arrive.
-- Show items in Trash runs extra trashed pagers for each open folder. The menu shows no trashed
-  count, because counting would need the whole tree.
+- Normal Files lists show live items only. Use Open Trash for deleted items. The tree and shared
+  group have no Trash pagers or mixed-view toggle. This avoids extra subscriptions per open folder.
 - `FileNodeView` uses the matching loaded tree node while `get_file_node_for_membership` is loading.
   Keep that query running: its returned node or `null` always wins over the tree. A node absent from
-  the loaded rows stays loading until the query answers. Do not add a move to Trash filter; both queries
-  return readable trashed nodes. Switching from the tree to the query must keep the same editor and
-  draft.
+  the loaded rows stays loading until the query answers. Keep the node query able to read Trash:
+  it serves previews opened from Trash or old links. Switching from the tree to the query must keep
+  the same editor and draft.
 - Measure the first root rows and the first rows of a big folder separately. The Playwriter Files
   reference has the timing recipe.
 - Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
@@ -277,7 +275,7 @@ filter to search inside the folder". `/*` takes words only. Both input footers s
   - Each row shows the name and the folder that holds it; its `aria-label` is "<name> in <folder>". A `file.content` match also shows a snippet of the text around the words (`FilesSidebarSearchResults-row-snippet`). A click opens the node. The row has the tree row menu, which acts on that row only, like a "Shared with you" row: no rename, create, drag, or multi-select. Its rows carry `data-search-row-id`, and a move to Trash keeps focus in the list the same way.
   - A hit with `locked: true` (a name or path match the user cannot open) shows the `Lock` icon, a muted name, the title "You don't have access", and ", you don't have access" in its name (class `FilesSidebarSearchResults-row-locked`). A click opens its node route. Its menu has only Copy path and Properties.
   - Show more loads the next 50 and moves focus like Show more in the "Shared with you" group.
-  - With trashed items shown, the list says "Search does not show items in Trash.", because the search reads active rows only.
+  - Search reads live items only, like the normal tree.
   - Opening a match selects it. The selected node is pinned (`get_tree_ancestors`), so the tree shows it with its folders once the search closes. A `files::reveal_node` during a search waits until the search closes.
 - The free text keeps its shape rules, so users paste what they copied without learning a prefix syntax. `detect_search_query_mode` decides: a pasted app link is unwrapped into the `nodeId` search param or the `/files/<path>` splat it carries; a long lowercase alphanumeric string is a node id; anything containing `/` matches `path`; everything else matches `name`. There is no `>`/`#` prefix syntax.
 - Both surfaces read the server doors `files_nodes.search_saved` and `files_nodes.search_saved_metadata` through `useFilesSearchSaved`. The parser keeps one clause plus an optional `file.path` folder. The hook turns the query into at most 2 paginated queries (`usePaginatedQuery`, 50 rows a page) or at most 2 custom-field searches:
@@ -1101,7 +1099,10 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Move to Trash/Restore uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`. Move to Trash always asks first in the shared `FilesArchiveModal` (`files-archive-modal.tsx`). The sidebar row menu, the toolbar Move selected items to Trash button, the folder explorer row menu and the breadcrumb menu open it with the nodes to move to Trash; the modal owns the mutation, shows a refusal inline in the dialog (`role="alert"`), and reports success to its host. The row menu of a row outside the selection enables Move to Trash from that row alone. On a selected row it acts on the whole selection, like the header Move selected items to Trash action: Move to Trash is enabled when at least one selected row is writable and has no visible protected descendant, even when the clicked row is read-only. The dialog lists every selected row, read-only ones too, one name per line in a read-only `TextMonospaceBlock` (`Items to move to Trash`). Ctrl+A in it selects only the names. It shows 6 lines. With more than 6 names, a Show more button (`aria-expanded`) grows it to 16 lines. A click in the list does not grow it, so the text does not move under a selection. The server refuses each selected item it cannot change, with everything inside it, and moves the rest to Trash. When the move to Trash ended in the request but refused items, the dialog closes with a warning toast whose View opens the job (`"<name>" was not moved to Trash: <reason>.` for one refused item, `N items were not moved to Trash. See Activity.` for several); the Activity card counts them in its result line ("Moved 45 of 46 items to Trash."), still as Completed, and the job dialog lists the trashed names under `Items moved to Trash` and the refused ones under "Not moved (N)" (see `../activities/SKILL.md` Feed cards). `onArchived` gets only the ids the server did not report as refused (`notArchivedNodeIds`) or still waiting for a stamp (`waitingNodeIds`). A background job can refuse more later. When the request's own check or its index reads refuse every item, the dialog shows the refusal inline and stays open. After a sidebar confirm, keyboard focus moves to the first row after the trashed rows, or to the last row before them. The sidebar picks that row while the trashed rows are still in the tree (Convex resolves the mutation in the same task as the tree update) and moves DOM focus from an effect once the dialog has closed, because the sidebar is inert while the dialog is open and the closing dialog first gives focus back to the button that opened it. A move of a selection to Trash also clears the selection. Cancel puts focus back on the first row of the request. Restore is still direct.
 - A large move to Trash or restore goes on as a background job (rules in `../files-read-only/SKILL.md`). The job stamps every named item first: the request stamps at most 10 and a background step at most 30, so with more named items some stay in the tree until a later step. When the indexes cannot clear a named item, the whole move to Trash is checked first, and every named item stays in the tree until the check passes (`isChecking`). The Move to Trash dialog then says `Checking N items before moving them to Trash. They stay in the list until the check ends. See Activity.` (it names the item when there is one), closes, and passes the host only the ids the request stamped. Then it stamps the items inside them, the first named item's folder first. Restore follows [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore). A name clash inside a restored folder asks like a clash of a top item. A copy during a restore copies only the items already back (see `references/transfer.md`). A blocked restore waits hidden and checks access again after promotion. The job dialog `FilesArchiveRunModal` shows Stop only when the server returns `controls.canStop`: ordinary moves to Trash never have it, forced API/plugin moves to Trash can have it, and a restore has it only while it waits for a name clash choice. A forced move to Trash keeps blocked items and their folders. Its Activity stays Partly completed and pages through current-access-filtered outcomes. This adds no app force control. A restore clash offers Keep both, Replace, or Skip, with no Merge.
-- The tree and Trash row menus share one Restore gate (`can_unarchive_item`), which checks the selected item, its direct parent, and its real landing, as defined in [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore). With an archived parent, the landing is the nearest live folder above it (or the root), where Restore creates the missing folders. A folder the sidebar has not loaded is left to the backend. So is a live parent renamed after the delete, because the sidebar does not get `archivedPath`.
+- The Trash row menu uses `can_unarchive_item` to check the selected item and its loaded live
+  parent. The normal tree has no deleted parents to walk. The backend checks the real landing,
+  including missing or renamed parents, as defined in
+  [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore).
 
 ### Trash view and Delete permanently
 
@@ -1115,8 +1116,10 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   (`files_archive_operation_id_new` in `shared/files.ts`). Every writer of `archiveOperationId` uses
   it. A Move cohort uses this Trash operation id: `t<operationTime>-<cohort._id>`. The time in the
   id is the sort key of the Trash list.
+- Design principle: list deleted items only in Trash, apart from live Files. This keeps normal
+  folder paging and shared lists simple. A selected Trash item may still open as a preview.
 - The Trash view (`files-sidebar-archive.tsx`) replaces the tree. Open it from "Open Trash" in
-  the top More menu, beside "Show items in Trash". It is sidebar state, not a route or search param.
+  the top More menu. It is sidebar state, not a route or search param.
   An active search wins over it. Back to files and Escape (inside the view) close it.
 - It shows one area at a time, like Google Drive (one Trash per shared drive) and SharePoint (one bin
   per site). An area is the open part of the workspace (`Workspace`) or one restricted folder the
@@ -1124,8 +1127,9 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   everybody: the picker reads `files_tree.list_archive_areas`. The owner pages restricted folders by
   `by_archive_restricted_kind_tree`; a member pages their share rows by `isRestrictedScopeRoot`
   and `kind`, in four streams: their own shares, their two roles, and everyone. So the index never
-  reads a restricted file. Guests get no areas and an empty list. A gone area falls back to
-  `Workspace`.
+  reads a restricted file. Guests get no areas and an empty list, even for shared items.
+  Their deleted shares leave normal lists and have no Trash menu actions. A readable old link
+  still opens a preview. A gone area falls back to `Workspace`.
 - Items in Trash may share a name and a path, with each other and with an active item. Windows
   Recycle Bin, macOS Trash, Google Drive and Dropbox all allow this. So moving to Trash does not
   check names, and a Trash name clash is not a bug to fix. The name check happens at Restore, which
@@ -1165,8 +1169,8 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   Restore, Delete permanently…, Copy path. A locked row offers nothing.
 - Restore brings back the selected item and the items inside it that were moved to Trash with it; see [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore).
 - Delete permanently and Empty Trash need `content.permissions.manage`: on the workspace for the
-  open part, or on the restricted folder. The tree row menu of a trashed row also has Delete
-  permanently…, and a selection with trashed rows offers "Delete N items in Trash permanently…".
+  open part, or on the restricted folder. The Trash row menu deletes one item; Empty Trash deletes
+  the shown area. There is no mixed-tree selection of deleted items.
   The shared `FilesPurgeModal` asks first and shows a refusal inline. Empty Trash deletes every item
   trashed in the shown area before the click (`files_nodes.empty_archive`). Only one runs per
   workspace at a time.

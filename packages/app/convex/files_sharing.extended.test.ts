@@ -334,7 +334,6 @@ test("an extended folder appears in Shared with you for the added person, and fo
 		(
 			await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.memberMembershipId,
-				archived: false,
 				principalIndex: 0,
 				paginationOpts: { numItems: 50, cursor: null },
 			})

@@ -860,7 +860,6 @@ export async function seed_search_box_fixture(t: ReturnType<typeof test_convex>)
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		kind: "folder",
-		archived: false,
 		restricted: false,
 		paginationOpts: { numItems: 50, cursor: null },
 	});

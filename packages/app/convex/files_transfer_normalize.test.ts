@@ -59,7 +59,6 @@ async function fixture() {
 			membershipId: scope.membershipId,
 			parentId: sourceId,
 			kind: "folder",
-			archived: false,
 			restricted: false,
 			paginationOpts: { cursor: null, numItems: 1 },
 		});

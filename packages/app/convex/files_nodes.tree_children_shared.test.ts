@@ -313,7 +313,6 @@ describe("list_tree_children_shared", () => {
 		expect(root, "A custom-field filter must not open the guest root table").toEqual(REFUSED);
 		const shared = await member.as.query(api.files_tree.list_tree_shared_roots, {
 			membershipId: member.membershipId,
-			archived: false,
 			principalIndex: 0,
 			paginationOpts: FIRST_PAGE,
 		});
@@ -486,7 +485,6 @@ describe("list_tree_children_shared", () => {
 								})
 							: await ctx.runQuery(api.files_tree.list_tree_shared_roots, {
 									membershipId: f.admin.membershipId,
-									archived: false,
 									// The loop below never reads Shared with you for index 3.
 									principalIndex: principalIndex as 0 | 2,
 									paginationOpts,

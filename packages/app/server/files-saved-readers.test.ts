@@ -47,7 +47,6 @@ test("saved tree sources keep the normal names until publication", async () => {
 							membershipId: f.db.membershipId,
 							parentId,
 							kind,
-							archived: false,
 							restricted: false,
 							stream,
 							paginationOpts: { cursor: null, numItems: 20 },

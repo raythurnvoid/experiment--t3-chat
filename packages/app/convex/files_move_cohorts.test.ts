@@ -693,7 +693,6 @@ describe("Move cohort publication", () => {
 			stream: "normal",
 			parentId: outside._yay.nodeId,
 			kind: "folder",
-			archived: false,
 			restricted: false,
 			paginationOpts: { numItems: 10, cursor: null },
 		});

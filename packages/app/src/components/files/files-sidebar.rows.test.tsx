@@ -1043,17 +1043,14 @@ describe("FilesSidebar", () => {
 		expect(view.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Copy path", "Properties"]);
 	});
 
-	test("while archived items show, the search says it lists active items only", async () => {
+	test("search keeps Trash items out of the normal Files results", async () => {
+		treeState.nodes = treeState.nodes.map((node) => ({ ...node, archiveOperationId: "qa-archive" }));
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const view = render(<CreateSidebar router={router} selectedNodeId="delta" />);
-		await view.findByRole("treeitem", { name: "alpha" });
-		fireEvent.click(view.getByRole("button", { name: "More options" }));
-		fireEvent.click(await view.findByRole("menuitemcheckbox", { name: "Show items in Trash" }));
-
 		fireEvent.change(view.getByRole("combobox"), { target: { value: "notes" } });
 		const results = await view.findByRole("region", { name: "Search results" }, { timeout: 5_000 });
-		expect(within(results).getByText("Search does not show items in Trash.")).toBeTruthy();
 		expect(within(results).getByText("No files match your search.")).toBeTruthy();
+		expect(view.queryByRole("treeitem")).toBeNull();
 	});
 
 	test("a date in a folder says it matches only the same text", async () => {
