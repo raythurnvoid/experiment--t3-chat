@@ -111,6 +111,14 @@ const JOBS_USAGE =
 const WAIT_USAGE = "Usage: wait [-t SECONDS] [JOB...]\n";
 const KILL_USAGE = "Usage: kill [-s SIGNAL | -SIGNAL] JOB...\n";
 const JOB_NUMBER_REGEX = /^%?(\d+)$/u;
+const ACTIVITY_KIND_LABELS = {
+	copy: "copy",
+	move: "move",
+	rename: "rename",
+	archive: "move to Trash",
+	restore: "restore from Trash",
+	purge: "delete permanently",
+} satisfies Record<NonNullable<files_transfer_status_get_activity_for_agent_Result>["kind"], string>;
 
 /**
  * The status word `jobs`, `jobs -a` and `jobs -o` print for an Activity
@@ -173,15 +181,6 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 	const shell = summary.shellName.padEnd(8);
 	return `[${summary.jobNumber}] ${status} ${shell} ${summary.scriptPreview}${parent}\n`;
 }
-
-const ACTIVITY_KIND_LABELS = {
-	copy: "copy",
-	move: "move",
-	rename: "rename",
-	archive: "move to Trash",
-	restore: "restore from Trash",
-	purge: "delete forever",
-} satisfies Record<NonNullable<files_transfer_status_get_activity_for_agent_Result>["kind"], string>;
 
 function activity_text(view: NonNullable<files_transfer_status_get_activity_for_agent_Result>) {
 	const progress = view.progress;

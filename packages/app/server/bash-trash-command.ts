@@ -6,7 +6,7 @@ import { internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import { files_archive_operation_id_time, type files_SavedStream } from "../shared/files.ts";
-import { files_trash_areas_merge_page, type files_trash_areas_Key } from "./files-trash-areas.ts";
+import { files_trash_areas_merge_page } from "./files-trash-areas.ts";
 import {
 	bash_COMMAND_EXIT_FAILURE,
 	bash_COMMAND_EXIT_USAGE,
@@ -34,6 +34,8 @@ const USAGE =
 	"All commands: [--workspace current|home] [--limit 1..50] [--cursor CURSOR]\n" +
 	"Rows: time, kind, deleted by, id, path. Your own rm shows as (pending delete) until the user saves it.\n" +
 	"trash restore undoes your own pending delete. Restoring a saved Trash item is not available yet.\n";
+const GUEST_MESSAGE =
+	"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.";
 const cursor_schema = z.object({
 	key: z.string(),
 	stream: z.enum(["pending", "saved", "children", "areas"]),
@@ -43,12 +45,12 @@ const cursor_schema = z.object({
 const children_key_schema = z.object({ kind: z.enum(["file", "folder"]), name: z.string() }).nullable();
 const area_key_schema = z.object({ treePath: z.string(), nodeId: z.string() }).nullable();
 
-const JOB_LABELS = { archive: "moving to Trash", restore: "restoring", purge: "deleting forever" } as const;
+const JOB_LABELS = { archive: "moving to Trash", restore: "restoring", purge: "deleting permanently" } as const;
 
 type Item = {
 	id: string | null;
 	nodeId: Id<"files_nodes"> | null;
-	pending: boolean;
+	pending: "draft" | "in_trash" | null;
 	time: number | null;
 	kind: "file" | "folder";
 	changedBy: string | null;
@@ -57,32 +59,22 @@ type Item = {
 	job: { kind: keyof typeof JOB_LABELS; activityId: Id<"activities"> | null } | null;
 };
 
-function format_time(time: number | null) {
-	return time === null ? "-" : `${new Date(time).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
 function item_line(item: Item) {
 	const marks = [
-		...(item.pending ? [" (pending delete)"] : []),
+		...(item.pending === "draft" ? [" (pending delete)"] : []),
+		...(item.pending === "in_trash" ? [" (pending delete, now in Trash)"] : []),
 		...(item.locked ? [" (locked)"] : []),
 		...(item.job
 			? [` (${JOB_LABELS[item.job.kind]}${item.job.activityId ? `: Activity ${item.job.activityId}` : ""})`]
 			: []),
 	];
 	return [
-		format_time(item.time),
+		item.time === null ? "-" : `${new Date(item.time).toISOString().slice(0, 16).replace("T", " ")} UTC`,
 		item.kind,
 		item.changedBy ?? "-",
 		item.id ?? "-",
 		`${item.path}${item.kind === "folder" && item.path !== "/" ? "/" : ""}${marks.join("")}`,
 	].join("\t");
-}
-
-function is_invalid_cursor(error: unknown) {
-	return (
-		error instanceof ConvexError &&
-		z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
-	);
 }
 
 /**
@@ -99,22 +91,15 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		});
 		if (args[0] === "--help") return { stdout: USAGE, stderr: "", exitCode: 0 };
 
-		// Bare `trash` and `trash PATH` list, like `trash ls`.
 		const first = args[0];
-		const command =
-			first === "ls" || first === "list"
-				? "ls"
-				: first === "areas" || first === "restore"
-					? first
-					: first === "rm" || first === "purge" || first === "empty"
-						? first
-						: null;
 		if (first === "rm")
 			return fail(
-				"to move an item to Trash, use rm (rm -r for a folder). Deleting items in Trash forever is not available yet.",
+				"to move an item to Trash, use rm (rm -r for a folder). Deleting items in Trash permanently is not available yet.",
 				true,
 			);
 		if (first === "purge" || first === "empty") return fail(`${first} is not available yet.`, true);
+		// Bare `trash` and `trash PATH` list, like `trash ls`.
+		const command = first === "ls" || first === "list" ? "ls" : first === "areas" || first === "restore" ? first : null;
 		const rest = command === null ? args : args.slice(1);
 
 		const options: Record<string, string> = {};
@@ -195,7 +180,6 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		const render = (dbFilesPath: string) =>
 			bash_db_files_path_to_current_workspace_path(root.currentWorkspacePath, dbFilesPath);
 
-		// #region restore
 		if (command === "restore") {
 			let stdout = "";
 			let stderr = "";
@@ -228,11 +212,12 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				})) as FunctionReturnType<typeof internal.files_trash_agent.restore_pending_delete>;
 				if (restored._nay) {
 					const reasons: Partial<Record<string, string>> = {
-						guest: restored._nay.message,
 						not_found: "No such file or directory",
 						not_deleted: "it is not deleted.",
 						no_pending_delete:
 							"it is not your pending delete. Restoring a saved Trash item is not available yet: ask the user to restore it in Files (Trash).",
+						in_trash:
+							"it is in Trash now. Restoring a saved Trash item is not available yet: ask the user to restore it in Files (Trash).",
 						parent_hidden: "its folder is deleted too. Restore the folder first.",
 						exists: "File exists. Move or remove the item at that path first.",
 					};
@@ -247,9 +232,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			}
 			return { stdout, stderr, exitCode };
 		}
-		// #endregion restore
 
-		// #region lists
 		const json = options.format === "json";
 		let area: Id<"files_nodes"> | null = null;
 		let areaPath = "/";
@@ -325,6 +308,19 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			if (nay.name === "guest" || nay.name === "not_a_folder") return fail(nay.message);
 			return fail(`cannot open '${shown}': ${nay.message}`);
 		};
+		const saved_item = (
+			row: NonNullable<FunctionReturnType<typeof internal.files_trash_agent.list_entries>["_yay"]>["page"][number],
+		): Item => ({
+			id: row.locked ? null : `${row.nodeId}:${row.archiveOperationId}`,
+			nodeId: row.locked ? null : row.nodeId,
+			pending: null,
+			time: row.archiveOperationId === null ? null : files_archive_operation_id_time(row.archiveOperationId),
+			kind: row.kind,
+			changedBy: row.locked ? null : row.changedBy,
+			path: render(row.path),
+			locked: row.locked,
+			job: row.locked ? null : row.job,
+		});
 		try {
 			if (inFolder) {
 				const afterKey = children_key_schema.safeParse(stored?.afterKey ?? null);
@@ -345,18 +341,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 					};
 					return fail(messages[result._nay.name ?? ""] ?? `cannot open '${id}': ${result._nay.message}`);
 				}
-				for (const row of result._yay.page)
-					items.push({
-						id: row.locked ? null : `${row.nodeId}:${row.archiveOperationId}`,
-						nodeId: row.locked ? null : row.nodeId,
-						pending: false,
-						time: row.archiveOperationId === null ? null : files_archive_operation_id_time(row.archiveOperationId),
-						kind: row.kind,
-						changedBy: row.locked ? null : row.changedBy,
-						path: render(row.path),
-						locked: row.locked,
-						job: null,
-					});
+				for (const row of result._yay.page) items.push(saved_item(row));
 				if (result._yay.nextKey) next = { stream: "children", cursor: null, afterKey: result._yay.nextKey };
 			} else if (command === "areas") {
 				const afterKey = area_key_schema.safeParse(stored?.afterKey ?? null);
@@ -369,10 +354,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 					folderPath: "/",
 				};
 				const view = await ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs);
-				if (!view)
-					return fail(
-						"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.",
-					);
+				if (!view) return fail(GUEST_MESSAGE);
 				const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
 				if (view.cohortId !== null && view.view !== null)
 					sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
@@ -382,7 +364,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				const withOpenArea = !stored;
 				const merged = await files_trash_areas_merge_page({
 					sources,
-					afterKey: afterKey.data as files_trash_areas_Key | null,
+					afterKey: afterKey.data,
 					numItems: limit._yay.limit - (withOpenArea ? 1 : 0),
 					read_page: async (page) =>
 						(await ctx.runQuery(internal.public_api_files_organize.list_trash_areas_page, {
@@ -397,10 +379,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 							agentSource: source,
 						})) as FunctionReturnType<typeof internal.public_api_files_organize.list_trash_areas_page>,
 				});
-				if (merged.status === "denied")
-					return fail(
-						"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.",
-					);
+				if (merged.status === "denied") return fail(GUEST_MESSAGE);
 				if (withOpenArea) areaRows.push({ areaNodeId: null, path: root.currentWorkspacePath });
 				for (const row of merged.page) areaRows.push({ areaNodeId: row.nodeId, path: render(row.path) });
 				if (!merged.isDone) next = { stream: "areas", cursor: null, afterKey: merged.afterKey };
@@ -419,7 +398,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 						items.push({
 							id: row.locked ? null : `${row.nodeId}:pending`,
 							nodeId: row.locked ? null : row.nodeId,
-							pending: true,
+							pending: row.inTrash ? "in_trash" : "draft",
 							time: row.at,
 							kind: row.kind,
 							changedBy: row.locked ? null : "you",
@@ -450,25 +429,18 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 					}
 					if (!result) throw new Error("trash: list_entries did not run");
 					if (result._nay) return area_error(result._nay);
-					for (const row of result._yay.page)
-						items.push({
-							id: row.locked ? null : `${row.nodeId}:${row.archiveOperationId}`,
-							nodeId: row.locked ? null : row.nodeId,
-							pending: false,
-							time: row.archiveOperationId === null ? null : files_archive_operation_id_time(row.archiveOperationId),
-							kind: row.kind,
-							changedBy: row.locked ? null : row.changedBy,
-							path: render(row.path),
-							locked: row.locked,
-							job: row.locked ? null : row.job,
-						});
+					for (const row of result._yay.page) items.push(saved_item(row));
 					if (!result._yay.isDone || endCursor)
 						next = { stream: "saved", cursor: result._yay.continueCursor, afterKey: null };
 				}
 			}
 		} catch (error) {
 			// A Move that starts or ends between pages changes the saved view.
-			if (!is_invalid_cursor(error)) throw error;
+			if (
+				!(error instanceof ConvexError) ||
+				!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+			)
+				throw error;
 			return fail("The Trash changed. Run the command again without --cursor.");
 		}
 
@@ -501,17 +473,14 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				? areaRows.map((row) => `${row.path}${row.path.endsWith("/") ? "" : "/"}`)
 				: items.map(item_line);
 		const note =
-			stored || command === "areas"
+			stored || command === "areas" || inFolder
 				? ""
-				: inFolder
-					? ""
-					: `trash: Trash of '${render(areaPath)}'. Restricted folders have their own Trash: trash areas. Items inside a deleted folder: trash ls --in ID.\n`;
+				: `trash: Trash of '${render(areaPath)}'. Restricted folders have their own Trash: trash areas. Items inside a deleted folder: trash ls --in ID.\n`;
 		const empty = !stored && lines.length === 0 && !nextCursor ? "(Trash is empty)\n" : "";
 		return {
 			stdout: `${lines.join("\n")}${lines.length ? "\n" : ""}`,
 			stderr: `${limitNote}${note}${empty}${nextLine}`,
 			exitCode: 0,
 		};
-		// #endregion lists
 	});
 }

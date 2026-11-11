@@ -8,8 +8,8 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { compareValues, v, type Infer } from "convex/values";
 import { Result } from "common/errors-as-values-utils.ts";
-import { v_result } from "../server/convex-utils.ts";
-import { files_db_get_pending_update } from "../server/files.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
+import { files_db_get_path_access, files_db_get_pending_update } from "../server/files.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_view,
@@ -17,7 +17,8 @@ import {
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
 import { files_visible_resolve_db_create } from "../server/files-visible-resolve.ts";
 import { files_move_reservations_db_check_node_write } from "../server/files-move-reservations.ts";
-import { ai_chat_workspaces_source_validator } from "./schema.ts";
+import { doc } from "convex-helpers/validators";
+import app_convex_schema, { ai_chat_workspaces_source_validator } from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { activities_db_get_by_source_id } from "./activities_db.ts";
@@ -44,7 +45,7 @@ const agent_args = {
 	agentSource: ai_chat_workspaces_source_validator,
 };
 
-const kind_validator = v.union(v.literal("file"), v.literal("folder"));
+const kind_validator = doc(app_convex_schema, "files_nodes").fields.kind;
 
 /**
  * One row of a saved Trash list. A locked row has no id and no name of who deleted it, like the Trash
@@ -61,7 +62,7 @@ const item_validator = v.union(
 		job: v.union(
 			v.null(),
 			v.object({
-				kind: v.union(v.literal("archive"), v.literal("restore"), v.literal("purge")),
+				kind: app_convex_schema.tables.files_archive_runs.validator.fields.kind,
 				activityId: v.union(v.id("activities"), v.null()),
 			}),
 		),
@@ -75,7 +76,8 @@ const item_validator = v.union(
 );
 
 /**
- * One of the user's own draft deletes (`rm`). `at` is when the agent asked for it.
+ * One of the user's own draft deletes (`rm`). `at` is when the agent asked for it. `inTrash` is true when
+ * a saved delete (a Save of this draft, or another user's delete) already moved the item to Trash.
  */
 const pending_item_validator = v.union(
 	v.object({
@@ -84,8 +86,9 @@ const pending_item_validator = v.union(
 		kind: kind_validator,
 		path: v.string(),
 		at: v.number(),
+		inTrash: v.boolean(),
 	}),
-	v.object({ locked: v.literal(true), kind: kind_validator, path: v.string(), at: v.number() }),
+	v.object({ locked: v.literal(true), kind: kind_validator, path: v.string(), at: v.number(), inTrash: v.boolean() }),
 );
 
 async function db_get_reader(
@@ -274,23 +277,40 @@ export const list_pending_deletes = internalQuery({
 			.order("desc")
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, PAGE_MAX_ITEMS) });
 
-		const items = await Promise.all(
-			result.page.map(async (pendingUpdate) => {
-				const node =
-					pendingUpdate.target.kind === "saved"
-						? await files_saved_placement_db_get_node(ctx.db, pendingUpdate.target.id)
-						: null;
-				// A Save that is moving the item to Trash right now: the saved list shows it soon. This drops
-				// only the user's own docs that a Save holds.
-				if (!node || node.archiveOperationId !== null || !pendingUpdate.pendingArchive) return null;
-				const at = pendingUpdate.pendingArchive.at;
-				// Access can be taken away after the delete was asked for. Keep the row, locked.
-				return (await checker.can(node, "content.read"))
-					? { locked: false as const, nodeId: node._id, kind: node.kind, path: node.path, at }
-					: { locked: true as const, kind: node.kind, path: node.path, at };
-			}),
-		);
-		return Result({ _yay: { ...result, page: items.filter((item) => item !== null) } });
+		// Print the path of the agent's view, not the saved one: a draft move of a folder changes it, and
+		// `trash restore PATH` looks the item up in that view. The rows share one resolver, so read them
+		// one at a time.
+		const resolver = files_visible_resolve_db_create(ctx.db, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: args.userId,
+			includeHidden: true,
+			readLimit: 2048,
+		});
+		const items = [];
+		for (const pendingUpdate of result.page) {
+			const node =
+				pendingUpdate.target.kind === "saved"
+					? await files_saved_placement_db_get_node(ctx.db, pendingUpdate.target.id)
+					: null;
+			if (!node || !pendingUpdate.pendingArchive) continue;
+
+			const resolved = await resolver.resolve({ kind: "saved", id: node._id });
+			if (resolver.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+			// The view has no place for an item in a draft move cycle. Show its saved path then.
+			const path = resolved?.entry.path ?? node.path;
+			const at = pendingUpdate.pendingArchive.at;
+			// Keep a draft whose item a saved delete moved to Trash, like the "In Trash" row of the Pending
+			// tab. Dropping it would make each later page read it again.
+			const inTrash = node.archiveOperationId !== null;
+			// Access can be taken away after the delete was asked for. Keep the row, locked.
+			items.push(
+				(await checker.can(node, "content.read"))
+					? { locked: false as const, nodeId: node._id, kind: node.kind, path, at, inTrash }
+					: { locked: true as const, kind: node.kind, path, at, inTrash },
+			);
+		}
+		return Result({ _yay: { ...result, page: items } });
 	},
 });
 
@@ -298,7 +318,7 @@ export const list_pending_deletes = internalQuery({
  * `trash ls --in ID`: the items inside a folder in Trash that came with the same delete, folders first,
  * then files, each by name. This is what a restore of the folder brings back.
  *
- * Each page reads at most `numItems` rows from each saved source (the normal one, and the Move view
+ * Each page reads at most `numItems` docs from each saved source (the normal one, and the Move view
  * while a Move runs) after `afterKey`, so a page costs the same for any folder size. Locked rows stay.
  */
 export const list_children = internalQuery({
@@ -419,6 +439,14 @@ export const restore_pending_delete = internalMutation({
 		const hiddenResolver = files_visible_resolve_db_create(ctx.db, { ...scope, includeHidden: true });
 		let nodeId: Id<"files_nodes"> | null;
 		if ("path" in args.item) {
+			// Inside a locked folder every path answers Permission denied, whether it exists or not, like `cat`.
+			const access = await files_db_get_path_access(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				subject: { kind: "user", userId: args.userId, plugin: null },
+				path: args.item.path,
+			});
+			if (access.status === "locked") return Result({ _nay: { message: "Permission denied" } });
 			const found = await hiddenResolver.findPath(args.item.path);
 			if (!found) return Result({ _nay: { name: "not_found", message: "No such file or directory" } });
 			if (!found.hidden) return Result({ _nay: { name: "not_deleted", message: "Not in Trash" } });
@@ -429,9 +457,8 @@ export const restore_pending_delete = internalMutation({
 			return Result({ _nay: { name: "not_found", message: "No Trash item" } });
 		if (!(await checker.can(node, "content.read"))) return Result({ _nay: { message: "Permission denied" } });
 
-		// The delete was saved already: the item is in Trash now, or a Save is moving it there.
-		if (node.archiveOperationId !== null)
-			return Result({ _nay: { name: "no_pending_delete", message: "No pending delete" } });
+		// A saved delete moved the item to Trash already, or a Save is moving it there now.
+		if (node.archiveOperationId !== null) return Result({ _nay: { name: "in_trash", message: "In Trash" } });
 
 		// The item comes back where the agent's view had it before `rm`. Check its folder before its own
 		// delete: after `rm -r folder`, a file inside it has no delete of its own, and the agent must
