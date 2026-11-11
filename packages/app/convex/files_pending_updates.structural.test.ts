@@ -3744,7 +3744,7 @@ describe("upsert_file_pending_archive_in_db", () => {
 		if (!pendingRow) {
 			throw new Error("Missing pending row after archive upsert");
 		}
-		expect(pendingRow.pendingArchive).toEqual({ fromPath: "/archive-upsert.md" });
+		expect(pendingRow.pendingArchive).toMatchObject({ fromPath: "/archive-upsert.md" });
 		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(false);
 		expect(pendingRow.size).toBe(0);
 
@@ -3770,7 +3770,7 @@ describe("upsert_file_pending_archive_in_db", () => {
 			}),
 		);
 		expect(repeatedRow?._id).toBe(pendingRow._id);
-		expect(repeatedRow?.pendingArchive).toEqual({ fromPath: "/archive-upsert.md" });
+		expect(repeatedRow?.pendingArchive).toMatchObject({ fromPath: "/archive-upsert.md" });
 	});
 
 	test("supersedes a pending move, keeps content branches, and dedupes threadIds", async () => {
@@ -3844,7 +3844,7 @@ describe("upsert_file_pending_archive_in_db", () => {
 		if (!pendingRow) {
 			throw new Error("Missing pending row after archive supersede");
 		}
-		expect(pendingRow.pendingArchive).toEqual({ fromPath: "/archive-supersede.md" });
+		expect(pendingRow.pendingArchive).toMatchObject({ fromPath: "/archive-supersede.md" });
 		expect(pendingRow.pendingMove).toBeUndefined();
 		expect(files_pending_update_has_yjs_content(pendingRow)).toBe(true);
 		expect(pendingRow.threadIds).toEqual([threadId]);
@@ -5602,7 +5602,7 @@ describe("structural rows on content collapse", () => {
 		await t.run(async (ctx) => {
 			const pendingUpdate = await read_pending_update_row({ ctx, ...seeded });
 			expect(pendingUpdate).not.toBeNull();
-			expect(pendingUpdate?.pendingArchive).toEqual({ fromPath: "/degrade-delete.md" });
+			expect(pendingUpdate?.pendingArchive).toMatchObject({ fromPath: "/degrade-delete.md" });
 			expect(pendingUpdate?.content).toBeUndefined();
 			expect(pendingUpdate?.size).toBe(0);
 			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingUpdate!._id })).toHaveLength(0);

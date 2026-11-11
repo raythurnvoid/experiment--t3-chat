@@ -155,6 +155,22 @@ export async function files_nodes_db_get_tree_reader(
 	if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 		throw convex_error({ message: "Unauthenticated" });
 	}
+
+	return await files_nodes_db_get_tree_reader_for_user(ctx, { userAuth, membershipId: args.membershipId });
+}
+
+/**
+ * The tree reader of `files_nodes_db_get_tree_reader` for a user the caller already checked, for
+ * example the agent's user after `ai_chat_workspaces_db_authorize_file_scope`. It reads no auth.
+ */
+export async function files_nodes_db_get_tree_reader_for_user(
+	ctx: QueryCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membershipId: Id<"organizations_workspaces_users">;
+	},
+) {
+	const { userAuth } = args;
 	const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
 	if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 		return null;
@@ -224,6 +240,8 @@ export async function files_tree_db_get_readable_node(
 }
 
 export type files_tree_db_FileChecker = ReturnType<typeof access_control_create_file_checker>;
+
+export type files_tree_db_Reader = NonNullable<Awaited<ReturnType<typeof files_nodes_db_get_tree_reader_for_user>>>;
 
 /**
  * Build the public tree rows for nodes the caller may read.

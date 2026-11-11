@@ -103,6 +103,7 @@ import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts
 import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts";
 import { bash_resolve_command_create } from "./bash-resolve-command.ts";
 import { bash_rm_command_create } from "./bash-rm-command.ts";
+import { bash_trash_command_create } from "./bash-trash-command.ts";
 import { bash_search_command_create } from "./bash-search-command.ts";
 import { bash_sed_command_create } from "./bash-sed-command.ts";
 import { bash_stat_command_create } from "./bash-stat-command.ts";
@@ -1585,6 +1586,7 @@ function bash_shell_create(
 						bash_rm_command_create(ctx, dbFilesRoots),
 						bash_cp_command_create({ ctx, dbFilesRoots, transferContext: args.transferContext }),
 						bash_mv_command_create({ ctx, dbFilesRoots, transferContext: args.transferContext }),
+						bash_trash_command_create(ctx, dbFilesRoots),
 					]
 				: []),
 			bash_tee_command_create(dbFilesRoots),

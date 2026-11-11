@@ -489,7 +489,7 @@ describe("files_pending_overlay flush", () => {
 							target(x),
 							index * 2 + 1 < others
 								? { pendingMove: { destParent: parent(a), destName: "x.md", fromPath: x.path } }
-								: { pendingArchive: { fromPath: x.path } },
+								: { pendingArchive: { fromPath: x.path, area: null, at: Date.now() } },
 						),
 					);
 				}
@@ -674,7 +674,7 @@ describe("files_pending_overlay flush", () => {
 			await ctx.db.delete("files_pending_updates", proposal._id);
 			await ctx.db.insert(
 				"files_pending_updates",
-				proposal_doc(f.v, target(y), { pendingArchive: { fromPath: y.path } }),
+				proposal_doc(f.v, target(y), { pendingArchive: { fromPath: y.path, area: null, at: Date.now() } }),
 			);
 		});
 		// No job ran yet: U's docs of x are gone, and V's change waits in V's targets job.
@@ -712,7 +712,7 @@ describe("files_pending_overlay flush", () => {
 				if (doc.stringValue === "draft") await ctx.db.patch("files_metadata_docs", doc._id, { stringValue: "done" });
 			await ctx.db.insert(
 				"files_pending_updates",
-				proposal_doc(f.v, target(y), { pendingArchive: { fromPath: y.path } }),
+				proposal_doc(f.v, target(y), { pendingArchive: { fromPath: y.path, area: null, at: Date.now() } }),
 			);
 		});
 		const job = await f.t.run((ctx) =>
@@ -789,7 +789,7 @@ describe("files_pending_overlay flush", () => {
 		await test_run_with_flush(f.t, async (ctx) => {
 			const id = await ctx.db.insert(
 				"files_pending_updates",
-				proposal_doc(f.u, target(b), { pendingArchive: { fromPath: "/b" } }),
+				proposal_doc(f.u, target(b), { pendingArchive: { fromPath: "/b", area: null, at: Date.now() } }),
 			);
 			await files_pending_overlay_db_flush(ctx);
 			const place = await ctx.db
@@ -867,7 +867,7 @@ describe("files_pending_overlay flush", () => {
 			for (const { scope, a } of moved)
 				await ctx.db.insert(
 					"files_pending_updates",
-					proposal_doc(scope, target(a), { pendingArchive: { fromPath: "/a" } }),
+					proposal_doc(scope, target(a), { pendingArchive: { fromPath: "/a", area: null, at: Date.now() } }),
 				);
 		});
 		for (const { x } of moved) expect((await f.overlay(target(x))).place).toMatchObject({ isVisible: false });
@@ -877,7 +877,7 @@ describe("files_pending_overlay flush", () => {
 		await test_run_with_flush(f.t, (ctx) =>
 			ctx.db.insert(
 				"files_pending_updates",
-				proposal_doc(second, target(y), { pendingArchive: { fromPath: "/y.md" } }),
+				proposal_doc(second, target(y), { pendingArchive: { fromPath: "/y.md", area: null, at: Date.now() } }),
 			),
 		);
 		await test_run_with_flush(f.t, async (ctx) =>

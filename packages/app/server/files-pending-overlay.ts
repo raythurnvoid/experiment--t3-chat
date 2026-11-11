@@ -55,7 +55,7 @@ import { files_visible_resolve_db_create, type files_visible_resolve_Facts } fro
 import { files_pending_types_compute } from "./files-pending-types.ts";
 import { files_metadata_maps_db_delete } from "./files-metadata-maps.ts";
 import { files_content_heads_db_flush } from "./files-content-heads.ts";
-import { files_trash_entries_db_sync } from "./files-trash-entries.ts";
+import { files_trash_entries_db_sync, files_trash_entries_db_sync_draft_areas } from "./files-trash-entries.ts";
 import {
 	files_metadata_catalog_add_write,
 	files_metadata_catalog_db_insert_deltas,
@@ -135,6 +135,9 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		"workspaceId",
 		"treePath",
 		"restrictedScopeNodeId",
+		// Draft deletes copy the area pointer (`files_trash_entries_area_pointer`).
+		"isRestrictedScopeRoot",
+		"parentScopeNodeId",
 		// Share rows read both: an extended root has rows, and a Move-held node has rows in both views.
 		"extendedScopeNodeId",
 		"moveCohortId",
@@ -2892,6 +2895,16 @@ async function db_flush_saved_node(
 	// writes. An archive or restore writes the node itself too.
 	if (await files_share_rows_db_node_changed(ctx.db, nodeId, old, node))
 		await files_share_rows_db_sync_node(ctx.db, { ...scope, nodeId, node });
+
+	// A restrict or unrestrict above the node changes its area, and its scope job writes the node here.
+	if (
+		old &&
+		node &&
+		(old.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
+			old.isRestrictedScopeRoot !== node.isRestrictedScopeRoot ||
+			old.parentScopeNodeId !== node.parentScopeNodeId)
+	)
+		await files_trash_entries_db_sync_draft_areas(ctx, { nodeId, node });
 
 	const changed =
 		!old ||

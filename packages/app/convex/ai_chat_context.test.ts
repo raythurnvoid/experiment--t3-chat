@@ -396,7 +396,7 @@ describe("ai_chat_context_discover_sources", () => {
 			const pending = await ctx.db.query("files_pending_updates").first();
 			await ctx.db.patch("files_pending_updates", pending!._id, {
 				pendingMove: undefined,
-				pendingArchive: { fromPath: "/.agents/skills/example/SKILL.md" },
+				pendingArchive: { fromPath: "/.agents/skills/example/SKILL.md", area: null, at: Date.now() },
 			});
 		});
 		expect((await f.discover(f.scope))._yay?.skills).toEqual([]);

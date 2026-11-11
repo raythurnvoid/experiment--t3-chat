@@ -32,6 +32,7 @@ import app_convex_schema, {
 } from "./schema.ts";
 
 import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import { files_trash_entries_area_pointer } from "../server/files-trash-entries.ts";
 import {
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_sequence,
@@ -708,7 +709,7 @@ export async function files_pending_update_db_settle_move_row(
  * or copy provenance keep it (the row degrades back to a content/copy row), delete-only
  * docs are deleted with their chunks.
  */
-async function files_pending_update_db_settle_archive_row(
+export async function files_pending_update_db_settle_archive_row(
 	ctx: MutationCtx,
 	args: { pendingUpdate: app_convex_Doc<"files_pending_updates"> },
 ) {
@@ -5190,7 +5191,22 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 
 		// Store the request, not the early check: that check can leave a case to Accept. A later plain rm
 		// replaces the whole value, so the last rm decides.
-		const pendingArchive = { fromPath: node.path, ...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}) };
+		const area = files_trash_entries_area_pointer(node);
+		const existingArchive = existingPendingUpdate?.pendingArchive;
+		// A repeated rm keeps the stored object, with the time of the first rm. The Move guard compares
+		// `pendingArchive` as JSON, so even the same values in another key order count as a new delete.
+		const pendingArchive =
+			existingArchive &&
+			existingArchive.fromPath === node.path &&
+			existingArchive.ignoreReadOnly === args.ignoreReadOnly &&
+			existingArchive.area === area
+				? existingArchive
+				: {
+						fromPath: node.path,
+						...(args.ignoreReadOnly ? { ignoreReadOnly: true as const } : {}),
+						area,
+						at: now,
+					};
 		// Contributor set: an agent rm records its thread once per doc; client deletes pass no threadId.
 		const nextThreadIds =
 			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)

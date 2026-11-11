@@ -1187,6 +1187,17 @@ export const files_pending_update_header_validator = v.object({
 			 * review item. Missing means an ordinary delete.
 			 */
 			ignoreReadOnly: v.optional(v.literal(true)),
+			/**
+			 * The Trash area the item lists in once the delete is saved (`files_trash_entries_area_pointer`
+			 * of the live node, null for the open part). The agent's `trash ls` reads the user's draft
+			 * deletes of one area by it. The overlay flush and Move cleanup keep it right when the node's
+			 * area changes.
+			 */
+			area: v.union(v.id("files_nodes"), v.null()),
+			/**
+			 * When the delete was asked for. `trash ls` lists the newest first.
+			 */
+			at: v.number(),
 		}),
 	),
 	/**
@@ -3812,6 +3823,15 @@ const app_convex_schema = defineSchema({
 			"pendingMove.destParent.kind",
 			"pendingMove.destParent.id",
 			"pendingMove.destName",
+		])
+		// The agent's `trash ls`: one user's draft deletes in one Trash area, newest first. A doc
+		// without a delete has no `pendingArchive.area` and is outside every range.
+		.index("by_org_ws_user_pendingArchive_area_at", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"pendingArchive.area",
+			"pendingArchive.at",
 		])
 		.index("by_copiedFrom_target", ["copiedFrom.target.kind", "copiedFrom.target.id"])
 		.index("by_pendingMove_destParent", ["pendingMove.destParent.kind", "pendingMove.destParent.id"]),

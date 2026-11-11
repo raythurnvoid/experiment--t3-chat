@@ -2,7 +2,12 @@
 
 import { query, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { paginationOptsValidator, paginationResultValidator, type PaginationResult } from "convex/server";
+import {
+	paginationOptsValidator,
+	paginationResultValidator,
+	type PaginationOptions,
+	type PaginationResult,
+} from "convex/server";
 import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { compareValues, v, type Infer } from "convex/values";
 import { files_ROOT_ID, type files_DirectoryView, type files_IndexDirectoryView } from "../shared/files.ts";
@@ -56,6 +61,7 @@ import {
 	files_tree_db_page_needs_split,
 	files_tree_db_page_split_required,
 	type files_tree_db_FileChecker,
+	type files_tree_db_Reader,
 } from "./files_tree_db.ts";
 import { files_nodes_db_require_user_writable } from "../server/files-write-policy.ts";
 
@@ -1655,7 +1661,6 @@ export const list_trash_entries = query({
 		if (!reader || !reader.hasWorkspaceRead) {
 			return refused;
 		}
-		const { userAuth, membership } = reader;
 		if (args.area !== null) {
 			const areaNode = await files_tree_db_get_readable_node(ctx, { reader, nodeId: args.area });
 			if (areaNode?.restrictedScopeNodeId !== args.area) {
@@ -1663,39 +1668,55 @@ export const list_trash_entries = query({
 			}
 		}
 
-		const guard = await db_shrink_split_guard(ctx, TRASH_ENTRIES_SPLIT_GUARD);
-		const result = await ctx.db
-			.query("files_trash_entries")
-			.withIndex("by_org_ws_area_order_path", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("area", args.area),
-			)
-			.paginate({
-				...args.paginationOpts,
-				numItems: Math.min(args.paginationOpts.numItems, TRASH_ENTRIES_PAGE_MAX_ITEMS, guard),
-			});
-		if (files_tree_db_page_needs_split(result, guard)) {
-			return files_tree_db_page_split_required(result);
-		}
-
-		// Entries follow the stored nodes. While a Move runs, the current view can already show a moved
-		// node out of Trash. Its Move cleanup fixes the entry. Until then, leave the row out. Only nodes of
-		// the running Move can differ, so this drops few rows.
-		//
-		// Do not compare the node's area with `args.area`. After an unrestrict, the entry lists in the new
-		// area while the node keeps its delete-time pointer. The list rows check each node's access.
-		const nodes = await Promise.all(
-			result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)),
-		);
-		const rows = await files_tree_db_get_list_rows(ctx, {
-			userAuth,
-			membership,
-			checker: reader.checker,
-			folder: { restrictedScopeNodeId: args.area, extendedScopeNodeId: null },
-			fileNodes: nodes.filter((node): node is Doc<"files_nodes"> => node !== null && node.archiveOperationId !== null),
+		return await files_tree_db_list_trash_entries(ctx, {
+			reader,
+			area: args.area,
+			paginationOpts: args.paginationOpts,
 		});
-		return { ...result, page: rows };
 	},
 });
+
+/**
+ * One page of `list_trash_entries` for a reader with workspace read and an area it may open. The agent's
+ * `trash ls` reads the same page (`files_trash_agent.ts`).
+ */
+export async function files_tree_db_list_trash_entries(
+	ctx: QueryCtx,
+	args: { reader: files_tree_db_Reader; area: Id<"files_nodes"> | null; paginationOpts: PaginationOptions },
+) {
+	const { reader } = args;
+	const { userAuth, membership } = reader;
+
+	const guard = await db_shrink_split_guard(ctx, TRASH_ENTRIES_SPLIT_GUARD);
+	const result = await ctx.db
+		.query("files_trash_entries")
+		.withIndex("by_org_ws_area_order_path", (q) =>
+			q
+				.eq("organizationId", membership.organizationId)
+				.eq("workspaceId", membership.workspaceId)
+				.eq("area", args.area),
+		)
+		.paginate({
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, TRASH_ENTRIES_PAGE_MAX_ITEMS, guard),
+		});
+	if (files_tree_db_page_needs_split(result, guard)) {
+		return files_tree_db_page_split_required(result);
+	}
+
+	// Entries follow the stored nodes. While a Move runs, the current view can already show a moved
+	// node out of Trash. Its Move cleanup fixes the entry. Until then, leave the row out. Only nodes of
+	// the running Move can differ, so this drops few rows.
+	//
+	// Do not compare the node's area with `args.area`. After an unrestrict, the entry lists in the new
+	// area while the node keeps its delete-time pointer. The list rows check each node's access.
+	const nodes = await Promise.all(result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)));
+	const rows = await files_tree_db_get_list_rows(ctx, {
+		userAuth,
+		membership,
+		checker: reader.checker,
+		folder: { restrictedScopeNodeId: args.area, extendedScopeNodeId: null },
+		fileNodes: nodes.filter((node): node is Doc<"files_nodes"> => node !== null && node.archiveOperationId !== null),
+	});
+	return { ...result, page: rows };
+}

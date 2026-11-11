@@ -173,7 +173,7 @@ describe("get_file_read_source", () => {
 		await t.run((ctx) =>
 			ctx.db.patch("files_pending_updates", pendingUpdateId, {
 				revision: 3,
-				pendingArchive: { fromPath: "/renamed" },
+				pendingArchive: { fromPath: "/renamed", area: null, at: Date.now() },
 			}),
 		);
 		expect((await t.query(internal.files_nodes_content.get_file_read_source, movedArgs))._nay).toBeDefined();

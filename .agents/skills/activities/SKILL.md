@@ -36,6 +36,9 @@ in one mutation. Workpool delivers work; it does not decide whether a job succee
   job with its own message, like a lost key. The person still sees the job card. Through the API,
   runs and pages of the same installation and pair read it with `files/jobs/get` (public-api skill,
   "Plugin job status").
+- The in-app agent reads the user's own Trash jobs with `jobs --activity ID`
+  (`files_transfer_status.get_activity_for_agent`), like Move and Copy. Another user's Trash job is
+  unavailable. `trash ls` shows the Activity id next to an item while the user's own job runs.
 - A restore started by `files/restore` keeps its run and Activity even when it ends inside the
   request, so a retry with the same request id can find it. Nobody can answer a clash question for it,
   so it fails with the reason where an app restore would wait for a choice.

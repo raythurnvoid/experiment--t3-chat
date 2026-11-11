@@ -214,7 +214,17 @@ export const get_activity_for_agent = internalQuery({
 		v.null(),
 		v.object({
 			activityId: v.id("activities"),
-			kind: v.union(v.literal("copy"), v.literal("move"), v.literal("rename")),
+			/**
+			 * A Move or Copy, or a Trash job: "archive" (Move to Trash), "restore", or "purge" (Delete permanently).
+			 */
+			kind: v.union(
+				v.literal("copy"),
+				v.literal("move"),
+				v.literal("rename"),
+				v.literal("archive"),
+				v.literal("restore"),
+				v.literal("purge"),
+			),
 			status: doc(app_convex_schema, "activities").fields.status,
 			resultKind: v.union(v.literal("ready_for_review"), v.literal("saved")),
 			progress: doc(app_convex_schema, "activities").fields.progress,
@@ -232,6 +242,30 @@ export const get_activity_for_agent = internalQuery({
 		if (membership._nay) return null;
 		const activityId = ctx.db.normalizeId("activities", args.activityId);
 		const activity = activityId ? await ctx.db.get("activities", activityId) : null;
+		// The agent's `trash ls` names the Activity of the user's own running Trash job.
+		if (
+			activity?.source.kind === "files_archive_run" &&
+			activity.userId === args.userId &&
+			activity.organizationId === args.organizationId &&
+			activity.workspaceId === args.workspaceId
+		) {
+			const active = activities_is_active(activity.status);
+			return {
+				activityId: activity._id,
+				kind: activity.source.archiveKind,
+				status: activity.status,
+				resultKind: "saved" as const,
+				progress: activity.progress,
+				phase: activity.status === "awaiting_input" ? "waiting for input" : active ? "applying" : "finished",
+				// A restore started in the app asks the person at each name clash.
+				nextAction: activity.status === "awaiting_input" ? "Open Files to resolve this job." : null,
+				paths: {
+					...(await files_type_query_db_get_readiness(ctx.db, activity)),
+					scope: "workspace" as const,
+					checkedAt: Date.now(),
+				},
+			};
+		}
 		if (
 			!activity ||
 			activity.source.kind !== "files_transfer_run" ||

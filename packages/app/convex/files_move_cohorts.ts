@@ -73,7 +73,11 @@ import { path_join, path_extract_segments_from } from "../server/server-utils.ts
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
-import { files_trash_entries_db_insert, files_trash_entries_db_sync } from "../server/files-trash-entries.ts";
+import {
+	files_trash_entries_db_insert,
+	files_trash_entries_db_sync,
+	files_trash_entries_db_sync_draft_areas,
+} from "../server/files-trash-entries.ts";
 import { files_share_links_db_delete } from "./files_share_links_db.ts";
 import {
 	files_move_content_db_create,
@@ -2413,6 +2417,8 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	await files_share_rows_db_sync_node(ctx.db, { ...cohort, nodeId: record.nodeId, node: finalNode });
 	// These raw writes skip the overlay flush, so keep the node's Trash entry true here.
 	await files_trash_entries_db_sync(ctx, { nodeId: record.nodeId, node: finalNode });
+	// A Move to another area changes the area of the node's draft deletes too.
+	await files_trash_entries_db_sync_draft_areas(ctx, { nodeId: record.nodeId, node: finalNode });
 	// A Move that moved the item to Trash (a replaced item, an applied draft delete) decides that it is
 	// in Trash on its own when its parent is not in the same delete.
 	if (finish && finalNode && finalNode.archiveOperationId !== null) {

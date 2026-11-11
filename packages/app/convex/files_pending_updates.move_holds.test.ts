@@ -360,7 +360,7 @@ test("Archive on a content proposal waits for its direct parent", async () => {
 	expect(await f.t.run((ctx) => ctx.db.query("files_nodes").collect()), "busy Archive keeps children").toEqual(nodes);
 	await finish(true);
 	expect((await f.archive())._nay).toBeUndefined();
-	expect((await f.proposal())?.pendingArchive).toEqual({ fromPath: "/source/child.txt" });
+	expect((await f.proposal())?.pendingArchive).toMatchObject({ fromPath: "/source/child.txt" });
 });
 
 test("structural Discard of Archive with content waits for its direct parent", async () => {

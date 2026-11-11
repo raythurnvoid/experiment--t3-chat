@@ -575,7 +575,9 @@ describe("agent file write source", () => {
 		} else {
 			expect(removed._nay).toBeUndefined();
 			if (kind === "saved")
-				expect(after).toEqual([expect.objectContaining({ target, pendingArchive: { fromPath: "/notes" } })]);
+				expect(after).toEqual([
+					expect.objectContaining({ target, pendingArchive: expect.objectContaining({ fromPath: "/notes" }) }),
+				]);
 			else
 				expect(
 					await f.t.query(internal.files_nodes.get_visible_entry_by_path, {

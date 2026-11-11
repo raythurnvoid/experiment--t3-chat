@@ -109,6 +109,31 @@ export async function files_trash_entries_db_sync(
 }
 
 /**
+ * Keep the Trash area of each draft delete of `node` (`pendingArchive.area`) equal to the node's area
+ * pointer. The agent's `trash ls` lists a user's draft deletes by that area. Call it after a write that
+ * can change the node's scope fields.
+ *
+ * The range has at most one doc per member with a draft on this node.
+ */
+export async function files_trash_entries_db_sync_draft_areas(
+	ctx: MutationCtx,
+	args: { nodeId: Doc<"files_nodes">["_id"]; node: Doc<"files_nodes"> | null },
+) {
+	const { node } = args;
+	// A draft delete exists only for a live node. Accept and hard delete settle the draft themselves.
+	if (!node || node.archiveOperationId !== null) return;
+
+	const area = files_trash_entries_area_pointer(node);
+	const drafts = await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_target", (q) => q.eq("target.kind", "saved").eq("target.id", args.nodeId))
+		.collect();
+	for (const draft of drafts)
+		if (draft.pendingArchive && draft.pendingArchive.area !== area)
+			await ctx.db.patch("files_pending_updates", draft._id, { pendingArchive: { ...draft.pendingArchive, area } });
+}
+
+/**
  * Move at most `limit` entries of area `from` to area `to`. Returns how many moved, so a caller with
  * a budget calls again until it moves fewer than `limit`. Each patch leaves the range, so a new call
  * needs no cursor.

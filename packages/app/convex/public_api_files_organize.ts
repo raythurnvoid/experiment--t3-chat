@@ -49,13 +49,20 @@ import {
 import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
 import { rate_limiter_limit_by_key, rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
-import app_convex_schema, { files_saved_stream_validator } from "./schema.ts";
+import app_convex_schema, { ai_chat_workspaces_source_validator, files_saved_stream_validator } from "./schema.ts";
+import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { crypto_open_cursor, crypto_seal_cursor, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_db_create_path_lookups, files_db_get_path_access } from "../server/files.ts";
 import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create } from "../server/files-saved-stream.ts";
+import {
+	files_trash_areas_compare_keys,
+	files_trash_areas_key_validator,
+	files_trash_areas_merge_page,
+	type files_trash_areas_Key,
+} from "../server/files-trash-areas.ts";
 import type { files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_share_rows_principal_key } from "../server/files-share-rows.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
@@ -1378,20 +1385,13 @@ type list_plugin_trash_areas_page_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const trash_area_key_validator = v.object({ treePath: v.string(), nodeId: v.string() });
-
-type TrashAreaKey = Infer<typeof trash_area_key_validator>;
-
-function compare_trash_area_keys(a: TrashAreaKey, b: TrashAreaKey) {
-	return compareValues([a.treePath, a.nodeId], [b.treePath, b.nodeId]);
-}
-
 /**
  * One page of one stream of `files/trash/areas`: the active restricted folders after `afterKey`, by
  * `treePath`. Like the app's area picker (`files_tree.list_archive_areas`), the owner reads every
  * restricted folder on principal 0 and gets empty pages for 1 to 3. A member reads the share rows of
  * one principal. A key bound to a service account reads the account's own shares on principal 0 and
- * its role's shares on principal 1. `public_api_files_organize_http_trash_areas` merges the streams.
+ * its role's shares on principal 1. `files_trash_areas_merge_page` merges the streams for
+ * `public_api_files_organize_http_trash_areas` and the agent's `trash areas`.
  */
 export const list_trash_areas_page = internalQuery({
 	args: {
@@ -1401,19 +1401,28 @@ export const list_trash_areas_page = internalQuery({
 		subject: access_control_subject_validator,
 		savedStream: files_saved_stream_validator,
 		principalIndex: v.union(v.literal(0), v.literal(1), v.literal(2), v.literal(3)),
-		afterKey: v.union(trash_area_key_validator, v.null()),
+		afterKey: v.union(files_trash_areas_key_validator, v.null()),
 		numItems: v.number(),
+		/** The agent's `trash areas`: the chat must still reach this workspace. */
+		agentSource: v.optional(ai_chat_workspaces_source_validator),
 	},
 	returns: v.union(
 		v.object({ status: v.literal("denied") }),
 		v.object({
 			status: v.literal("page"),
 			rows: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.string(), treePath: v.string() })),
-			frontier: v.union(trash_area_key_validator, v.null()),
+			frontier: v.union(files_trash_areas_key_validator, v.null()),
 			isDone: v.boolean(),
 		}),
 	),
 	handler: async (ctx, args) => {
+		if (args.agentSource) {
+			const authorized = await ai_chat_workspaces_db_authorize_file_scope(ctx, {
+				...args,
+				agentSource: args.agentSource,
+			});
+			if (authorized._nay) return { status: "denied" as const };
+		}
 		const membership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>
@@ -1441,7 +1450,7 @@ export const list_trash_areas_page = internalQuery({
 		const empty = { status: "page" as const, rows: [], frontier: null, isDone: true };
 
 		// Start at the cursor path itself: another view can hold another folder at the same path.
-		let read: Array<{ key: TrashAreaKey; node: Doc<"files_nodes"> | null }>;
+		let read: Array<{ key: files_trash_areas_Key; node: Doc<"files_nodes"> | null }>;
 		if (args.subject.kind === "user" && organization.ownerUserId === args.userId) {
 			if (args.principalIndex !== 0) return empty;
 			const nodes = await saved.read_nodes(
@@ -1510,7 +1519,7 @@ export const list_trash_areas_page = internalQuery({
 			node.workspaceId === args.workspaceId &&
 			node.archiveOperationId === null &&
 			node.restrictedScopeNodeId === node._id &&
-			(args.afterKey === null || compare_trash_area_keys(key, args.afterKey) > 0)
+			(args.afterKey === null || files_trash_areas_compare_keys(key, args.afterKey) > 0)
 				? [node]
 				: [],
 		);
@@ -1755,7 +1764,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 		} as const;
 	}
 
-	let afterKey: TrashAreaKey | null = null;
+	let afterKey: files_trash_areas_Key | null = null;
 	if (body._yay.cursor != null) {
 		let opened: unknown;
 		try {
@@ -1764,81 +1773,48 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			if (!(error instanceof ConvexError)) throw error;
 			return await invalid_cursor();
 		}
-		if (!validate(v.object({ afterKey: v.union(trash_area_key_validator, v.null()) }), opened)) {
+		if (!validate(v.object({ afterKey: v.union(files_trash_areas_key_validator, v.null()) }), opened)) {
 			return await invalid_cursor();
 		}
 		afterKey = opened.afterKey;
 	}
 
-	type Row = Extract<list_trash_areas_page_Result, { status: "page" }>["rows"][number];
-	const key_of = (row: Row): TrashAreaKey => ({ treePath: row.treePath, nodeId: row.nodeId });
-	const page: Row[] = [];
-	let isDone = false;
-	// A page can be short with a cursor: rows past the first unfinished stream wait for the next round.
-	// The first round runs even with `limit: 1`, so a guest still gets 403.
-	for (let round = 0; round < 8 && (round === 0 || page.length < numItems); round++) {
-		const batches: Array<{ rows: Row[]; frontier: TrashAreaKey | null; done: boolean }> = [];
-		for (const source of sources) {
-			for (const principalIndex of [0, 1, 2, 3] as const) {
-				let result: list_trash_areas_page_Result;
-				try {
-					result = (await ctx.runQuery(internal.public_api_files_organize.list_trash_areas_page, {
-						organizationId: principal.organizationId,
-						workspaceId: principal.workspaceId,
-						userId,
-						subject: principal.subject,
-						savedStream: source,
-						principalIndex,
-						afterKey,
-						// One more, because the first row can be the cursor row itself.
-						numItems: numItems - page.length + 1,
-					})) as list_trash_areas_page_Result;
-				} catch (error) {
-					// A Move that started or ended during the page changes its saved view.
-					if (
-						!(error instanceof ConvexError) ||
-						!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
-					)
-						throw error;
-					return await invalid_cursor();
-				}
-				if (result.status === "denied") {
-					return {
-						status: 403,
-						body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
-					} as const;
-				}
-				batches.push({ rows: result.rows, frontier: result.isDone ? null : result.frontier, done: result.isDone });
-			}
-		}
-		// Keep only rows up to the lowest unfinished frontier: a stream may still hold rows before it.
-		const frontiers = batches.flatMap((batch) => (!batch.done && batch.frontier ? [batch.frontier] : []));
-		frontiers.sort(compare_trash_area_keys);
-		const windowEnd = frontiers[0] ?? null;
-		const rows = batches
-			.flatMap((batch) => batch.rows)
-			.filter((row) => windowEnd === null || compare_trash_area_keys(key_of(row), windowEnd) <= 0)
-			.sort((a, b) => compare_trash_area_keys(key_of(a), key_of(b)));
-		// A folder shared with several principals is in several streams. Staging or cleanup may expose the
-		// same folder in both sources too.
-		const seen = new Set<Id<"files_nodes">>(page.map((row) => row.nodeId));
-		const unique = rows.filter((row) => {
-			if (seen.has(row.nodeId)) return false;
-			seen.add(row.nodeId);
-			return true;
+	// A page can be short with a cursor. The first round runs even with `limit: 1`, so a guest still gets 403.
+	let merged: Awaited<ReturnType<typeof files_trash_areas_merge_page>>;
+	try {
+		merged = await files_trash_areas_merge_page({
+			sources,
+			afterKey,
+			numItems,
+			read_page: async (page) =>
+				(await ctx.runQuery(internal.public_api_files_organize.list_trash_areas_page, {
+					organizationId: principal.organizationId,
+					workspaceId: principal.workspaceId,
+					userId,
+					subject: principal.subject,
+					savedStream: page.source,
+					principalIndex: page.principalIndex,
+					afterKey: page.afterKey,
+					numItems: page.numItems,
+				})) as list_trash_areas_page_Result,
 		});
-		const remaining = numItems - page.length;
-		if (unique.length > remaining) {
-			page.push(...unique.slice(0, remaining));
-			// With `limit: 1` the first page holds only the open area, so the next page starts at the top.
-			if (page.length > 0) afterKey = key_of(page.at(-1)!);
-			break;
-		}
-		page.push(...unique);
-		isDone = batches.every((batch) => batch.done);
-		afterKey = windowEnd ?? (page.length > 0 ? key_of(page.at(-1)!) : afterKey);
-		if (isDone) break;
+	} catch (error) {
+		// A Move that started or ended during the page changes its saved view.
+		if (
+			!(error instanceof ConvexError) ||
+			!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
+		)
+			throw error;
+		return await invalid_cursor();
 	}
+	if (merged.status === "denied") {
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+		} as const;
+	}
+	const { page, isDone } = merged;
+	afterKey = merged.afterKey;
 
 	// A Move that started or ended during the page changes the sources, so the page could miss rows.
 	const [currentView, currentMembership] = await Promise.all([

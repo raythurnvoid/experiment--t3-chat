@@ -330,7 +330,7 @@ describe("browser file outputs", () => {
 				userId: scope.userId,
 				target: { kind: "saved", id: nodeId },
 				revision: 1,
-				pendingArchive: { fromPath: browserFile.path },
+				pendingArchive: { fromPath: browserFile.path, area: null, at: Date.now() },
 				size: 0,
 				updatedAt: Date.now(),
 				expiresAt: Date.now() + 4 * 60 * 60 * 1000,

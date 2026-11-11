@@ -174,11 +174,20 @@ function job_line(summary: ai_chat_files_list_thread_jobs_Result[number]) {
 	return `[${summary.jobNumber}] ${status} ${shell} ${summary.scriptPreview}${parent}\n`;
 }
 
+const ACTIVITY_KIND_LABELS = {
+	copy: "copy",
+	move: "move",
+	rename: "rename",
+	archive: "move to Trash",
+	restore: "restore from Trash",
+	purge: "delete forever",
+} satisfies Record<NonNullable<files_transfer_status_get_activity_for_agent_Result>["kind"], string>;
+
 function activity_text(view: NonNullable<files_transfer_status_get_activity_for_agent_Result>) {
 	const progress = view.progress;
 	return (
 		[
-			`Activity ${view.activityId}: ${view.kind} ${view.status}; result: ${view.resultKind === "ready_for_review" ? "pending changes for review" : "saved files"}.`,
+			`Activity ${view.activityId}: ${ACTIVITY_KIND_LABELS[view.kind]} ${view.status}; result: ${view.resultKind === "ready_for_review" ? "pending changes for review" : "saved files"}.`,
 			`Phase: ${view.phase}.`,
 			...(progress
 				? [

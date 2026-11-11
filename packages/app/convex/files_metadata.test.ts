@@ -340,7 +340,7 @@ describe("list_folder_fields", () => {
 				updatedAt: Date.now(),
 				expiresAt: Date.now() + 1000,
 				size: 0,
-				pendingArchive: { fromPath: "/table" },
+				pendingArchive: { fromPath: "/table", area: null, at: Date.now() },
 			});
 		});
 		expect((await catalog()).page).toEqual(["metadata.status"]);

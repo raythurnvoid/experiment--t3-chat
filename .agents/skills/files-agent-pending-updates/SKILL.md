@@ -115,7 +115,7 @@ Main table in `packages/app/convex/schema.ts`:
     - `baseStateId` / `stagedStateId` / `unstagedStateId`, each pointing at one sealed `files_pending_update_yjs_states` doc whose pages hold that branch's full Yjs state. Branch bytes never live on the pending update doc itself.
   - optional `pendingMove`
   - optional `copiedFrom`
-  - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative; optional `ignoreReadOnly: true` is the agent's request to delete Read-only items)
+  - optional `pendingArchive` (`fromPath` display metadata only; the node id is authoritative; optional `ignoreReadOnly: true` is the agent's request to delete Read-only items). `at` is when the delete was asked for. `area` is the Trash area the item will list in once saved: the value of `files_trash_entries_area_pointer(node)` (null for the open part of the workspace). The index `by_org_ws_user_pendingArchive_area_at` serves the agent's `trash ls`. `area` follows the node: the overlay flush updates it when a restrict or unrestrict changes the node's scope fields, and Move cleanup updates it after a Move (that path skips the flush). `trash restore` removes the delete the same way Discard does.
   - optional `createIntent` for private text, stored content, or folders
     Full metadata is owned by proposal ID in `files_metadata_maps`. It stays out of create intents,
     review headers, and cohort proposal headers. Save clones it to the allocated saved owner.
