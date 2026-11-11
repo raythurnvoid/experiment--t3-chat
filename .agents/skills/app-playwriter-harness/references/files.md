@@ -347,6 +347,17 @@ replaces a Read-only file" row in the qa-data catalog. Verified 2026-11-01.
   plugin choice, wait for it to apply, then confirm Move to Trash. Read both extended-scope pointers
   before and after native Remove. Distinguish an absent parent pointer from null. Keep the archive
   ID and path in the readback too. Removing access must not rewrite the frozen pointers.
+  To prove plugin access ends, choose an item inside a restricted folder with no other applied
+  choice covering it. Do not choose the restricted root itself: it needs no extended anchor.
+- A plugin's live file picker clears a selection when it enters Trash, so an online stale form
+  cannot reach the server's Save refusal. Use page-only offline mode on the owned QA form tab
+  (`getCDPSession` and `Network.emulateNetworkConditions`), then click the real Save button.
+  Confirm Save stays pending and no permission write lands. Move the item to Trash in another
+  online QA tab. Save a data baseline after Trash completes, then bring the form tab online.
+  Require a real socket reconnect, the Restore-first refusal, and unchanged pair, consent and
+  node fields. A timeout can finish later; inspect the page before retrying. Always restore
+  online mode, call `Network.disable`, and remove temporary handles. Never take the shared
+  browser context offline. Verified 2026-11-11.
 - A restricted folder's row button also gains a suffix: `More actions for <name> restricted`. So an `exact: true` locator stops matching right after you restrict it. Use a prefix regex such as `/^More actions for copy-4( |$)/`, scoped to `getByRole("tree", { name: "Files" })`, because the folder explorer shows the same button name.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
