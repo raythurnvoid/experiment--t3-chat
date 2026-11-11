@@ -202,9 +202,8 @@ describe("bash_run_command", () => {
 			const runner = await create_bash_runner({
 				extraFiles: paths.map((path) => ({ path, content: "x\n", withoutYjsState: true })),
 			});
-			expect(
-				(await runner.run({ command: `rm ${paths.map((path) => path.slice(1)).join(" ")}` })).metadata.exitCode,
-			).toBe(0);
+			const removed = await runner.run({ command: `rm ${paths.map((path) => path.slice(1)).join(" ")}` });
+			expect(removed.metadata.exitCode, removed.stderr).toBe(0);
 			// Lower the limit of one path lookup, so these shallow rows cost more than one limit together.
 			const create = resolver.files_visible_resolve_db_create;
 			const spy = vi
@@ -212,15 +211,14 @@ describe("bash_run_command", () => {
 				.mockImplementation((db, args) =>
 					create(db, args.includeHidden && args.readLimit === 2048 ? { ...args, readLimit: 32 } : args),
 				);
-			let listed;
 			try {
-				listed = await runner.run({ command: "trash ls" });
+				const listed = await runner.run({ command: "trash ls" });
+
+				expect(listed.metadata.exitCode, listed.stderr).toBe(0);
+				expect(rows_of(listed.stdout)).toHaveLength(8);
 			} finally {
 				spy.mockRestore();
 			}
-
-			expect(listed.metadata.exitCode, listed.stderr).toBe(0);
-			expect(rows_of(listed.stdout)).toHaveLength(8);
 		});
 
 		test("keeps the user's rm of an item that another user moved to Trash", async () => {

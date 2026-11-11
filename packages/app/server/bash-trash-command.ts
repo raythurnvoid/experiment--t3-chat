@@ -1,6 +1,7 @@
 import { defineCommand, type Command } from "just-bash/browser";
 import { z } from "zod";
 import { ConvexError } from "convex/values";
+import { Result_all } from "common/errors-as-values-utils.ts";
 import type { FunctionReturnType } from "convex/server";
 import { internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel.js";
@@ -397,15 +398,18 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 					if (result._nay) return area_error(result._nay);
 					// Print the path of the agent's view, so `trash restore PATH` finds the item. Each row reads it
 					// with its own query, because a page of deep rows would not fit in one.
-					const viewPaths = await Promise.all(
-						result._yay.page.map(
-							async (row) =>
-								(await ctx.runQuery(internal.files_trash_agent.get_pending_delete_path, {
-									...common,
-									pendingUpdateId: row.pendingUpdateId,
-								})) as FunctionReturnType<typeof internal.files_trash_agent.get_pending_delete_path>,
+					const viewPaths = Result_all(
+						await Promise.all(
+							result._yay.page.map(
+								async (row) =>
+									(await ctx.runQuery(internal.files_trash_agent.get_pending_delete_path, {
+										...common,
+										pendingUpdateId: row.pendingUpdateId,
+									})) as FunctionReturnType<typeof internal.files_trash_agent.get_pending_delete_path>,
+							),
 						),
 					);
+					if (viewPaths._nay) return area_error(viewPaths._nay);
 					for (const [index, row] of result._yay.page.entries())
 						items.push({
 							id: row.locked ? null : `${row.nodeId}:pending`,
@@ -414,8 +418,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 							time: row.at,
 							kind: row.kind,
 							changedBy: row.locked ? null : "you",
-							// The view has no place for an item in a draft move cycle. Show its saved path then.
-							path: render(viewPaths[index]._yay ?? row.path),
+							// Null means the draft is gone, or the item is in a draft move cycle. Show its saved path then.
+							path: render(viewPaths._yay[index] ?? row.path),
 							locked: row.locked,
 							job: null,
 						});

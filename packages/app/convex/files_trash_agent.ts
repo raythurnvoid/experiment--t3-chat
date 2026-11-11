@@ -295,7 +295,7 @@ export const list_pending_deletes = internalQuery({
 					: null;
 			if (!node || !pendingUpdate.pendingArchive) continue;
 
-			const row = { pendingUpdateId: pendingUpdate._id, kind: node.kind, path: node.path };
+			const pendingUpdateId = pendingUpdate._id;
 			const at = pendingUpdate.pendingArchive.at;
 			// Keep a draft whose item a saved delete moved to Trash, like the "In Trash" row of the Pending
 			// tab. Dropping it would make each later page read it again.
@@ -303,8 +303,8 @@ export const list_pending_deletes = internalQuery({
 			// Access can be taken away after the delete was asked for. Keep the row, locked.
 			items.push(
 				(await checker.can(node, "content.read"))
-					? { locked: false as const, nodeId: node._id, ...row, at, inTrash }
-					: { locked: true as const, ...row, at, inTrash },
+					? { locked: false as const, nodeId: node._id, pendingUpdateId, kind: node.kind, path: node.path, at, inTrash }
+					: { locked: true as const, pendingUpdateId, kind: node.kind, path: node.path, at, inTrash },
 			);
 		}
 		return Result({ _yay: { ...result, page: items } });
@@ -312,8 +312,8 @@ export const list_pending_deletes = internalQuery({
 });
 
 /**
- * `trash ls`: the path of one draft delete in the agent's view, or null when the view has no place for
- * it (a draft move cycle). It differs from the saved path after a draft move of a folder, and
+ * `trash ls`: the path of one draft delete in the agent's view, or null when the draft is gone or the
+ * view has no place for it (a draft move cycle). It differs from the saved path after a draft move of a folder, and
  * `trash restore PATH` looks the item up in that view.
  *
  * The path walk can cost about 1,300 reads for an item 255 folders deep. A page of such rows would not
@@ -328,6 +328,7 @@ export const get_pending_delete_path = internalQuery({
 		const { membership } = reader._yay;
 
 		const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+		// A restore can remove the draft after the list read it. The agent sees its saved path then.
 		if (
 			!pendingUpdate?.pendingArchive ||
 			pendingUpdate.userId !== args.userId ||
@@ -335,7 +336,7 @@ export const get_pending_delete_path = internalQuery({
 			pendingUpdate.workspaceId !== membership.workspaceId ||
 			pendingUpdate.target.kind !== "saved"
 		)
-			return Result({ _nay: { name: "not_found", message: "No pending delete" } });
+			return Result({ _yay: null });
 
 		const resolver = files_visible_resolve_db_create(ctx.db, {
 			organizationId: membership.organizationId,
@@ -485,7 +486,7 @@ export const restore_pending_delete = internalMutation({
 			if (access.status === "locked") return Result({ _nay: { message: "Permission denied" } });
 			const found = await hiddenResolver.findPath(args.item.path);
 			// A draft move can put a locked item at a path the check above does not know. Answer for it
-			// like for a missing item, like `cat` does, so the answer does not tell that it exists.
+			// as for a missing item, so the answer does not tell that it exists. `cat` does the same.
 			if (!found || (found.accessNode && !(await checker.can(found.accessNode, "content.read"))))
 				return Result({ _nay: { name: "not_found", message: "No such file or directory" } });
 			if (!found.hidden) return Result({ _nay: { name: "not_deleted", message: "Not in Trash" } });

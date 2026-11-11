@@ -400,6 +400,8 @@ For long Bash-agent eval prompts in PowerShell, write one JavaScript runner unde
 
 When evaluating through `/files`, the Agent sidebar tab is often more stable than switching to `/chat` because the file tree/editor context stays loaded. After a Convex deploy, reload the `/files` route, click `#app_file_editor_sidebar_tabs_agent`, and wait for `.AiChatComposer-editor-content` before sending the next prompt.
 
+`state.qa.send` works only while the Agent tab is the selected sidebar tab. With the Pending tab selected, the composer is hidden, nothing is sent, and the send promise stays `pending` (seen 2026-11-11). Click `#app_file_editor_sidebar_tabs_agent` first, then check that the `.AiChatMessage` count grew.
+
 If a scenario asks the agent to edit an app file, manually accept and save pending edits before continuing unrelated browser work. The editor can show a pending-edits banner and a diff route with an `Accept all pending changes and save` button; leaving proposed edits unapplied can intentionally affect Bash pending-update scenarios but can also pollute later evals.
 
 For `/tmp` eviction scenarios, require a second Bash call after file creation. Eviction and oversized-file discard happen after a command flushes scratch state, so same-command `ls` can show files that will not survive to the next Bash call. Avoid using diagnostic commands that write extra `/tmp` files, such as `tee /tmp/list.txt`, unless the side effect is part of the scenario; those files count toward the same path and byte caps and can trigger another eviction.
@@ -477,7 +479,6 @@ When the app tab is not foregrounded:
 
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
 - Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
-- `state.qa.send` works only while the Agent tab is the selected sidebar tab. With the Pending tab selected, the composer is hidden, nothing is sent, and the send promise stays `pending` (seen 2026-11-11). Click `#app_file_editor_sidebar_tabs_agent` first, then check that the `.AiChatMessage` count grew.
 - The send and Stop buttons hit this too. To send, focus the composer and press Enter instead of clicking the send button. To stop, read the Stop button's box in page context (`document.querySelector('[aria-label="Stop generating"]').getBoundingClientRect()`) and call `page.mouse.click` at its center. `locator.click` on `Stop generating` can hang while the run keeps streaming.
 
 ## Phone chat layout
