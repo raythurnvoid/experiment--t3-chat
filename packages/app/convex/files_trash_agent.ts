@@ -76,19 +76,28 @@ const item_validator = v.union(
 );
 
 /**
- * One of the user's own draft deletes (`rm`). `at` is when the agent asked for it. `inTrash` is true when
- * a saved delete (a Save of this draft, or another user's delete) already moved the item to Trash.
+ * One of the user's own draft deletes (`rm`). `path` is the saved path: `get_pending_delete_path` gives
+ * the path of the agent's view. `at` is when the agent asked for it. `inTrash` is true when a saved
+ * delete (a Save of this draft, or another user's delete) already moved the item to Trash.
  */
 const pending_item_validator = v.union(
 	v.object({
 		locked: v.literal(false),
 		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
 		kind: kind_validator,
 		path: v.string(),
 		at: v.number(),
 		inTrash: v.boolean(),
 	}),
-	v.object({ locked: v.literal(true), kind: kind_validator, path: v.string(), at: v.number(), inTrash: v.boolean() }),
+	v.object({
+		locked: v.literal(true),
+		pendingUpdateId: v.id("files_pending_updates"),
+		kind: kind_validator,
+		path: v.string(),
+		at: v.number(),
+		inTrash: v.boolean(),
+	}),
 );
 
 async function db_get_reader(
@@ -278,16 +287,6 @@ export const list_pending_deletes = internalQuery({
 			.order("desc")
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, PAGE_MAX_ITEMS) });
 
-		// Return the path of the agent's view, not the saved one: a draft move of a folder changes it, and
-		// `trash restore PATH` looks the item up in that view. The docs share one resolver, so read them
-		// one at a time.
-		const resolver = files_visible_resolve_db_create(ctx.db, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: args.userId,
-			includeHidden: true,
-			readLimit: 2048,
-		});
 		const items = [];
 		for (const pendingUpdate of result.page) {
 			const node =
@@ -296,10 +295,7 @@ export const list_pending_deletes = internalQuery({
 					: null;
 			if (!node || !pendingUpdate.pendingArchive) continue;
 
-			const resolved = await resolver.resolve({ kind: "saved", id: node._id });
-			if (resolver.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
-			// The view has no place for an item in a draft move cycle. Show its saved path then.
-			const path = resolved?.entry.path ?? node.path;
+			const row = { pendingUpdateId: pendingUpdate._id, kind: node.kind, path: node.path };
 			const at = pendingUpdate.pendingArchive.at;
 			// Keep a draft whose item a saved delete moved to Trash, like the "In Trash" row of the Pending
 			// tab. Dropping it would make each later page read it again.
@@ -307,11 +303,50 @@ export const list_pending_deletes = internalQuery({
 			// Access can be taken away after the delete was asked for. Keep the row, locked.
 			items.push(
 				(await checker.can(node, "content.read"))
-					? { locked: false as const, nodeId: node._id, kind: node.kind, path, at, inTrash }
-					: { locked: true as const, kind: node.kind, path, at, inTrash },
+					? { locked: false as const, nodeId: node._id, ...row, at, inTrash }
+					: { locked: true as const, ...row, at, inTrash },
 			);
 		}
 		return Result({ _yay: { ...result, page: items } });
+	},
+});
+
+/**
+ * `trash ls`: the path of one draft delete in the agent's view, or null when the view has no place for
+ * it (a draft move cycle). It differs from the saved path after a draft move of a folder, and
+ * `trash restore PATH` looks the item up in that view.
+ *
+ * The path walk can cost about 1,300 reads for an item 255 folders deep. A page of such rows would not
+ * fit in one query, so each row gets its own query, like the Pending tab (`get_file_pending_target`).
+ */
+export const get_pending_delete_path = internalQuery({
+	args: { ...agent_args, pendingUpdateId: v.id("files_pending_updates") },
+	returns: v_result({ _yay: v.union(v.string(), v.null()) }),
+	handler: async (ctx, args) => {
+		const reader = await db_get_reader(ctx, args);
+		if (reader._nay) return reader;
+		const { membership } = reader._yay;
+
+		const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+		if (
+			!pendingUpdate?.pendingArchive ||
+			pendingUpdate.userId !== args.userId ||
+			pendingUpdate.organizationId !== membership.organizationId ||
+			pendingUpdate.workspaceId !== membership.workspaceId ||
+			pendingUpdate.target.kind !== "saved"
+		)
+			return Result({ _nay: { name: "not_found", message: "No pending delete" } });
+
+		const resolver = files_visible_resolve_db_create(ctx.db, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: args.userId,
+			includeHidden: true,
+			readLimit: 2048,
+		});
+		const resolved = await resolver.resolve(pendingUpdate.target);
+		if (resolver.exhausted) throw convex_error({ message: "File path lookup exceeded its read limit." });
+		return Result({ _yay: resolved?.entry.path ?? null });
 	},
 });
 
@@ -449,7 +484,10 @@ export const restore_pending_delete = internalMutation({
 			});
 			if (access.status === "locked") return Result({ _nay: { message: "Permission denied" } });
 			const found = await hiddenResolver.findPath(args.item.path);
-			if (!found) return Result({ _nay: { name: "not_found", message: "No such file or directory" } });
+			// A draft move can put a locked item at a path the check above does not know. Answer for it
+			// like for a missing item, like `cat` does, so the answer does not tell that it exists.
+			if (!found || (found.accessNode && !(await checker.can(found.accessNode, "content.read"))))
+				return Result({ _nay: { name: "not_found", message: "No such file or directory" } });
 			if (!found.hidden) return Result({ _nay: { name: "not_deleted", message: "Not in Trash" } });
 			nodeId = found.entry.kind === "saved" ? found.entry.node._id : null;
 		} else nodeId = ctx.db.normalizeId("files_nodes", args.item.nodeId);

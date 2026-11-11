@@ -477,6 +477,7 @@ When the app tab is not foregrounded:
 
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
 - Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
+- `state.qa.send` works only while the Agent tab is the selected sidebar tab. With the Pending tab selected, the composer is hidden, nothing is sent, and the send promise stays `pending` (seen 2026-11-11). Click `#app_file_editor_sidebar_tabs_agent` first, then check that the `.AiChatMessage` count grew.
 - The send and Stop buttons hit this too. To send, focus the composer and press Enter instead of clicking the send button. To stop, read the Stop button's box in page context (`document.querySelector('[aria-label="Stop generating"]').getBoundingClientRect()`) and call `page.mouse.click` at its center. `locator.click` on `Stop generating` can hang while the run keeps streaming.
 
 ## Phone chat layout

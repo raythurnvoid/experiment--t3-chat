@@ -395,7 +395,18 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 						paginationOpts: { numItems: limit._yay.limit, cursor },
 					})) as FunctionReturnType<typeof internal.files_trash_agent.list_pending_deletes>;
 					if (result._nay) return area_error(result._nay);
-					for (const row of result._yay.page)
+					// Print the path of the agent's view, so `trash restore PATH` finds the item. Each row reads it
+					// with its own query, because a page of deep rows would not fit in one.
+					const viewPaths = await Promise.all(
+						result._yay.page.map(
+							async (row) =>
+								(await ctx.runQuery(internal.files_trash_agent.get_pending_delete_path, {
+									...common,
+									pendingUpdateId: row.pendingUpdateId,
+								})) as FunctionReturnType<typeof internal.files_trash_agent.get_pending_delete_path>,
+						),
+					);
+					for (const [index, row] of result._yay.page.entries())
 						items.push({
 							id: row.locked ? null : `${row.nodeId}:pending`,
 							nodeId: row.locked ? null : row.nodeId,
@@ -403,7 +414,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 							time: row.at,
 							kind: row.kind,
 							changedBy: row.locked ? null : "you",
-							path: render(row.path),
+							// The view has no place for an item in a draft move cycle. Show its saved path then.
+							path: render(viewPaths[index]._yay ?? row.path),
 							locked: row.locked,
 							job: null,
 						});

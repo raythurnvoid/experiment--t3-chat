@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
@@ -13,6 +13,7 @@ import {
 	list_pending_updates_for_node,
 	runner_as_user,
 } from "./bash.setup.test.ts";
+import * as resolver from "./files-visible-resolve.ts";
 
 type Runner = Awaited<ReturnType<typeof create_bash_runner>>;
 
@@ -196,6 +197,32 @@ describe("bash_run_command", () => {
 			expect(restored.metadata.exitCode, restored.stderr).toBe(0);
 		});
 
+		test("gives each pending row its own path read limit", async () => {
+			const paths = Array.from({ length: 8 }, (_, index) => `/deep${index}/a/b/f.md`);
+			const runner = await create_bash_runner({
+				extraFiles: paths.map((path) => ({ path, content: "x\n", withoutYjsState: true })),
+			});
+			expect(
+				(await runner.run({ command: `rm ${paths.map((path) => path.slice(1)).join(" ")}` })).metadata.exitCode,
+			).toBe(0);
+			// Lower the limit of one path lookup, so these shallow rows cost more than one limit together.
+			const create = resolver.files_visible_resolve_db_create;
+			const spy = vi
+				.spyOn(resolver, "files_visible_resolve_db_create")
+				.mockImplementation((db, args) =>
+					create(db, args.includeHidden && args.readLimit === 2048 ? { ...args, readLimit: 32 } : args),
+				);
+			let listed;
+			try {
+				listed = await runner.run({ command: "trash ls" });
+			} finally {
+				spy.mockRestore();
+			}
+
+			expect(listed.metadata.exitCode, listed.stderr).toBe(0);
+			expect(rows_of(listed.stdout)).toHaveLength(8);
+		});
+
 		test("keeps the user's rm of an item that another user moved to Trash", async () => {
 			const owner = await create_team_runner();
 			const readmeId = await get_seeded_node_id(owner, "/docs/readme.md");
@@ -291,6 +318,24 @@ describe("bash_run_command", () => {
 			expect(restored.stderr).toBe(
 				"trash: cannot restore 'Locked/inside.md': Permission denied\n" +
 					"trash: cannot restore 'Locked/missing.md': Permission denied\n",
+			);
+		});
+
+		test("restore by a draft path into a locked folder answers like for a missing name", async () => {
+			const owner = await create_team_runner([
+				{ path: "/outer/locked/inside.md", content: "x\n", withoutYjsState: true },
+			]);
+			const member = await add_member(owner, { clerkUserId: "trash-member", role: "member" });
+			// The member's draft move keeps the folder at a new path, which the saved path check does not know.
+			expect((await member.run({ command: "mv outer moved" })).metadata.exitCode).toBe(0);
+			await restrict(owner, "/outer/locked");
+
+			const restored = await member.run({ command: "trash restore moved/locked/inside.md moved/locked/missing.md" });
+
+			expect(restored.metadata.exitCode).toBe(1);
+			expect(restored.stderr).toBe(
+				"trash: cannot restore 'moved/locked/inside.md': No such file or directory\n" +
+					"trash: cannot restore 'moved/locked/missing.md': No such file or directory\n",
 			);
 		});
 	});
