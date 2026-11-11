@@ -246,7 +246,8 @@ export const list_entries = internalQuery({
 
 /**
  * `trash ls`: the user's own draft deletes (`rm`) of one area, newest first. They are not in Trash
- * until the user saves them. `pendingArchive.area` is the area the item lists in once saved.
+ * until the user saves them. A draft whose item a saved delete already moved to Trash stays, with
+ * `inTrash` set. `pendingArchive.area` is the area the item lists in once saved.
  */
 export const list_pending_deletes = internalQuery({
 	args: {
@@ -277,8 +278,8 @@ export const list_pending_deletes = internalQuery({
 			.order("desc")
 			.paginate({ ...args.paginationOpts, numItems: Math.min(args.paginationOpts.numItems, PAGE_MAX_ITEMS) });
 
-		// Print the path of the agent's view, not the saved one: a draft move of a folder changes it, and
-		// `trash restore PATH` looks the item up in that view. The rows share one resolver, so read them
+		// Return the path of the agent's view, not the saved one: a draft move of a folder changes it, and
+		// `trash restore PATH` looks the item up in that view. The docs share one resolver, so read them
 		// one at a time.
 		const resolver = files_visible_resolve_db_create(ctx.db, {
 			organizationId: membership.organizationId,

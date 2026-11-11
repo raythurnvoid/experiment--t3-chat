@@ -32,7 +32,8 @@ const USAGE =
 	"Usage: trash areas [--format text|json]\n" +
 	"Usage: trash restore PATH... | --id ID...   (Agent mode)\n" +
 	"All commands: [--workspace current|home] [--limit 1..50] [--cursor CURSOR]\n" +
-	"Rows: time, kind, deleted by, id, path. Your own rm shows as (pending delete) until the user saves it.\n" +
+	"Rows: time, kind, deleted by, id, path. Your own rm shows as (pending delete) until the user saves it,\n" +
+	"or (pending delete, now in Trash) when a saved delete already moved the item to Trash.\n" +
 	"trash restore undoes your own pending delete. Restoring a saved Trash item is not available yet.\n";
 const GUEST_MESSAGE =
 	"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.";
@@ -310,7 +311,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		};
 		const saved_item = (
 			row: NonNullable<FunctionReturnType<typeof internal.files_trash_agent.list_entries>["_yay"]>["page"][number],
-		): Item => ({
+		) => ({
 			id: row.locked ? null : `${row.nodeId}:${row.archiveOperationId}`,
 			nodeId: row.locked ? null : row.nodeId,
 			pending: null,
