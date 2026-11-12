@@ -22,7 +22,6 @@ import {
 	bash_DEV_ZERO_PATH,
 	bash_TMP_MOUNT,
 	bash_TOOL_OUTPUT_MOUNT,
-	bash_current_workspace_path_to_db_files_path,
 	bash_is_path_under_current_workspace_path,
 	bash_normalize_path,
 	bash_resolve_path,
@@ -364,16 +363,12 @@ class NativeJustBashTmpCommandAccessError extends Error {
 	constructor(dbFilesRoots: bash_DbFilesRoots, path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		const currentWorkspacePath = native_just_bash_app_root_path(dbFilesRoots, normalizedPath);
-		const dbFilesPath =
-			currentWorkspacePath == null
-				? null
-				: bash_current_workspace_path_to_db_files_path(currentWorkspacePath, normalizedPath);
 		super(
 			currentWorkspacePath == null
 				? `Native Just Bash /tmp commands cannot access '${normalizedPath}'. Use /tmp paths or stdin.\n`
 				: `Native Just Bash /tmp commands cannot access app files directly: '${normalizedPath}'.\n` +
 						`The app file tree at '${currentWorkspacePath}' is db-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
-						`For app path '${dbFilesPath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
+						`For '${normalizedPath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
 		);
 		this.name = "NativeJustBashTmpCommandAccessError";
 	}

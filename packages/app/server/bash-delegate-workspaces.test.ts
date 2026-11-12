@@ -71,7 +71,7 @@ describe("bash_delegate_native_just_bash_tmp_command", () => {
 				expect(result.exitCode).not.toBe(0);
 				expect(result.stdout).toBe("");
 				expect(result.stderr).toContain(`The app file tree at '${rootPath}' is db-backed`);
-				expect(result.stderr).toContain("For app path '/docs/readme.txt'");
+				expect(result.stderr).toContain(`For '${rootPath}/docs/readme.txt'`);
 				expect(result.stderr).toContain(`cp ${path} /tmp/<name>`);
 				expect(result.stderr).not.toContain("<path>");
 				if (command === "rg") expect(result.stderr).toContain(`Try: grep secret ${path}`);
@@ -90,7 +90,7 @@ describe("bash_delegate_native_just_bash_tmp_command", () => {
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toContain(`The app file tree at '${rootPath}' is db-backed`);
 			expect(result.stderr).toContain(`'${rootPath}/docs/readme.txt'`);
-			expect(result.stderr).toContain("For app path '/docs/readme.txt'");
+			expect(result.stderr).toContain(`For '${rootPath}/docs/readme.txt'`);
 			expect(result.stderr).not.toContain("/s/a/b/");
 		});
 
@@ -100,7 +100,7 @@ describe("bash_delegate_native_just_bash_tmp_command", () => {
 
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stderr).toContain(`The app file tree at '${rootPath}' is db-backed`);
-			expect(result.stderr).toContain("For app path '/docs'");
+			expect(result.stderr).toContain(`For '${rootPath}/docs'`);
 		});
 
 		test("refuses binary reads and names the matching root", async () => {
@@ -124,7 +124,7 @@ describe("bash_delegate_native_just_bash_tmp_command", () => {
 			expect(result.exitCode).not.toBe(0);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toContain(`The app file tree at '${rootPath}' is db-backed`);
-			expect(result.stderr).toContain("For app path '/docs/readme.txt'");
+			expect(result.stderr).toContain(`For '${rootPath}/docs/readme.txt'`);
 		});
 
 		test("refuses native writes without changing the app file", async () => {
