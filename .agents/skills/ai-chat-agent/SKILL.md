@@ -508,7 +508,8 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
 - `rm <app-path>` proposes a pending delete. Accepting moves the file to Trash, where the user can
   restore it or delete it permanently. `rm -r <app-folder>` proposes moving the folder with everything
   inside to Trash. Its stdout says `pending delete created: <path> — moves the file to Trash when accepted; review in Files`
-  (or `moves the folder and its contents to Trash when accepted; review in Files`). Keep help and
+  (or `moves the folder and its contents to Trash when accepted; review in Files`). `<path>` is the full
+  shell path, so the agent can pass it to the next command, such as `trash restore`. Keep help and
   prompt text aligned with this review step. `rm` never deletes a saved file permanently.
 - `rm`, `rm -r` and `rm -f` refuse a Read-only item, a folder that holds one, or an item in a
   Read-only folder:

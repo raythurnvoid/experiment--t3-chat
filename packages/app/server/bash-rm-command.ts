@@ -261,6 +261,9 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 			// Later commands chained in this same bash call must see the path as gone.
 			target.fs.resetProposalCaches();
+
+			// Print the shell path, so the agent can pass it to the next command (for example `trash restore`).
+			const shellPath = target.renderShellPath(dbFilesPath);
 			if (proposed._yay.outcome === "cancelled_added_file") {
 				// The user's own unaccepted new file: really removed, nothing pends. Always
 				// printed (not only with -v) so the agent knows no proposal was created.
@@ -268,13 +271,13 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			} else if (ignoreReadOnly) {
 				stdout +=
 					proposed._yay.nodeKind === "folder"
-						? `pending delete created: ${dbFilesPath} — moves the folder and its contents to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`
-						: `pending delete created: ${dbFilesPath} — moves the file to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`;
+						? `pending delete created: ${shellPath} — moves the folder and its contents to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`
+						: `pending delete created: ${shellPath} — moves the file to Trash when accepted, ignoring Read-only; the user must accept it in Files, and restored items stay Read-only\n`;
 			} else {
 				stdout +=
 					proposed._yay.nodeKind === "folder"
-						? `pending delete created: ${dbFilesPath} — moves the folder and its contents to Trash when accepted; review in Files\n`
-						: `pending delete created: ${dbFilesPath} — moves the file to Trash when accepted; review in Files\n`;
+						? `pending delete created: ${shellPath} — moves the folder and its contents to Trash when accepted; review in Files\n`
+						: `pending delete created: ${shellPath} — moves the file to Trash when accepted; review in Files\n`;
 			}
 		}
 
