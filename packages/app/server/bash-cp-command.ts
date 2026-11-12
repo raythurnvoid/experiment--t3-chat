@@ -106,7 +106,7 @@ export function bash_cp_command_create(args: {
 			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(sourceWorkspacePath, destShellPath);
 			const destHint =
 				destDbFilesPath != null
-					? `To propose that content at '${destShellPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(destShellPath)}`
+					? `To propose that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(destShellPath)}`
 					: "Choose a /tmp/<name> destination for a scratch copy.";
 			return {
 				stdout: "",
