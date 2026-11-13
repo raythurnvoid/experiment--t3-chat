@@ -69,6 +69,7 @@ import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-gra
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import {
 	files_archive_operation_id_time,
+	files_check_request_path_length,
 	files_ROOT_ID,
 	files_TRANSFER_SELECTION_PAGE_SIZE,
 	type files_SavedStream,
@@ -184,6 +185,8 @@ export async function public_api_files_organize_http_stat(args: {
 		if (!rawPath.startsWith("/")) {
 			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
 		}
+		const length = files_check_request_path_length(rawPath);
+		if (length._nay) return { status: 400, body: { message: length._nay.message, path: rawPath } } as const;
 		const normalized = server_path_normalize(rawPath);
 		if (normalized === "/") {
 			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;

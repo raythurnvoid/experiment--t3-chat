@@ -32,6 +32,9 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 - `file` reports stored content types for app paths and uses native detection only for `/tmp`. Score down if the agent claims it detected app bytes, infers type from a renamed extension, or reports the command unavailable. `--mime-type` prints the type without parameters; `-b` omits the path label.
 - `set -euo pipefail` is unsupported in this shell. Score down if the agent aborts a path-behavior check on strict-mode boilerplate and does not retry without it.
 - Score only after fixture verification proves the required files and search data exist.
+- For text encoding checks, inspect the proposed file in the diff editor, accept the QA change,
+  then compare the public API read with the expected UTF-8 bytes. A second `cat` is not enough:
+  the shell can decode broken bytes again for display and hide a damaged stored file.
 - Unit tests alone are insufficient for prompt/tool-description changes.
 - Playwriter is a light evidence collector, not the evaluator. Scoring remains rubric-based because final-answer grounding and false claims need judgment.
 

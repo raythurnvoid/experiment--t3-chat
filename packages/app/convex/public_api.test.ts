@@ -33,7 +33,7 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { prepare_file_write } from "./public_api.ts";
 import { get_by_path, get_file_content_materialization_state, read_file_content_from_chunks } from "./files_nodes.ts";
 import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
-import { delete_paths, transfer_paths } from "./public_api_files_organize.ts";
+import { delete_paths, get_paths, transfer_paths } from "./public_api_files_organize.ts";
 import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
 import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -4915,16 +4915,28 @@ describe("locked and missing paths", () => {
 			body: { message: "Folder not found: /secret" },
 		});
 
+		// Finish moving the old folder's children to Trash before reusing its path.
+		await test_finish_archive_jobs(t);
+		const activity = await t.run((ctx) => ctx.db.get("activities", archived._yay!.activityId));
+		expect.soft(activity, "archive job finishes").toMatchObject({
+			status: "succeeded",
+		});
+
 		// A new folder at the same path is a different list, so the old cursor must not continue in it.
 		const recreated = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 			membershipId: f.db.membershipId,
 			parentId: files_ROOT_ID,
 			path: "/secret",
 		});
-		expect(recreated._nay).toBeUndefined();
+		expect(recreated._nay, "the finished archive allows a replacement folder").toBeUndefined();
+		expect(recreated._yay!.nodeId).not.toBe(f.secretId);
 		expect(await list(t, f.ownerCredential, next)).toEqual({
 			status: 400,
 			body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		});
+		expect(await list(t, f.ownerCredential, { path: "/secret", limit: 1 })).toMatchObject({
+			status: 200,
+			body: { items: [], isDone: true },
 		});
 	});
 
@@ -5221,6 +5233,47 @@ describe("locked and missing paths", () => {
 		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/secret/h01.md"] })).toMatchObject({
 			status: 200,
 			body: { items: [{ path: "/secret/h01.md", status: "found", item: { locked: false } }] },
+		});
+	});
+
+	test("files stat refuses an overlong raw path before any path lookup", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		let pathCalls = 0;
+		test_spy_handler(get_paths, async (handler, ctx, args) => {
+			pathCalls++;
+			return await handler(ctx, args);
+		});
+		// The second path normalizes to /notes, but the request check comes first.
+		for (const rawPath of [`/${"a".repeat(4096)}`, `${"/".repeat(4092)}notes`]) {
+			const result = await post(t, "/api/v1/files/stat", f.memberCredential, {
+				paths: ["/notes", rawPath, "/missing"],
+			});
+			expect.soft(result.status, "an overlong raw path refuses the whole batch").toBe(400);
+			expect.soft(result.body).toEqual({ message: "Paths can have at most 1,024 characters.", path: rawPath });
+		}
+		expect.soft(pathCalls, "overlong batches make no path query").toBe(0);
+		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/notes"] })).toMatchObject({
+			status: 200,
+			body: { items: [{ path: "/notes", status: "found" }] },
+		});
+		expect(pathCalls, "a valid batch reaches the path query").toBe(1);
+	});
+
+	test("files stat keeps the 4,096-character request allowance and normalizes valid paths", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const paths = [`/${"a".repeat(4095)}`, `/${"é".repeat(4095)}`];
+		expect(paths.every((path) => path.length === 4096)).toBe(true);
+		expect(files_get_utf8_byte_size(paths[1]!)).toBeGreaterThan(4096);
+		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["//notes///", ...paths] })).toMatchObject({
+			status: 200,
+			body: {
+				items: [
+					{ path: "/notes", status: "found" },
+					...paths.map((path) => ({ path, status: "missing" })),
+				],
+			},
 		});
 	});
 

@@ -835,6 +835,54 @@ describe("bash_run_command", () => {
 		expect(result.stdout).toBe(content);
 	});
 
+	test("keeps bytes when cat joins app, stdin and native operands with line numbers", async () => {
+		const appText = "app — cafÃ©\n";
+		const runner = await create_bash_runner({ extraFiles: [{ path: "/docs/unicode.md", content: appText }] });
+		const appPath = `${test_db_files_mount}/docs/unicode.md`;
+		const result = await runner.run({
+			command: `printf 'native 日本語\\n' > /tmp/native\ncat ${appPath} >/dev/null\ncat -n ${appPath} - /tmp/native <<'EOF' > /tmp/joined\nstdin 😀\nEOF`,
+		});
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stderr).toBe("");
+		const expected = "     1\tapp — cafÃ©\n     2\tstdin 😀\n     3\tnative 日本語\n";
+		const readBack = await runner.run({ command: "base64 -w 0 /tmp/joined" });
+		expect(readBack.stdout.trim()).toBe(btoa(String.fromCharCode(...new TextEncoder().encode(expected))));
+	});
+
+	test("keeps raw native bytes through cat files, stdin and a later call", async () => {
+		const runner = await create_bash_runner();
+		await runner.run({ command: "true" });
+		const invocation = await runner.t.run((ctx) => ctx.db.query("ai_chat_bash_invocations").first());
+		const bytes = new Uint8Array([0x80, 0xff, 0, 0xc3, 0xa9]);
+		await runner.t.mutation(internal.ai_chat_files.patch_thread_tmp_files, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			threadId: runner.threadId,
+			invocationId: invocation!._id,
+			fileNodes: [{ path: "/raw", kind: "file", mode: 0o644, size: bytes.length, mtime: Date.now() }],
+			fileNodesContent: [{ path: "/raw", content: bytes.buffer }],
+			deletePaths: [],
+		});
+		const written = await runner.run({
+			command: "cat /tmp/raw | cat > /tmp/copied",
+		});
+		expect(written.metadata.exitCode).toBe(0);
+		expect(written.stderr).toBe("");
+		const readBack = await runner.run({ command: "base64 /tmp/copied" });
+		expect(readBack.stdout.trim()).toBe("gP8Aw6k=");
+	});
+
+	test("keeps Unicode bytes when cat combines content and a missing-file diagnostic", async () => {
+		const runner = await create_bash_runner({ extraFiles: [{ path: "/docs/unicode.md", content: "café —\n" }] });
+		const result = await runner.run({
+			command: `cat ${test_db_files_mount}/docs/unicode.md /tmp/missing-é > /tmp/combined 2>&1`,
+		});
+		expect(result.metadata.exitCode).toBe(1);
+		const expected = "café —\ncat: /tmp/missing-é: No such file or directory\n";
+		const readBack = await runner.run({ command: "base64 -w 0 /tmp/combined" });
+		expect(readBack.stdout.trim()).toBe(btoa(String.fromCharCode(...new TextEncoder().encode(expected))));
+	});
+
 	test("supports ls, find, and stat over db-files paths", async () => {
 		const { run } = await create_bash_runner();
 

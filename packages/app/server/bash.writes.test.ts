@@ -18,6 +18,8 @@ import {
 	save_private_copy_for_test,
 	accept_pending_replacement_for_test,
 	read_committed_text,
+	upsert_pending_update_for_test,
+	test_r2_objects,
 } from "./bash.setup.test.ts";
 
 describe("bash_run_command", () => {
@@ -39,6 +41,68 @@ describe("bash_run_command", () => {
 		// A new file's baseline is empty, so the content is stored exactly as written,
 		// including the heredoc's trailing newline.
 		expect(heredoc.stdout).toBe("# Title\n\nBody line\n");
+	});
+
+	test.each([
+		{ name: "unicode.md", input: "<<'EOF'", source: "", bom: false, prefix: "" },
+		{ name: "unicode.txt", input: "<<'EOF'", source: "", bom: false, prefix: "" },
+		{ name: "unicode-fd.txt", input: "3<<'EOF'", source: "<&3", bom: false, prefix: "" },
+		{ name: "unicode-bom.txt", input: "<<'EOF'", source: "", bom: true, prefix: "" },
+		{ name: "unicode-append-bom.txt", input: "<<'EOF'", source: "", bom: true, prefix: "prefix\n" },
+	])("stores Unicode heredoc bytes in $name before and after save", async ({ name, input, source, bom, prefix }) => {
+		const runner = await create_bash_runner();
+		const text = (bom ? String.fromCharCode(0xfeff) : "") + "café — cafe\u0301 日本語 😀\nliteral: cafÃ©\n";
+		const path = `/${name}`;
+		if (prefix) {
+			const initial = await runner.run({ command: `printf '${prefix}' > ${test_db_files_mount}${path}` });
+			expect(initial.metadata.exitCode).toBe(0);
+		}
+		const written = await runner.run({
+			command: `cat ${input} ${source} ${prefix ? ">>" : ">"} ${test_db_files_mount}${path}\n${text}EOF`,
+		});
+		expect(written.metadata.exitCode).toBe(0);
+		expect(written.stderr).toBe("");
+		// App files drop one leading BOM, but keep a BOM inside appended content.
+		const storedText = prefix ? prefix + text : bom ? text.slice(1) : text;
+
+		const readBack = await runner.run({ command: `cat ${test_db_files_mount}${path}` });
+		expect(readBack.metadata.exitCode).toBe(0);
+		const pending = await runner.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			subject: { kind: "user", userId: runner.seeded.userId, plugin: null },
+			path,
+			overlayUserId: runner.seeded.userId,
+			includePending: true,
+		});
+		// Bash's final display decoder can hide bad bytes. Read the stored draft too.
+		expect(pending?.content, "stored heredoc text matches normalized input").toBe(storedText);
+		expect(readBack.stdout).toBe(storedText);
+
+		const draft = await get_private_entry(runner, path);
+		await upsert_pending_update_for_test(runner, {
+			target: { kind: "private", id: draft.node._id },
+			stagedText: pending!.content,
+			unstagedText: pending!.content,
+		});
+		await save_private_copy_for_test(runner, path);
+		const saved = await get_seeded_node(runner, path);
+		const sequence = await runner.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", saved.yjsLastSequenceId!));
+		// The worker is mocked in this suite; finish the save's materialization explicitly.
+		const materialized = await runner.t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			nodeId: saved._id,
+			targetSequence: sequence!.lastSequence,
+		});
+		expect(materialized._nay).toBeUndefined();
+		const published = await get_seeded_node(runner, path);
+		const asset = await runner.t.run((ctx) => ctx.db.get("files_r2_assets", published.assetId!));
+		expect(test_r2_objects.get(asset!.r2Key!), "saved heredoc bytes match normalized input").toEqual(
+			new TextEncoder().encode(storedText),
+		);
 	});
 
 	test("keeps the trailing newline on new files so appends start a new line", async () => {

@@ -613,7 +613,8 @@ function decode_write_content(args: {
 		bytes = content;
 	}
 	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		// A BOM in appended bytes is document content; storage owns leading-BOM policy.
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
 	} catch {
 		throw new Error(
 			`cannot write '${shellPath}': content is not valid UTF-8 text; app files store Markdown and plain text only`,

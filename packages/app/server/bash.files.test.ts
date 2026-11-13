@@ -910,6 +910,16 @@ describe("bash_run_command", () => {
 		);
 	});
 
+	test("large cat redirects its Unicode prefix as exact UTF-8 bytes", async () => {
+		const content = "é\n".repeat(Math.ceil(bash_READ_INLINE_MAX_BYTES / 3) + 1);
+		const { run } = await create_bash_runner({ extraFiles: [{ path: "/unicode-prefix.txt", content }] });
+		const written = await run({ command: "cat unicode-prefix.txt > /tmp/prefix" });
+		expect(written.metadata.exitCode).toBe(0);
+		const result = await run({ command: "base64 -w 0 /tmp/prefix" });
+		const expected = "é\n".repeat(bash_READ_HEAD_LARGE_FILE_MAX_LINES);
+		expect(result.stdout.trim()).toBe(btoa(String.fromCharCode(...new TextEncoder().encode(expected))));
+	});
+
 	test("prints absolute db-files paths in large-file reader continuations", async () => {
 		const { run } = await create_bash_runner({ initialCwd: test_db_files_mount, extraFiles: [big_md_file] });
 		const bigPath = `${test_db_files_mount}/big.md`;

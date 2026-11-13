@@ -85,6 +85,13 @@ function add_line_numbers(content: string, startLine: number) {
 	};
 }
 
+function to_binary_string(content: string | Uint8Array) {
+	const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+	let result = "";
+	for (const byte of bytes) result += String.fromCharCode(byte);
+	return result;
+}
+
 // The command boundary breaks inference through the generated action API.
 export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots): Command {
 	const fileContentCache = new Map<string, string>();
@@ -208,7 +215,11 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				// the delegated filesystem so `/tmp` and stdin-style pipelines keep native behavior.
 				if (entry.kind === "native") {
 					try {
-						return { content: await commandCtx.fs.readFile(entry.resolvedPath), stderr: "", failed: false };
+						return {
+							content: to_binary_string(await commandCtx.fs.readFileBuffer(entry.resolvedPath)),
+							stderr: "",
+							failed: false,
+						};
 					} catch (error) {
 						const msg = error instanceof Error ? error.message : String(error);
 						return {
@@ -275,7 +286,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// Content goes to stdout verbatim; the advisory goes to stderr so it never
 					// contaminates a pipe (e.g. `cat big.md | grep …`).
 					return {
-						content: page.content,
+						content: to_binary_string(page.content),
 						stderr: bash_format_multiline_hint("cat", [
 							`'${file}' is ${size} bytes; showing the first ${page.content.split("\n").length - 1} lines`,
 							...(page.moreLines
@@ -297,7 +308,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				const cached = fileContentCache.get(cacheKey);
 				// Volume access can change during the size lookup. Read it through Convex again.
 				if (cached != null && pathResolution.fs.readOnlySource !== "volume") {
-					return { content: cached, stderr: "", failed: false };
+					return { content: to_binary_string(cached), stderr: "", failed: false };
 				}
 
 				const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
@@ -320,7 +331,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// or a later cat in this call could print old cached text.
 					if (dbFilesDoc) pathResolution.fs.rememberEntry(dbFilesDoc);
 					fileContentCache.set(cacheKey, chunkRead.content);
-					return { content: chunkRead.content, stderr: "", failed: false };
+					return { content: to_binary_string(chunkRead.content), stderr: "", failed: false };
 				}
 
 				// No chunk content means cat has no stdout for this operand. Check the
@@ -373,6 +384,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 			if (read.value.failed) exitCode = bash_COMMAND_EXIT_FAILURE;
 		}
 
-		return { stdout, stderr, exitCode };
+		// stdin and native files are bytes; app text is encoded once above.
+		return { stdout, stderr, exitCode, stdoutEncoding: "binary" as const };
 	});
 }
