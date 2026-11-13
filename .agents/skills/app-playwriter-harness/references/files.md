@@ -1067,6 +1067,35 @@ Use this after changing `files-sidebar-archive.tsx`, `files-purge-modal.tsx`, `f
 - When clicks on the Trash rows stall at `performing click action`, open the row menu by keyboard: focus `More actions for <name>`, press `Enter`, check `[role=menuitem][data-active-item]` (`Home` moves to `Restore`), and press `Enter`. Call `bringToFront()` before you open a menu, because it closes an open one. A stalled click can still have acted: a second Restore of the same item answers `These items are being restored. Wait for it to finish.` Read `files_archive_runs` before you try again.
 - Delete permanently is not undoable and costs real data. Use it only on trashed QA items, or in Trash areas the user asked to empty.
 
+### Agent Trash Requests In Pending
+
+Use an existing QA chat and a saved QA file or folder. Save its id and content before
+moving it to Trash. Ask the agent to find it and bring it back. A saved restore creates
+one request; it does not make a file draft or restore the file before approval.
+
+- Open `Pending changes`. Request rows have `data-trash-request-id` and
+  `data-trash-request-status` (`waiting`, `queued`, `running`, `finished`). Read the
+  visible path and result text. Buttons are named `Accept restore /<path>`,
+  `Discard restore /<path>`, `Open job for restore /<path>` and `Dismiss restore /<path>`.
+  Purge uses `delete permanently`; Empty uses `empty trash`.
+- The source combobox name starts with `Pending changes source:`. A chat with only
+  Trash requests must still appear there and in the chat's pending strip.
+- Before Accept, confirm the item is still in the app Trash and public `trash` list.
+  After Accept, wait for `finished`, open its job, then read the saved file again.
+  Restore must keep the original id and content. For a folder, check its children too.
+- For mixed review, ask for one ordinary file draft and one restore. `Accept all`
+  must save the draft and then restore the original item. Bulk actions cover shown
+  requests only. Queued and running requests keep their own Discard or Stop actions.
+- Discard a waiting restore and check the same item remains in Trash. Keyboard
+  Discard returns focus to the Pending panel. `trash cancel REQUEST_ID` also removes
+  a waiting request. Neither changes the saved file.
+- Use only task-created files for Purge. For Empty, first read every page of the
+  chosen area's Trash and require only task-created items. Never empty workspace
+  Trash just to clean up one test file.
+- On a phone, use the touch setup in [agent-panel.md](agent-panel.md#phone-chat-layout).
+  The chat strip opens `.AiChatPendingReview` with these same rows. Check wrapping,
+  keyboard actions and focus at 360px. Dismissing the last result closes the modal.
+
 ### File And Folder Read-only
 
 Native subset verified 2026-10-29 with the signed-in owner and an authorized isolated member.
