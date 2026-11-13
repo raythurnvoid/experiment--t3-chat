@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
+import { activities_is_active } from "./activities_db.ts";
 import {
 	fixture,
 	add_member,
@@ -10,6 +10,8 @@ import {
 	archive_to_end,
 	folder,
 	restore,
+	purge,
+	purge_job,
 	lock_archived,
 	read_activity,
 	read_node,
@@ -31,25 +33,6 @@ import { files_trash_entries_area_pointer, files_trash_entries_db_insert } from 
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
-
-async function purge(
-	f: Fixture,
-	nodeIds: Array<Id<"files_nodes">>,
-	as: { asUser: Fixture["asOwner"]; membershipId: Id<"organizations_workspaces_users"> } = {
-		asUser: f.asOwner,
-		membershipId: f.db.membershipId,
-	},
-) {
-	const result = await as.asUser.mutation(api.files_nodes.purge_nodes, { membershipId: as.membershipId, nodeIds });
-	if (result._nay) throw new Error(result._nay.message);
-	return result._yay;
-}
-
-async function purge_job(f: Fixture, runId: Id<"files_archive_runs"> | null) {
-	if (!runId) throw new Error("Expected a purge job");
-	const activity = await f.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
-	return { runId, activityId: activity._id };
-}
 
 async function step_to_end(f: Fixture, job: { runId: Id<"files_archive_runs">; activityId: Id<"activities"> }) {
 	for (let count = 0; count < 200; count++) {
@@ -223,6 +206,34 @@ describe("files_nodes.purge_nodes", () => {
 		expect(left.updates).toBe(0);
 		expect(left.small?.archiveOperationId, "the file the job did not reach stays archived").not.toBeNull();
 		expect(left.small?.purgeRunId).toBeUndefined();
+	});
+
+	test("a step that keeps failing ends the job between files and says that deleted items stay deleted", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "stuck", folderCount: 2, filesPerFolder: 55 });
+		await archive_to_end(f, tree.topId);
+
+		// Go on until the job is in the second folder. In the first folder the next file in the queue is
+		// already started (it has `purgeRunId`), and the job never ends while a started file waits.
+		const job = await purge_job(f, (await purge(f, [tree.topId])).runId);
+		while ((await list_workspace_paths(f)).length > 50) await step(f, job.runId);
+		const pathsLeft = await list_workspace_paths(f);
+		expect(pathsLeft.length, "the job did not reach every item").toBeGreaterThan(0);
+
+		// Steps never run on their own here, so each deadline check finds the same step, as when the step
+		// throws every time. The first check only saves the step. The next three find it again.
+		for (let count = 0; count < 4; count++) {
+			const now = Date.now();
+			await f.t.run((ctx) => ctx.db.patch("activities", job.activityId, { deadlineAt: now - 1 }));
+			await f.t.mutation(internal.activities.recover_expired, { _test_now: now, _test_disableReschedule: true });
+		}
+
+		const ended = await read_activity(f, job.activityId);
+		expect(ended.status).toBe("failed");
+		expect(ended.errorMessage).toBe(
+			"A step of this job kept failing, so it stopped. Items it already deleted stay deleted.",
+		);
+		expect(await list_workspace_paths(f), "the items the job did not reach stay in Trash").toEqual(pathsLeft);
 	});
 
 	test("waits as a queued job while an op on its paths runs, then goes on", async () => {

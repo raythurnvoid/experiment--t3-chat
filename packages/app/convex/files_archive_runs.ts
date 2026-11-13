@@ -4107,9 +4107,13 @@ export async function files_archive_runs_db_request_stop(
 					ctx,
 					runId: run._id,
 					status: "failed",
-					errorMessage: run.force
-						? "A step of this job kept failing, so it stopped. Completed changes were kept."
-						: "A step of this job kept failing, so it stopped. Nothing was changed.",
+					// Delete permanently cannot bring an item back, so say that its earlier steps deleted items.
+					errorMessage:
+						run.kind === "purge" && run.phase === "apply"
+							? "A step of this job kept failing, so it stopped. Items it already deleted stay deleted."
+							: run.force
+								? "A step of this job kept failing, so it stopped. Completed changes were kept."
+								: "A step of this job kept failing, so it stopped. Nothing was changed.",
 					errorCode: "failed",
 					now: args.now,
 				});

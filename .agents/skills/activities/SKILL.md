@@ -277,7 +277,9 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   trying, because ending halfway would leave old access inside. A move to Trash check or a restore
   discover or check changed nothing yet, so it ends as `failed`. A step that fails on every try is
   then always logged, but an ordinary move to Trash apply or scope step still needs a code fix to finish.
-  Forced moves to Trash can end safely after repeated failed steps and keep completed changes. A scope job's
+  Forced moves to Trash can end safely after repeated failed steps and keep completed changes. Delete
+  permanently ends the same way, but only between files, and its message says that items it already
+  deleted stay deleted. A scope job's
   Activity is hidden from the feed, so only the log shows its notice.
 - `files_transfer.recover_expired_attempts` only releases expired transfer attempts. Do not put
   a second job deadline or history scan back in that module.

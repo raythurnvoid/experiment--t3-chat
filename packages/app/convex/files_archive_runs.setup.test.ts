@@ -2,7 +2,7 @@
 import { expect } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
-import { activities_is_active } from "./activities_db.ts";
+import { activities_db_require_by_source_id, activities_is_active } from "./activities_db.ts";
 import { test_convex, test_finish_saved_scope_jobs, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
@@ -317,6 +317,25 @@ export async function archive(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
 
 export async function restore(f: Fixture, nodeIds: Array<Id<"files_nodes">>) {
 	return await f.asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: f.db.membershipId, nodeIds });
+}
+
+export async function purge(
+	f: Fixture,
+	nodeIds: Array<Id<"files_nodes">>,
+	as: { asUser: Fixture["asOwner"]; membershipId: Id<"organizations_workspaces_users"> } = {
+		asUser: f.asOwner,
+		membershipId: f.db.membershipId,
+	},
+) {
+	const result = await as.asUser.mutation(api.files_nodes.purge_nodes, { membershipId: as.membershipId, nodeIds });
+	if (result._nay) throw new Error(result._nay.message);
+	return result._yay;
+}
+
+export async function purge_job(f: Fixture, runId: Id<"files_archive_runs"> | null) {
+	if (!runId) throw new Error("Expected a purge job");
+	const activity = await f.t.run((ctx) => activities_db_require_by_source_id(ctx, runId));
+	return { runId, activityId: activity._id };
 }
 
 export async function lock(args: { f: Fixture; nodeId: Id<"files_nodes">; locked: boolean }) {
