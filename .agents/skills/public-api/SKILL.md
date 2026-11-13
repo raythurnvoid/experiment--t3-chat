@@ -261,7 +261,7 @@ Where each copy comes from:
 
 To change the skill, commit and push the submodule first. Then, in one app commit, move the gitlink, run `generate:builtin-skills`, and include the generated file with the API change it describes. Generate from a pushed submodule commit, not from a working tree with someone else's unpushed edits. The app lint fails while the generated file is stale.
 
-`metadata.version` in its `SKILL.md` tells whether a copy on a computer is current. Raise it with every change; the CLI `help` prints it, and the skill test checks that both match.
+`metadata.version` in its `SKILL.md` tells whether a copy on a computer is current. Raise it with every change; the CLI `help` prints it, and the skill test checks that both match. The CLI `status` also reads the public `/.well-known/agent-skills/index.json` of its API origin, without the key, and warns when the served version differs. That route is outside `/api/v1` and has no `api_schemas_Main` entry, like the `/plugins-ui/` assets; see "Built-in skills" in `../ai-chat-skills/SKILL.md`.
 
 `scripts/public-api-skill.test.ts` checks portable resources, parser metadata, exact `/api/v1` route classification, and the transcript reconstruction recipe. Run it in the scripts Vitest project. The API tests live in `convex/public_api_ai_chat.test.ts`. The client guide distinguishes saved-only public Files reads from pending-aware Bash and skill discovery. It classifies browser/system auth separately; `/api/v1/runs/stream` is not a public-key route.
 

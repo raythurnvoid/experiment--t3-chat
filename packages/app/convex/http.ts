@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server.js";
 import { corsRouter } from "convex-helpers/server/cors";
 import { allowed_origins } from "../server/server-utils.ts";
+import { agent_skills_http_routes } from "./agent_skills_http_routes.ts";
 import { ai_chat_http_routes } from "./ai_chat_http_routes.ts";
 import { billing_http_routes } from "./billing_http_routes.ts";
 import { files_nodes_ai_http_routes } from "./files_nodes_ai_http_routes.ts";
@@ -65,6 +66,7 @@ plugins_service_http_routes(appCors);
 plugins_service_access_http_routes(appCors);
 plugins_ui_http_routes(http);
 billing_http_routes(http);
+agent_skills_http_routes(http);
 
 appCors.route({
 	path: "/getMessagesByAuthor",

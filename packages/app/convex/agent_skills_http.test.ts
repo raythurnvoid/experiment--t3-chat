@@ -1,0 +1,32 @@
+import { strFromU8, unzipSync } from "fflate";
+import { describe, expect, test } from "vitest";
+import { ai_chat_builtin_skills_FILES } from "../server/ai-chat-builtin-skills.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { test_convex } from "./setup.test.ts";
+
+describe("agent_skills_http_handle_request", () => {
+	test("serves an index whose digest matches the zip of the bundled skill", async () => {
+		const t = test_convex();
+
+		const indexResponse = await t.fetch("/.well-known/agent-skills/index.json");
+		expect(indexResponse.status).toBe(200);
+		const index = (await indexResponse.json()) as {
+			$schema: string;
+			skills: Array<{ name: string; type: string; url: string; digest: string; version: string | null }>;
+		};
+		expect(index.$schema).toBe("https://schemas.agentskills.io/discovery/0.2.0/schema.json");
+		const entry = index.skills.find((skill) => skill.name === "press-api");
+		expect(entry).toMatchObject({ type: "archive", url: "/.well-known/agent-skills/press-api.zip" });
+		expect(entry?.version).toMatch(/^\d+\.\d+\.\d+$/u);
+
+		const archiveResponse = await t.fetch(entry!.url);
+		expect(archiveResponse.headers.get("content-type")).toBe("application/zip");
+		const archive = new Uint8Array(await archiveResponse.arrayBuffer());
+		// Clients must refuse an archive whose bytes do not match the digest.
+		expect(entry?.digest).toBe(`sha256:${await crypto_sha256_hex(archive)}`);
+		// The skill files sit at the zip root, with no wrapper folder.
+		expect(strFromU8(unzipSync(archive)["SKILL.md"])).toBe(ai_chat_builtin_skills_FILES["/press-api/SKILL.md"]);
+
+		expect((await t.fetch("/.well-known/agent-skills/missing.zip")).status).toBe(404);
+	});
+});

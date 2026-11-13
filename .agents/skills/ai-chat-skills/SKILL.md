@@ -63,6 +63,7 @@ A built-in skill describes the platform itself, so it ships with the app and alw
 - Catalog entry: `{ source: "builtin", path: "/skills/<name>/SKILL.md", name, description }`, parsed from the bundled `SKILL.md` on each turn. Built-in entries come first, so workspace skills cannot push them out of the 32 KiB budget. A bad bundled frontmatter becomes a warning entry, like a workspace skill.
 - They need no access check: the text is public, and every member and guest gets the same copy. They appear only while the workspace instructions flag is on, like the rest of the catalog.
 - A workspace or plugin skill with the same name is a different skill. The prompt tells the agent to say which one it uses.
+- Outside the app, the API origin publishes the same files with the [Agent Skills Discovery RFC](https://github.com/cloudflare/agent-skills-discovery-rfc) (draft 0.2.0): `GET /.well-known/agent-skills/index.json` lists each skill as `type: "archive"` with a `sha256:` digest and an extra `version` field, and `GET /.well-known/agent-skills/<name>.zip` serves the files at the zip root. No key: the text is public. `convex/agent_skills_http.ts` builds the zip with a fixed file date, so the digest is the same on every server. The press-api `status` command reads `version` to tell a user that their copy is out of date.
 - Why not a copy in Files: a copy goes stale after every API change and needs an install per workspace. Claude organization skills work the same way: the product pushes them, users do not copy them.
 
 # Plugin skills

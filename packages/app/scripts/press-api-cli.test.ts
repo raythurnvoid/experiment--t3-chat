@@ -404,7 +404,7 @@ describe("readonly", () => {
 });
 
 describe("status", () => {
-	test("names the key's own tenant with one request", async () => {
+	test("names the key's own tenant with one API request, and the skill version the API serves", async () => {
 		const verified = {
 			organizationId: "o1",
 			workspaceId: "w1",
@@ -414,15 +414,25 @@ describe("status", () => {
 			serviceAccountId: null,
 			sponsorUserId: "u1",
 		};
-		const api = await start_api((_request, response) => {
+		const api = await start_api((request, response) => {
 			response.writeHead(200, { "content-type": "application/json" });
-			response.end(JSON.stringify(verified));
+			response.end(
+				JSON.stringify(
+					request.route === "/.well-known/agent-skills/index.json"
+						? { skills: [{ name: "press-api", version: "99.0.0" }] }
+						: verified,
+				),
+			);
 		});
 		try {
 			const result = await run_cli(api.origin, ["status"]);
 			expect(result.code, result.stderr).toBe(0);
-			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject(verified);
-			expect(api.requests).toEqual([{ route: "/api/v1/auth/verify", body: {} }]);
+			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject({ ...verified, servedVersion: "99.0.0" });
+			expect(result.stderr).toContain("serves 99.0.0");
+			expect(api.requests).toEqual([
+				{ route: "/api/v1/auth/verify", body: {} },
+				{ route: "/.well-known/agent-skills/index.json", body: {} },
+			]);
 			expect(result.stdout.toString("utf8")).not.toContain("pk_test");
 		} finally {
 			await api.close();
