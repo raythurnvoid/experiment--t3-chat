@@ -272,6 +272,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-13: the built-in skill check added one one-turn agent chat in `chitchat-qa/xfer-qa-0914` (thread `n174xaamc6xkp96752d3nabqnd8j5fdy`). It ran one read-only Bash command on `/skills/press-api`. No file, tenant or user.
 - 2026-11-10: frozen-Trash follow-ups repaired b.md and c.md through Restore then Trash. The small sharing fixture above proves that an item's own share survives its restricted folder. Both last-person and last-plugin-choice removal changed frozen pointers on the old backend. The temporary plugin choice is ended and sub-3 is live again. No new tenant or user.
 - 2026-11-10: plugin Restore checks in `chitchat-qa/copy-qa-0922` added the Restore folders above, published Data Probe 0.5.0 and 0.5.1 and installed 0.5.1, and added `qa.perm.member` as a member. The member's test file choices were removed. In `chitchat-qa/xfer-qa-0914` the frontmatter index check uploaded `/press-api-upload-qa/qa-frontmatter-overcap.md` (129 fields, all indexed), and `/g4-many` was moved to `/g4-dst` and back. No new tenant or user.
 - 2026-11-08: the plugin Trash check (recipe in `plugin-gallery.md`) ran as `qa.perm.member` in `chitchat-qa/xfer-qa-0914`. It made the empty folders `/b2-live/a/sub`, `/b2-live/b/sub` and `/b2-live/a/new`, and left all of them in Trash. Both Gallery choices it saved are ended. No upload, tenant or user.
