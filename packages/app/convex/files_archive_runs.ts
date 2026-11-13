@@ -76,6 +76,7 @@ import {
 } from "../server/files-write-policy.ts";
 import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
 import {
+	files_subtree_ops_db_check_live_limit,
 	files_subtree_ops_db_delete,
 	files_subtree_ops_db_enqueue_nodes,
 	files_subtree_ops_db_find_blocker,
@@ -3788,6 +3789,9 @@ export async function files_archive_runs_db_start_purge(
 	},
 ) {
 	const { organizationId, workspaceId } = args.membership;
+
+	const liveLimit = await files_subtree_ops_db_check_live_limit(ctx, { organizationId, workspaceId, count: 1 });
+	if (liveLimit) return Result({ _nay: liveLimit });
 
 	// A restore or another purge of these paths waits for this job, and this job waits for them.
 	const busyPaths = { discoverTreePaths: [] as string[] };

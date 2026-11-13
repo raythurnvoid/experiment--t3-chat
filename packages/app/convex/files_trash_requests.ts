@@ -34,6 +34,7 @@ import {
 	files_archive_runs_db_start_purge,
 } from "./files_archive_runs.ts";
 import { files_pending_update_runs_db_seal } from "./files_pending_update_runs.ts";
+import { files_subtree_ops_db_check_live_limit } from "./files_subtree_ops_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 const PAGE_SIZE = 100;
@@ -925,6 +926,15 @@ async function db_start_request(
 		...(node && { fileNode: node }),
 	});
 	if (access._nay) return await db_finish_request(ctx, request, { status: "blocked", message: access._nay.message });
+	// A purge checks this limit when it starts.
+	if (request.kind === "restore") {
+		const liveLimit = await files_subtree_ops_db_check_live_limit(ctx, {
+			organizationId: batch.organizationId,
+			workspaceId: batch.workspaceId,
+			count: 1,
+		});
+		if (liveLimit) return await db_finish_request(ctx, request, { status: "blocked", message: liveLimit.message });
+	}
 
 	// These links and the child's first writes commit together, so a retry cannot start it twice.
 	await ctx.db.patch("files_trash_requests", request._id, { status: "running", updatedAt: Date.now() });

@@ -224,6 +224,41 @@ describe("files_subtree_ops_db_find_blocker", () => {
 	});
 });
 
+describe("files_subtree_ops_db_check_live_limit", () => {
+	test("a delete is refused while the workspace has 1,000 live jobs", async () => {
+		const f = await fixture();
+		const folder = await f.t.run((ctx) =>
+			insert_node({ ctx, f, fields: { parent: null, name: "docs", kind: "folder", archiveOperationId: null } }),
+		);
+		// The limit only counts the jobs of the workspace, so plain op docs are enough here.
+		const opIds = await f.t.run(async (ctx) => {
+			const ids = [];
+			for (let index = 0; index < 1000; index++) {
+				ids.push(
+					await ctx.db.insert("files_subtree_ops", {
+						kind: "scope",
+						...f.scope,
+						status: "running",
+						blockedByOpId: null,
+						rootNodeIds: [],
+						treePaths: [`/other-${index}/`],
+					}),
+				);
+			}
+			return ids;
+		});
+
+		const archive = () =>
+			f.asOwner.mutation(api.files_nodes.archive_nodes, { membershipId: f.db.membershipId, nodeIds: [folder._id] });
+		expect((await archive())._nay?.message).toBe(
+			"Too many file jobs are running in this workspace. Wait until some finish, then try again.",
+		);
+
+		await f.t.run((ctx) => ctx.db.delete("files_subtree_ops", opIds[0]!));
+		expect((await archive())._nay).toBeUndefined();
+	});
+});
+
 describe("advance", () => {
 	test("a step that only clears empty and deleted folders from the queue stops near the limits", async () => {
 		// A lower read limit makes the step stop after fewer rows. The step stops at 25% of the limit left.

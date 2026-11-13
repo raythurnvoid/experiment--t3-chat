@@ -261,6 +261,14 @@ See the [plugin runtime spec](../plugin-system/SKILL.md).
   `running`, shows its card, and schedules its first step. Each waiter's check reads every op of the
   workspace, so the delete stops near the transaction limits and `files_subtree_ops.release_waiters`
   goes on with the rest. A queued job whose deadline passes gets 24 more hours.
+- One workspace has at most 1,000 live subtree ops. This keeps those workspace reads small. A new
+  move to Trash, restore or purge that would pass the limit is refused with "Too many file jobs are
+  running in this workspace. Wait until some finish, then try again."
+  (`files_subtree_ops_db_check_live_limit`). A Restore request needs one op per delete operation, and
+  it starts none of them when they do not all fit. Scope and copy ops count, but they are never
+  refused: a scope op comes from a sharing change, and a person runs one copy at a time. The count
+  does not bound bytes: a few hundred large ops (long paths, or 500 named items) can still pass the
+  read limit. The user accepted this on 2026-11-13.
 - A copy that runs during a restore copies the items that are active when it reads them. Items the
   restore has not brought back yet are not copied. This holds for a copy into another workspace too,
   which never waits for an op of the source workspace.

@@ -228,7 +228,9 @@ blocker and waiter scans in `files_subtree_ops_db_find_blocker`.
 TODO: replace that queue scan with an indexed path lookup that keeps running jobs and earlier
 queued jobs as blockers. Restore uses it during admission and later work. Many unrelated jobs
 can make it hit the database read limit. The user accepted keeping this scan for development
-and Plugin Restore on 2026-11-06. Keep the overlap check; this exception allows no new scans.
+and Plugin Restore on 2026-11-06. Since 2026-11-13 a limit of 1,000 live ops per workspace keeps
+the scan short; see the live op limit in the [Activities spec](../activities/SKILL.md). Keep the
+overlap check; this exception allows no new scans.
 
 Agent Trash requests use the same Restore/Purge checks and jobs after approval. They
 grant no Read-only bypass. They check current authority at proposal and again before

@@ -190,6 +190,7 @@ import {
 	files_archive_runs_db_start_purge,
 	files_archive_runs_get_all_refused_nay,
 } from "./files_archive_runs.ts";
+import { files_subtree_ops_db_check_live_limit } from "./files_subtree_ops_db.ts";
 import { files_transfer_db_start_rename } from "./files_transfer.ts";
 import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
 import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
@@ -3436,6 +3437,13 @@ export async function files_nodes_db_archive_named_nodes(
 			: Result({ _yay: null });
 	}
 
+	const liveLimit = await files_subtree_ops_db_check_live_limit(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		count: 1,
+	});
+	if (liveLimit) return Result({ _nay: liveLimit });
+
 	const started = await files_archive_runs_db_start(ctx, {
 		kind: "archive",
 		force: args.force ?? false,
@@ -3917,6 +3925,19 @@ export async function files_nodes_db_restore_named_nodes(
 		if (roots.some((root) => root.nodeId === fileNode._id)) continue;
 		roots.push({ nodeId: fileNode._id, treePath: fileNode.treePath });
 		rootsByOperationId.set(archiveOperationId, roots);
+	}
+
+	// Each delete operation gets its own job. When they do not all fit, start none of them.
+	const liveLimit = await files_subtree_ops_db_check_live_limit(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		count: rootsByOperationId.size,
+	});
+	if (liveLimit) {
+		return {
+			jobs: [],
+			refusals: [...rootsByOperationId.keys()].map((archiveOperationId) => ({ archiveOperationId, nay: liveLimit })),
+		};
 	}
 
 	const budget = {

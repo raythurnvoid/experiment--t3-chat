@@ -90,7 +90,8 @@ export async function files_subtree_ops_db_find_blocker(
 	},
 ) {
 	// TODO: Find overlapping jobs through a path index, keeping running and earlier queued jobs.
-	// This workspace scan can hit the read limit. Accepted for development and Plugin Restore on 2026-11-06.
+	// `files_subtree_ops_db_check_live_limit` keeps this range to about `MAX_LIVE_OPS` jobs. A job is
+	// up to about 80 KB, so a few hundred large jobs can still pass the read limit. Accepted on 2026-11-13.
 	// TODO: 500,000-item deletes need to be checked: one large folder and separate selected paths.
 	// Prove bounded admission and waiter release with local cost models before adding bulk input.
 	for await (const op of ctx.db
@@ -110,6 +111,37 @@ export async function files_subtree_ops_db_find_blocker(
 		if (overlaps) return op;
 	}
 	return null;
+}
+
+/**
+ * At most this many jobs can be live in one workspace. `files_subtree_ops_db_find_blocker` reads every
+ * live job of the workspace, so this keeps that read small. Normal use has a few live jobs. Only a
+ * script that starts many deletes or restores reaches this limit.
+ */
+const MAX_LIVE_OPS = 1000;
+
+/**
+ * The refusal for a request that would start `count` new delete, restore or purge jobs, or null when
+ * the workspace has room. Scope and copy jobs count too, but they are never refused: a scope job comes
+ * from a sharing change, and a person runs one copy at a time.
+ */
+export async function files_subtree_ops_db_check_live_limit(
+	ctx: QueryCtx | MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; count: number },
+) {
+	// Read at most `MAX_LIVE_OPS` jobs. This limit is what bounds the range, so the read stays small.
+	const liveOps = await ctx.db
+		.query("files_subtree_ops")
+		.withIndex("by_organization_workspace_kind", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(MAX_LIVE_OPS);
+	if (liveOps.length + args.count <= MAX_LIVE_OPS) return null;
+
+	return {
+		name: "busy",
+		message: "Too many file jobs are running in this workspace. Wait until some finish, then try again.",
+	};
 }
 
 export async function files_subtree_ops_db_require_walk(
