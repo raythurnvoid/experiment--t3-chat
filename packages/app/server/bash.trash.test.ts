@@ -385,6 +385,12 @@ describe("bash_run_command", () => {
 			expect(first.requests).toHaveLength(1);
 			expect(first.requests[0]).toMatchObject({ kind: "restore", status: "waiting" });
 			expect(first.nextCursor).toBeTruthy();
+			const textPage = await runner.run({ command: "trash requests --limit=1" });
+			expect(textPage.stderr).toContain("Next page: trash requests --limit 1 --cursor");
+			const nextCommand = /Next page: (.*)\n/.exec(textPage.stderr)![1];
+			const textNext = await runner.run({ command: nextCommand });
+			expect(textNext.metadata.exitCode, textNext.stderr).toBe(0);
+			expect(textNext.stdout).not.toContain(first.requests[0].requestId);
 			const next = await runner.run({ command: `trash requests --format json --limit 1 --cursor ${first.nextCursor}` });
 			expect(next.metadata.exitCode, next.stderr).toBe(0);
 			expect(JSON.parse(next.stdout).requests[0].requestId).not.toBe(first.requests[0].requestId);

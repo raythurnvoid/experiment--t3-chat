@@ -89,7 +89,7 @@ type FileEditorSidebarPendingView = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
 >;
 
-type FileEditorSidebarPendingTrashRequest = NonNullable<
+type FileEditorSidebarPendingTrashRequestView = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_trash_requests.get_request>
 >;
 
@@ -1428,21 +1428,27 @@ type FileEditorSidebarPendingTrashRequest_ClassNames =
 
 type FileEditorSidebarPendingTrashRequest_CustomAttributes = {
 	"data-trash-request-id": string;
-	"data-trash-request-status": FileEditorSidebarPendingTrashRequest["status"];
+	"data-trash-request-status": FileEditorSidebarPendingTrashRequestView["status"];
 };
 
-const FileEditorSidebarPendingTrashRequestItem = memo(function FileEditorSidebarPendingTrashRequestItem(props: {
-	request: FileEditorSidebarPendingTrashRequest;
+type FileEditorSidebarPendingTrashRequest_Props = {
+	request: FileEditorSidebarPendingTrashRequestView;
 	disabled: boolean;
 	onActionSuccess: (message: string) => void;
-}) {
+};
+
+const FileEditorSidebarPendingTrashRequest = memo(function FileEditorSidebarPendingTrashRequest(
+	props: FileEditorSidebarPendingTrashRequest_Props,
+) {
 	const { request, disabled, onActionSuccess } = props;
+
 	const { membershipId } = AppTenantProvider.useContext();
 	const { startReview, openArchiveRun } = AppActivitiesProvider.useContext();
 	const [isBusy, setIsBusy] = useState(false);
 	const itemRef = useRef<HTMLLIElement>(null);
 	const label = { restore: "Restore", purge: "Delete permanently", empty: "Empty Trash" }[request.kind];
 	const actionLabel = `${label.toLowerCase()}${request.path ? ` ${request.path}` : " request"}`;
+	const archiveRunId = request.archiveRunId;
 
 	// The action buttons change when work starts or ends. Keep focus in this row or its panel.
 	useLayoutEffect(() => {
@@ -1552,11 +1558,11 @@ const FileEditorSidebarPendingTrashRequestItem = memo(function FileEditorSidebar
 						Discard
 					</MyButton>
 				) : null}
-				{request.archiveRunId ? (
+				{archiveRunId ? (
 					<MyButton
 						variant="ghost"
 						aria-label={`Open job for ${actionLabel}`}
-						onClick={() => openArchiveRun(request.archiveRunId!)}
+						onClick={() => openArchiveRun(archiveRunId)}
 					>
 						Open job
 					</MyButton>
@@ -1877,7 +1883,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 				),
 			[membershipId, requestIdsKey],
 		),
-	) as Record<string, FileEditorSidebarPendingTrashRequest | null | undefined | Error>;
+	) as Record<string, FileEditorSidebarPendingTrashRequestView | null | undefined | Error>;
 	const requests = requestListRows.flatMap((row) => {
 		const request = requestViews[row.requestId];
 		return request && !(request instanceof Error) ? [request] : [];
@@ -2311,7 +2317,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 					<p>Actions apply to the changes shown below.</p>
 				) : null}
 				{requests.some((request) => request.status === "queued" || request.status === "running") ? (
-					<p>Trash requests already in progress keep running. Use their row to stop or cancel them.</p>
+					<p>Trash requests already in progress keep running. Use Stop or Discard on their row.</p>
 				) : null}
 				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
 					{listRows.map((listRow) => {
@@ -2366,7 +2372,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 						const request = requestViews[listRow.requestId];
 						if (request && !(request instanceof Error)) {
 							return (
-								<FileEditorSidebarPendingTrashRequestItem
+								<FileEditorSidebarPendingTrashRequest
 									key={listRow.requestId}
 									request={request}
 									disabled={isBulkBusy}

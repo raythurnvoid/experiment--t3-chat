@@ -6788,6 +6788,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion files write policy runs
 
+	// #region files trash requests
 	/**
 	 * An agent's request to restore or permanently delete saved Trash. These docs own no file drafts.
 	 * A claimed doc stays until its batch ends, so repeated approval pages can check the same ids.
@@ -6903,6 +6904,8 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_user", ["userId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	// #endregion files trash requests
 
 	// #region files archive runs
 	/**

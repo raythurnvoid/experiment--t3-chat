@@ -172,6 +172,35 @@ async function db_delete_request(ctx: MutationCtx, request: Doc<"files_trash_req
 	await db_change_summaries(ctx, request, -1);
 }
 
+async function db_finish_request(
+	ctx: MutationCtx,
+	request: Doc<"files_trash_requests">,
+	outcome: NonNullable<Doc<"files_trash_requests">["outcome"]>,
+) {
+	const now = Date.now();
+	await ctx.db.patch("files_trash_requests", request._id, {
+		status: "finished",
+		outcome,
+		updatedAt: now,
+		expiresAt: now + files_DRAFT_IDLE_EXPIRY_MS,
+	});
+
+	if (request.batchId) {
+		const batch = await ctx.db.get("files_trash_request_batches", request.batchId);
+		if (batch?.active) {
+			await ctx.db.patch("files_trash_request_batches", batch._id, {
+				...(batch.currentRequestId === request._id && { currentRequestId: null }),
+				updatedAt: now,
+				...(request.kind === "restore" &&
+					outcome.status !== "succeeded" && {
+						destructiveBlockedReason: "A restore did not finish. Check its result, then ask for deletion again.",
+					}),
+			});
+			await ctx.scheduler.runAfter(0, internal.files_trash_requests.advance, { batchId: batch._id });
+		}
+	}
+}
+
 export async function files_trash_requests_db_get_summary(args: {
 	ctx: QueryCtx;
 	membership: Doc<"organizations_workspaces_users">;
@@ -404,6 +433,7 @@ export const propose = internalMutation({
 		const membership = reader.membership;
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
 		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+
 		let source: Doc<"files_trash_requests">["source"];
 		let path: string;
 		let node: Doc<"files_nodes"> | null;
@@ -424,6 +454,7 @@ export const propose = internalMutation({
 			source = { kind: "node", nodeId: node._id, archiveOperationId: args.request.archiveOperationId };
 			path = node.archivedPath ?? node.path;
 		}
+
 		const writable = await access_control_db_authorize_membership(ctx, {
 			userAuth: { id: args.userId },
 			membership,
@@ -431,6 +462,7 @@ export const propose = internalMutation({
 			...(node && { fileNode: node }),
 		});
 		if (writable._nay) return writable;
+
 		const now = Date.now();
 		const fields = {
 			organizationId: membership.organizationId,
@@ -453,6 +485,7 @@ export const propose = internalMutation({
 		};
 		const requestId = await ctx.db.insert("files_trash_requests", fields);
 		await db_change_summaries(ctx, fields, 1);
+
 		return Result({ _yay: { requestId, kind: args.request.kind, path } });
 	},
 });
@@ -582,6 +615,7 @@ export const start = mutation({
 		const authorized = await db_get_public_membership(ctx, args.membershipId);
 		if (authorized._nay) return authorized;
 		const membership = authorized._yay;
+
 		if (
 			!args.requestId ||
 			args.requestId.length > 200 ||
@@ -590,6 +624,7 @@ export const start = mutation({
 			args.expectedItemCount < args.requestIds.length
 		)
 			return Result({ _nay: { message: "Select a valid number of requests." } });
+
 		const requestHash = await crypto_sha256_hex(
 			JSON.stringify([args.membershipId, args.kind, args.expectedItemCount, args.requestIds, args.afterReviewRunId]),
 		);
@@ -604,6 +639,7 @@ export const start = mutation({
 				return Result({ _nay: { message: "This review did not start. Select the requests again." } });
 			return Result({ _yay: { batchId: existing._id } });
 		}
+
 		const active = await ctx.db
 			.query("files_trash_request_batches")
 			.withIndex("by_org_ws_user_active", (q) =>
@@ -615,6 +651,7 @@ export const start = mutation({
 			)
 			.first();
 		if (active) return Result({ _nay: { message: "A Trash review is already running in this workspace." } });
+
 		const reader = await files_nodes_db_get_tree_reader_for_user(ctx, {
 			userAuth: { id: membership.userId },
 			membershipId: membership._id,
@@ -636,8 +673,10 @@ export const start = mutation({
 			)
 				return Result({ _nay: { message: "Start a new review for this selection." } });
 		}
+
 		const checked = await db_validate_page(ctx, { ...args, membership, membershipLifetime });
 		if (checked._nay) return checked;
+
 		const now = Date.now();
 		const batchId = await ctx.db.insert("files_trash_request_batches", {
 			organizationId: membership.organizationId,
@@ -668,6 +707,7 @@ export const start = mutation({
 				status: request.status === "finished" ? "finished" : "queued",
 				updatedAt: now,
 			});
+
 		return Result({ _yay: { batchId } });
 	},
 });
@@ -692,6 +732,7 @@ export const append_items = mutation({
 			args.requestIds.length > PAGE_SIZE
 		)
 			return Result({ _nay: { message: "Send a valid page of requests." } });
+
 		if (args.offset < batch.itemCount) {
 			for (const [index, requestId] of args.requestIds.entries()) {
 				const stored = await ctx.db
@@ -709,6 +750,7 @@ export const append_items = mutation({
 			args.offset + args.requestIds.length > batch.expectedItemCount
 		)
 			return Result({ _nay: { message: "This selection changed. Start a new review." } });
+
 		const checked = await db_validate_page(ctx, {
 			...args,
 			membership: membership._yay,
@@ -716,6 +758,7 @@ export const append_items = mutation({
 			kind: batch.kind,
 		});
 		if (checked._nay) return checked;
+
 		const now = Date.now();
 		for (const [index, request] of checked._yay.entries())
 			await ctx.db.patch("files_trash_requests", request._id, {
@@ -746,6 +789,7 @@ export const seal = mutation({
 		if (batch.step !== "uploading") return Result({ _yay: null });
 		if (batch.itemCount !== batch.expectedItemCount || batch.stopping)
 			return Result({ _nay: { message: "Send all selected requests before starting." } });
+
 		// Seal both selections together. Nothing fallible follows the ordinary review's writes.
 		if (batch.afterReviewRunId) {
 			const sealed = await files_pending_update_runs_db_seal(ctx, {
@@ -764,34 +808,6 @@ export const seal = mutation({
 	},
 });
 
-async function db_finish_request(
-	ctx: MutationCtx,
-	request: Doc<"files_trash_requests">,
-	outcome: NonNullable<Doc<"files_trash_requests">["outcome"]>,
-) {
-	const now = Date.now();
-	await ctx.db.patch("files_trash_requests", request._id, {
-		status: "finished",
-		outcome,
-		updatedAt: now,
-		expiresAt: now + files_DRAFT_IDLE_EXPIRY_MS,
-	});
-	if (request.batchId) {
-		const batch = await ctx.db.get("files_trash_request_batches", request.batchId);
-		if (batch?.active) {
-			await ctx.db.patch("files_trash_request_batches", batch._id, {
-				...(batch.currentRequestId === request._id && { currentRequestId: null }),
-				updatedAt: now,
-				...(request.kind === "restore" &&
-					outcome.status !== "succeeded" && {
-						destructiveBlockedReason: "A restore did not finish. Check its result, then ask for deletion again.",
-					}),
-			});
-			await ctx.scheduler.runAfter(0, internal.files_trash_requests.advance, { batchId: batch._id });
-		}
-	}
-}
-
 /**
  * Copy the final job result before history can remove its Activity. Repair must have finished.
  */
@@ -801,8 +817,10 @@ export async function files_trash_requests_db_settle_child(ctx: MutationCtx, run
 	if (!request || request.status === "finished") return;
 	const activity = await activities_db_get_by_source_id(ctx, run._id);
 	if (!activity || activities_is_active(activity.status)) return;
+
 	const batch = request.batchId ? await ctx.db.get("files_trash_request_batches", request.batchId) : null;
 	await ctx.db.patch("files_trash_requests", request._id, { archiveRunId: run._id, activityId: activity._id });
+
 	// A queued restore can find its source gone after an earlier purge finishes.
 	const restoredNothing =
 		request.kind === "restore" && activity.status === "succeeded" && !activity.progress?.completed;
@@ -844,6 +862,7 @@ async function db_start_request(
 	});
 	if (!reader?.hasWorkspaceRead)
 		return await db_finish_request(ctx, request, { status: "blocked", message: GUEST_MESSAGE });
+
 	let node: Doc<"files_nodes"> | null = null;
 	if (request.source.kind === "node") {
 		node = await files_saved_placement_db_get_node(ctx.db, request.source.nodeId);
@@ -857,6 +876,7 @@ async function db_start_request(
 				status: "blocked",
 				message: "Permission denied. Ask for access, then make a new request.",
 			});
+
 		const busy = await ctx.db
 			.query("files_archive_runs")
 			.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
@@ -897,6 +917,7 @@ async function db_start_request(
 				message: "Empty Trash is already running. Wait for it, then make a new request.",
 			});
 	}
+
 	const access = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: batch.userId },
 		membership,
@@ -904,12 +925,14 @@ async function db_start_request(
 		...(node && { fileNode: node }),
 	});
 	if (access._nay) return await db_finish_request(ctx, request, { status: "blocked", message: access._nay.message });
+
 	// These links and the child's first writes commit together, so a retry cannot start it twice.
 	await ctx.db.patch("files_trash_requests", request._id, { status: "running", updatedAt: Date.now() });
 	await ctx.db.patch("files_trash_request_batches", batch._id, {
 		currentRequestId: request._id,
 		updatedAt: Date.now(),
 	});
+
 	let runId: Id<"files_archive_runs"> | null = null;
 	let refusal: string | null = null;
 	if (request.kind === "restore" && request.source.kind === "node" && node) {
@@ -949,11 +972,13 @@ async function db_start_request(
 		runId = started._yay?.runId ?? null;
 		refusal = started._nay?.message ?? null;
 	}
+
 	if (!runId)
 		return await db_finish_request(ctx, request, {
 			status: "blocked",
 			message: refusal ?? "The job could not start. Make a new request.",
 		});
+
 	const run = (await ctx.db.get("files_archive_runs", runId))!;
 	const activity = await activities_db_get_by_source_id(ctx, runId);
 	await ctx.db.patch("files_trash_requests", request._id, { archiveRunId: runId, activityId: activity?._id ?? null });
@@ -966,10 +991,14 @@ export const advance = internalMutation({
 	handler: async (ctx, args) => {
 		const batch = await ctx.db.get("files_trash_request_batches", args.batchId);
 		if (!batch?.active) return null;
+
+		// Access loss stops new work and lets the current job finish its repair.
 		const now = Date.now();
 		const membership = await db_get_batch_membership(ctx, batch);
 		if (!membership) batch.stopping = true;
 		await ctx.db.patch("files_trash_request_batches", batch._id, { stopping: batch.stopping, updatedAt: now });
+
+		// Wait for the running child before starting another request.
 		if (batch.currentRequestId) {
 			const current = await ctx.db.get("files_trash_requests", batch.currentRequestId);
 			const run = current?.archiveRunId ? await ctx.db.get("files_archive_runs", current.archiveRunId) : null;
@@ -987,6 +1016,8 @@ export const advance = internalMutation({
 			}
 			return null;
 		}
+
+		// Release a stopped batch's claims one page at a time. Unapproved requests return to waiting.
 		if (batch.step === "uploading" || batch.stopping) {
 			if (!batch.stopping) return null;
 			const requests = await ctx.db
@@ -1015,6 +1046,8 @@ export const advance = internalMutation({
 			else await ctx.db.patch("files_trash_request_batches", batch._id, { active: false, step: "finished" });
 			return null;
 		}
+
+		// A failed file review blocks later deletion, but independent restores can still run.
 		if (batch.afterReviewRunId) {
 			const activity = await activities_db_get_by_source_id(ctx, batch.afterReviewRunId);
 			if (activity && activities_is_active(activity.status)) return null;
@@ -1026,6 +1059,8 @@ export const advance = internalMutation({
 				destructiveBlockedReason: batch.destructiveBlockedReason,
 			});
 		}
+
+		// Discard removes the requests without changing their files.
 		if (batch.kind === "discard") {
 			const requests = await ctx.db
 				.query("files_trash_requests")
@@ -1037,6 +1072,8 @@ export const advance = internalMutation({
 			else await ctx.db.patch("files_trash_request_batches", batch._id, { active: false, step: "finished" });
 			return null;
 		}
+
+		// Run Restore, then Delete permanently, then Empty Trash, in creation order within each kind.
 		const request = await ctx.db
 			.query("files_trash_requests")
 			.withIndex("by_batch_status_kind", (q) =>
@@ -1093,6 +1130,7 @@ export async function files_trash_requests_db_hold_archive_history(ctx: Mutation
 		.first();
 	if (!batch) return false;
 	// Move this proof out of the due page so it cannot hold up unrelated history cleanup.
+	// Check it again after the next recovery pass can release a stuck approval.
 	await ctx.db.patch("activities", activity._id, { expiresAt: Date.now() + RECOVER_AFTER_MS });
 	return true;
 }

@@ -3856,7 +3856,8 @@ export const empty_archive = mutation({
 			return Result({ _nay: { message: "Files are still moving in this workspace. Try again when the move ends." } });
 		}
 
-		// Seek Empty jobs directly; unrelated purges do not affect this check's cost.
+		// One Empty Trash at a time in a workspace.
+		// The index finds Empty jobs only, so other purges add no cost.
 		const emptyRun = await ctx.db
 			.query("files_archive_runs")
 			.withIndex("by_org_ws_active_emptyArchive_cutoff", (q) =>
@@ -5015,7 +5016,7 @@ export async function files_read_forward_line_range_from_ordered_chunks(
 		// reports that one line's number, so the line-based stop above can never fire inside it
 		// and `head -n 5 huge.json` would otherwise buffer every chunk of the file into one
 		// query. Give up instead; the caller falls back to its bounded byte-window read.
-		// Trash has no byte fallback; the callback gives it a distinct long-line error.
+		// `trash cat` has no byte-window fallback. The callback lets it show its own long-line error.
 		overlappingLength += chunk.textChunk.length;
 		if (overlappingLength > files_READ_RANGE_MAX_SCAN_CHARS) {
 			args.onScanLimit?.();

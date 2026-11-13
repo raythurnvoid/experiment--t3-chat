@@ -163,6 +163,7 @@ export async function activities_db_finish(
 				: args.now + (activity.source.kind === "plugin_run" ? 30 : 7) * 24 * 60 * 60 * 1000,
 		updatedAt: args.now,
 	});
+	// A Trash request batch can wait for this review. Wake it here so every finish path reaches it.
 	if (activity.source.kind === "files_pending_update_run") {
 		await ctx.scheduler.runAfter(0, internal.files_trash_requests.wake_review, { runId: activity.source.id });
 	}

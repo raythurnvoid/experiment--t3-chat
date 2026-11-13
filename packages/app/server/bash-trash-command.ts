@@ -40,7 +40,7 @@ const USAGE =
 	"Rows: time, kind, deleted by, id, path. Your own rm shows as (pending delete) until the user saves it,\n" +
 	"or (pending delete, now in Trash) when a saved delete already moved the item to Trash.\n" +
 	"trash restore undoes your own pending delete. Saved restore, purge and empty create requests in Pending.\n" +
-	"Requests do not change your file view. Accept checks access and names again; occupied names stay unchanged.\n" +
+	"Requests do not change your file view. Accept checks access again. If the name is taken, nothing changes.\n" +
 	"Read Trash text with trash cat. Use trash requests for outcomes and trash cancel to drop a request.\n";
 const GUEST_MESSAGE =
 	"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.";
@@ -275,7 +275,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 							stderr += `trash: cannot ${command} '${entry.id}': ${proposed._nay.message}\n`;
 							exitCode = bash_COMMAND_EXIT_FAILURE;
 						} else
-							stdout += `${command} request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; review in Files\n`;
+							stdout += `${command} request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; review it in Files Pending\n`;
 						continue;
 					}
 					if (command === "purge") {
@@ -351,7 +351,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			});
 			if (proposed._nay) return fail(`cannot empty '${render(areaPath)}': ${proposed._nay.message}`);
 			return {
-				stdout: `empty request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; deletes items already in this area's Trash when accepted; review in Files\n`,
+				stdout: `empty request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; deletes items already in this area's Trash when accepted; review it in Files Pending\n`,
 				stderr: "",
 				exitCode: 0,
 			};
@@ -383,6 +383,18 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			stored = parsed.data;
 		}
 
+		// Print the clamped `--limit`, so the next page does not repeat the over-max note.
+		const nextPageArgs = [
+			...args
+				.filter(
+					(arg, index) =>
+						!["--cursor", "--limit"].some(
+							(option) => arg === option || args[index - 1] === option || arg.startsWith(`${option}=`),
+						),
+				)
+				.map(bash_shell_arg_quote),
+			...(options.limit === undefined ? [] : ["--limit", String(limit._yay.limit)]),
+		].join(" ");
 		if (command === "requests") {
 			const listed = await ctx.runQuery(internal.files_trash_requests.list_for_agent, {
 				...common,
@@ -408,8 +420,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 						source.userId,
 						JSON.stringify({ key, stream: "requests", cursor: listed._yay.continueCursor, afterKey: null }),
 					);
-			const note = limit._yay.note ? `${limit._yay.note}\n` : "";
-			if (json) return { stdout: `${JSON.stringify({ requests, nextCursor })}\n`, stderr: note, exitCode: 0 };
+			const limitNote = limit._yay.note ? `${limit._yay.note}\n` : "";
+			if (json) return { stdout: `${JSON.stringify({ requests, nextCursor })}\n`, stderr: limitNote, exitCode: 0 };
 			const lines = requests.map((request) =>
 				[
 					request.requestId,
@@ -421,11 +433,11 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				].join("\t"),
 			);
 			const nextLine = nextCursor
-				? `Next page: trash requests --workspace ${root === roots.app ? "current" : "home"} --limit ${limit._yay.limit} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
+				? `Next page: trash ${nextPageArgs} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
 				: "";
 			return {
 				stdout: lines.length ? `${lines.join("\n")}\n` : "",
-				stderr: `${note}${lines.length || nextCursor ? "" : "(No Trash requests)\n"}${nextLine}`,
+				stderr: `${limitNote}${lines.length || nextCursor ? "" : "(No Trash requests)\n"}${nextLine}`,
 				exitCode: 0,
 			};
 		}
@@ -607,19 +619,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			return { stdout: `${JSON.stringify(body)}\n`, stderr: limitNote, exitCode: 0 };
 		}
 
-		// Print the clamped `--limit`, so the next page does not repeat the over-max note.
 		const nextLine = nextCursor
-			? `Next page: trash ${[
-					...args
-						.filter(
-							(arg, index) =>
-								!["--cursor", "--limit"].some(
-									(option) => arg === option || args[index - 1] === option || arg.startsWith(`${option}=`),
-								),
-						)
-						.map(bash_shell_arg_quote),
-					...(options.limit === undefined ? [] : ["--limit", String(limit._yay.limit)]),
-				].join(" ")} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
+			? `Next page: trash ${nextPageArgs} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
 			: "";
 		const lines =
 			command === "areas"
