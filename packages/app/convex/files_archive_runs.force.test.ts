@@ -47,7 +47,7 @@ async function force_archive(f: Fixture, credential: string, path: string) {
 	const response = await f.t.fetch("/api/v1/files/delete", {
 		method: "POST",
 		headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-		body: JSON.stringify({ paths: [path], force: true }),
+		body: JSON.stringify({ paths: [path], force: true, requestId: crypto.randomUUID() }),
 	});
 	expect(response.status).toBe(200);
 	const body = (await response.json()) as { jobId: Id<"activities"> | null };
@@ -175,7 +175,11 @@ describe("forced archive", () => {
 		const response = await f.t.fetch("/api/v1/files/delete", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${credential.credential}`, "Content-Type": "application/json" },
-			body: JSON.stringify({ paths: ["/named-child", "/named-child/d1/f000.md"], force: true }),
+			body: JSON.stringify({
+				paths: ["/named-child", "/named-child/d1/f000.md"],
+				force: true,
+				requestId: "named-child",
+			}),
 		});
 		expect(response.status).toBe(200);
 		const body = (await response.json()) as { refused: Array<{ path: string }> };

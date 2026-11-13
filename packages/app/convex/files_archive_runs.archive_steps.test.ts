@@ -342,7 +342,7 @@ describe("archive_nodes", () => {
 		await lock({ f, nodeId: refused.folderIds[0]!, locked: true });
 
 		const response = await with_scope_repair(f, () =>
-			post("/api/v1/files/delete", credential, { paths: ["/first-passed", "/second-refused"] }),
+			post("/api/v1/files/delete", credential, { paths: ["/first-passed", "/second-refused"], requestId: "two" }),
 		);
 		expect(response).toMatchObject({ status: 200, body: { isDone: false, refused: [{ path: "/second-refused" }] } });
 		const deleted = response.body as { jobId: Id<"activities"> };

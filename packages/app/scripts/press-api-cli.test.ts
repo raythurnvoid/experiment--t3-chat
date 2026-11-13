@@ -326,15 +326,15 @@ describe("rm", () => {
 		});
 		try {
 			for (const args of [
-				["rm", "/a"],
-				["rm", "/a", "--force", "--wait"],
+				["rm", "/a", "--request-id", "one"],
+				["rm", "/a", "--force", "--wait", "--request-id", "two"],
 			]) {
 				const result = await run_cli(api.origin, args);
 				expect(result.code, result.stderr).toBe(0);
 			}
 			expect(api.requests).toEqual([
-				{ route: "/api/v1/files/delete", body: { paths: ["/a"] } },
-				{ route: "/api/v1/files/delete", body: { paths: ["/a"], force: true } },
+				{ route: "/api/v1/files/delete", body: { paths: ["/a"], requestId: "one" } },
+				{ route: "/api/v1/files/delete", body: { paths: ["/a"], force: true, requestId: "two" } },
 			]);
 		} finally {
 			await api.close();

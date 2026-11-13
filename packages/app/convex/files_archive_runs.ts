@@ -3413,7 +3413,8 @@ export async function files_archive_runs_db_check_fast(
 /**
  * Archive or restore through the job. The caller checked that the person can write the items they
  * named. The job's check decides which of them can be archived, unless the archive is fast.
- * Returns null when the work finished inside this request with nothing refused. Otherwise returns the
+ * Returns null when the work finished inside this request with nothing refused, unless an API key or a
+ * plugin started it: that job is always kept, for retries. Otherwise returns the
  * job, with `isDone` true when it already finished, the named items refused so far, the named items
  * not stamped yet, and `isChecking` true while the check still runs before any stamp.
  *
@@ -3684,13 +3685,14 @@ export async function files_archive_runs_db_start(
 	// Work that ended inside the request, or a refusal before the first write, leaves no job. Work that
 	// refused a named item keeps its job, so its Activity can list what was not archived. So does a
 	// restore that kept items archived because their paths got too long, so its Activity says so. So
-	// does a restore an API key or a plugin started, so a retry with the same request id finds it.
+	// does work an API key or a plugin started, so a retry with the same request id finds it.
 	if (
 		args.trashRequestId === undefined &&
 		((outcome?.kind === "done" &&
 			progress.blocked === 0 &&
 			run.longPathOperationId === undefined &&
-			!(args.kind === "restore" && (args.credentialId !== null || args.plugin !== undefined))) ||
+			args.credentialId === null &&
+			args.plugin === undefined) ||
 			(outcome?.kind === "failed" && !stepArgs.writeState.isWritten))
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });

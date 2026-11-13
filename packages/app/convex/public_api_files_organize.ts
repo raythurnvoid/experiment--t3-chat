@@ -457,7 +457,7 @@ export async function public_api_files_organize_http_mkdir(args: {
 const DELETE_MAX_PATHS = 200;
 
 const delete_failure_validator = z.object({
-	status: z.union([z.literal(401), z.literal(403), z.literal(429)]),
+	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
 	/** Set on 429. */
 	retryAfterMs: z.number().optional(),
 });
@@ -465,6 +465,9 @@ const delete_failure_validator = z.object({
 /**
  * Archive the named paths with the app's archive job, like `rm` with several files. A path that is
  * missing or locked is refused alone, and the other paths are still archived.
+ *
+ * A retry with the same `requestId` and paths answers like the first call and archives nothing again.
+ * A request that started no job saves nothing, so its retry runs again.
  */
 export const delete_paths = internalMutation({
 	args: {
@@ -473,6 +476,7 @@ export const delete_paths = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		requestId: v.string(),
 		/** Absolute, normalized paths, not the root. */
 		paths: v.array(v.string()),
 	},
@@ -521,6 +525,38 @@ export const delete_paths = internalMutation({
 			.first();
 		if (!membership) {
 			throw fail({ message: "Unauthenticated", status: 401 });
+		}
+
+		// Look for an earlier run first: after a finished delete, the paths are "Not found". The key's id
+		// in the request id keeps it apart from the request ids of other keys.
+		const requestId = `api:${args.credentialId}:${args.requestId}`;
+		// The "delete" tag keeps this hash apart from a restore's hash, which uses the same request ids.
+		// Only opting into force changes the request identity.
+		const inputHash = await crypto_sha256_hex(
+			JSON.stringify(["delete", args.paths, ...(args.force === true ? [true] : [])]),
+		);
+		const previous = await ctx.db
+			.query("files_archive_runs")
+			.withIndex("by_user_workspace_apiRequest", (q) =>
+				q.eq("userId", args.userId).eq("workspaceId", args.workspaceId).eq("apiRequest.requestId", requestId),
+			)
+			.unique();
+		if (previous?.apiRequest) {
+			if (previous.apiRequest.inputHash !== inputHash) {
+				throw fail({
+					message: "This requestId was already used for another request. Send a new requestId.",
+					status: 409,
+				});
+			}
+			const jobId = previous.apiRequest.activityIds[0]!;
+			const activity = await ctx.db.get("activities", jobId);
+			return {
+				jobId,
+				// History cleanup deletes a job 7 days after it ends.
+				isDone: !activity || !activities_is_active(activity.status),
+				// A delete saves only path refusals. The other shape is a restore's node refusal.
+				refused: previous.apiRequest.refused.flatMap((item) => ("nodeId" in item ? [] : [item])),
+			};
 		}
 
 		// The same bucket as Archive in the app, so a key cannot archive faster than its person.
@@ -585,6 +621,10 @@ export const delete_paths = internalMutation({
 				message: messageByNodeId.get(nodeId) ?? "Not deleted, because a folder above it was not deleted.",
 			});
 		}
+		// A delete from a key always keeps its job, so the job can hold the request for a retry.
+		await ctx.db.patch("files_archive_runs", job.runId, {
+			apiRequest: { requestId, inputHash, refused, activityIds: [job.activityId] },
+		});
 		return { jobId: job.activityId, isDone: job.isDone, refused };
 	},
 });
@@ -598,6 +638,10 @@ const delete_body_validator = z
 	.object({
 		force: z.boolean().optional(),
 		paths: z.array(z.string()).min(1),
+		/**
+		 * Send the same `requestId` and body again to retry safely. The answer then names the same job.
+		 */
+		requestId: z.string().min(1).max(64),
 	})
 	.strict();
 
@@ -666,6 +710,7 @@ export async function public_api_files_organize_http_delete(args: {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
+			requestId: body._yay.requestId,
 			paths,
 		})) as delete_paths_Result;
 	} catch (error) {
@@ -3158,11 +3203,12 @@ export const get_job = internalQuery({
 			errorMessage: activity.errorMessage,
 			refused: [
 				// A delete names at most 200 paths and a restore at most 100, so their refused paths fit on the first page.
-				// The paths a restore refused come only on the job that holds the request, its last job.
+				// The paths a restore refused come only on the job that holds the request, its last job. A
+				// delete's saved answer is not listed: it repeats `refusedItems` below.
 				...(args.cursor
 					? []
 					: [
-							...(run.apiRequest?.refused ?? []),
+							...(run.kind === "restore" ? (run.apiRequest?.refused ?? []) : []),
 							...run.refusedItems.map((refusedItem) => ({
 								path: pathByNodeId.get(refusedItem.nodeId) ?? null,
 								message: refusedItem.refusal.message,

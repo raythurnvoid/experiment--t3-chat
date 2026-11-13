@@ -7095,6 +7095,9 @@ const app_convex_schema = defineSchema({
 		 * after another, so the last one ends last and history cleanup deletes it last. A retry with the same
 		 * request id finds it, and answers with the same jobs instead of restoring again.
 		 * `requestId` holds the key's id, so it never matches a request id of another key.
+		 *
+		 * Also set on the one job of a delete that the public API `files/delete` started, for the same
+		 * retry. There `refused` is the whole first answer: only paths, never node ids.
 		 */
 		apiRequest: v.optional(
 			v.object({

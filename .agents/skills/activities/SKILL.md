@@ -128,7 +128,9 @@ continuation and follow `isDone`; an empty visible page does not prove the feed 
 - Transfer, review, Bash job, protection job, Trash job, and move or scope job Activities are private
   to their requester, including against other workspace owners. Their standard titles contain no source
   names or paths; saved warnings and errors follow the history rule above. Move to Trash jobs are titled
-  "Move files to Trash" or "Restore files". A move job (source kind
+  "Move files to Trash" or "Restore files". A Move to Trash that ends inside the request with nothing
+  refused leaves no job and no card, unless an API key started it: a key's delete or restore always
+  keeps its job, so a retry with the same request id finds it. A move job (source kind
   `files_subtree_op`) is titled "Move files" and shows in the feed. A scope job (restrict or
   unrestrict) is titled "Restrict files" and has `feedVisible: false`: it exists only so the recover
   cron finds the op. A protection job, a Trash job, and a move or scope job have no targets at all.

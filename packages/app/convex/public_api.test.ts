@@ -5330,7 +5330,10 @@ describe("locked and missing paths", () => {
 		}
 
 		expect(
-			await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/ro-a.md", "/ro-b.md", "/missing.md"] }),
+			await post(t, "/api/v1/files/delete", f.memberCredential, {
+				paths: ["/ro-a.md", "/ro-b.md", "/missing.md"],
+				requestId: "all-refused",
+			}),
 		).toEqual({
 			status: 200,
 			body: {
@@ -5368,7 +5371,8 @@ describe("locked and missing paths", () => {
 			});
 		}
 		const deleteRefused = async (paths: string[]) => {
-			const response = await post(t, "/api/v1/files/delete", f.memberCredential, { paths });
+			// No job starts, so nothing is saved and the request id can be used again.
+			const response = await post(t, "/api/v1/files/delete", f.memberCredential, { paths, requestId: "refused" });
 			expect(response).toMatchObject({ status: 200, body: { jobId: null, isDone: true } });
 			return (response.body as { refused: Array<{ path: string; message: string }> }).refused;
 		};
@@ -5383,14 +5387,16 @@ describe("locked and missing paths", () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
 
-		expect(
-			await post(t, "/api/v1/files/delete", f.memberCredential, {
-				paths: ["/b.md", "/hidden.md", "/secret/h01.md", "/secret/nope.md", "/missing.md"],
-			}),
-		).toEqual({
+		const body = {
+			paths: ["/b.md", "/hidden.md", "/secret/h01.md", "/secret/nope.md", "/missing.md"],
+			requestId: "mixed",
+		};
+		const first = await post(t, "/api/v1/files/delete", f.memberCredential, body);
+		expect(first).toEqual({
 			status: 200,
 			body: {
-				jobId: null,
+				// A delete from a key keeps its job, so a retry with the same request id finds it.
+				jobId: expect.any(String),
 				isDone: true,
 				refused: [
 					// A locked file, and a file that exists or not inside a locked folder, answer the same.
@@ -5403,6 +5409,17 @@ describe("locked and missing paths", () => {
 		});
 		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/hidden.md"] })).toMatchObject({
 			body: { items: [{ status: "missing" }, { status: "found" }] },
+		});
+
+		// A new file takes the deleted path. A retry answers like the first call and must not delete it.
+		await seed_markdown_file({ t, ...f.db, path: "/b.md", committedMarkdown: "# new" });
+		expect(await post(t, "/api/v1/files/delete", f.memberCredential, body)).toEqual(first);
+		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md"] })).toMatchObject({
+			body: { items: [{ status: "found" }] },
+		});
+		expect(await post(t, "/api/v1/files/delete", f.memberCredential, { ...body, paths: ["/b.md"] })).toEqual({
+			status: 409,
+			body: { message: "This requestId was already used for another request. Send a new requestId." },
 		});
 	});
 
@@ -5437,7 +5454,7 @@ describe("locked and missing paths", () => {
 		});
 
 		// A member, not the owner, so every path pays the full access check.
-		expect((await post(t, "/api/v1/files/delete", f.memberCredential, { paths })).status).toBe(200);
+		expect((await post(t, "/api/v1/files/delete", f.memberCredential, { paths, requestId: "bulk" })).status).toBe(200);
 		expect(queries).toHaveLength(1);
 		expect(queries[0]).toBeLessThan(4096 * 0.8);
 	});
@@ -5971,9 +5988,13 @@ describe("locked and missing paths", () => {
 				});
 
 				// The account reads `/b.md` but cannot change it.
-				expect(await post(t, "/api/v1/files/delete", key.credential, { paths: ["/b.md", "/secret/h01.md"] })).toEqual({
+				expect(
+					await post(t, "/api/v1/files/delete", key.credential, {
+						paths: ["/b.md", "/secret/h01.md"],
+						requestId: "one",
+					}),
+				).toEqual({
 					status: 200,
-					// A refused item keeps the job, so its Activity can list what was not archived.
 					body: {
 						jobId: expect.any(String),
 						isDone: true,
@@ -5985,7 +6006,8 @@ describe("locked and missing paths", () => {
 				).toMatchObject({ body: { items: [{ status: "found" }, { status: "missing" }] } });
 
 				// Removing `/secret` changes the workspace root list. The account can only read that list.
-				expect(await post(t, "/api/v1/files/delete", key.credential, { paths: ["/secret"] })).toEqual({
+				const rootDelete = { paths: ["/secret"], requestId: "two" };
+				expect(await post(t, "/api/v1/files/delete", key.credential, rootDelete)).toEqual({
 					status: 200,
 					body: {
 						jobId: null,
@@ -5995,9 +6017,9 @@ describe("locked and missing paths", () => {
 				});
 
 				// Control: the person behind the key may delete both.
-				expect(await post(t, "/api/v1/files/delete", f.ownerCredential, { paths: ["/b.md", "/secret"] })).toMatchObject(
-					{ status: 200, body: { refused: [] } },
-				);
+				expect(
+					await post(t, "/api/v1/files/delete", f.ownerCredential, { paths: ["/b.md", "/secret"], requestId: "three" }),
+				).toMatchObject({ status: 200, body: { refused: [] } });
 				await test_finish_archive_jobs(t);
 				expect(
 					await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/secret/shared/ok.md"] }),
