@@ -33,6 +33,8 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   the 5 s budget. Read the Pending panel with `page.evaluate` instead: take the tab's `aria-controls`
   id, then read that panel's buttons (row actions are named `Discard changes to <path>`). Verified
   2026-09-24.
+- Pending row links can shorten their visible path with `…`. Read their `aria-label` for the
+  full path before accepting a selected group. Do not match the shortened text.
 - There is no Metadata tab. The key-value map moved into the Properties modal; see "File Properties Modal" below.
 
 ### File Node View
@@ -53,6 +55,10 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   (labels like `Rich text`, `Markdown`, `Review changes`, `File details`). Scope clicks to that
   popover — bare `[role=option]` also matches the agent panel's listboxes.
 - Diff editor root: `[aria-label="File diff editor"]`.
+- A Monaco diff's DOM includes removed text as well as the new text. Read
+  `window.__qa.monaco().diffModified.getModel().getValue()` for the proposed full content and
+  `diffOriginal.getModel().getValue()` for the saved side. Do not treat `.view-lines` text as
+  the proposed file.
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
 - Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).

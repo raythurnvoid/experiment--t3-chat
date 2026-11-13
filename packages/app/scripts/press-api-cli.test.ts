@@ -318,6 +318,90 @@ describe("stat", () => {
 	});
 });
 
+describe("rm", () => {
+	test("sends force only when requested", async () => {
+		const api = await start_api((_request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify({ jobId: null, isDone: true, refused: [] }));
+		});
+		try {
+			for (const args of [
+				["rm", "/a"],
+				["rm", "/a", "--force", "--wait"],
+			]) {
+				const result = await run_cli(api.origin, args);
+				expect(result.code, result.stderr).toBe(0);
+			}
+			expect(api.requests).toEqual([
+				{ route: "/api/v1/files/delete", body: { paths: ["/a"] } },
+				{ route: "/api/v1/files/delete", body: { paths: ["/a"], force: true } },
+			]);
+		} finally {
+			await api.close();
+		}
+	});
+});
+
+describe("readonly", () => {
+	test("commands send the intended path and flag", async () => {
+		let refused = false;
+		const api = await start_api((_request, response) => {
+			response.writeHead(refused ? 403 : 200, { "content-type": "application/json" });
+			response.end(JSON.stringify(refused ? { message: "Permission denied" } : { nodeId: "n1" }));
+		});
+		try {
+			for (const action of ["get", "set", "clear"]) {
+				const result = await run_cli(api.origin, ["readonly", action, "/a"]);
+				expect(result.code, result.stderr).toBe(0);
+				expect(JSON.parse(result.stdout.toString("utf8"))).toEqual({ nodeId: "n1" });
+			}
+			expect(api.requests).toEqual([
+				{ route: "/api/v1/files/read-only/get", body: { path: "/a" } },
+				{ route: "/api/v1/files/read-only/set", body: { path: "/a", readOnly: true } },
+				{ route: "/api/v1/files/read-only/set", body: { path: "/a", readOnly: false } },
+			]);
+			for (const args of [[], ["set"], ["toggle", "/a"], ["get", "/a", "/b"], ["set", "a"]]) {
+				const result = await run_cli(api.origin, ["readonly", ...args]);
+				expect(result.code, result.stderr).toBe(2);
+			}
+			expect(api.requests).toHaveLength(3);
+			refused = true;
+			const result = await run_cli(api.origin, ["readonly", "set", "/a"]);
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain("Permission denied");
+		} finally {
+			await api.close();
+		}
+	});
+});
+
+describe("status", () => {
+	test("names the key's own tenant with one request", async () => {
+		const verified = {
+			organizationId: "o1",
+			workspaceId: "w1",
+			organizationName: "studio",
+			workspaceName: "design",
+			scopes: ["files:read-only"],
+			serviceAccountId: null,
+			sponsorUserId: "u1",
+		};
+		const api = await start_api((_request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify(verified));
+		});
+		try {
+			const result = await run_cli(api.origin, ["status"]);
+			expect(result.code, result.stderr).toBe(0);
+			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject(verified);
+			expect(api.requests).toEqual([{ route: "/api/v1/auth/verify", body: {} }]);
+			expect(result.stdout.toString("utf8")).not.toContain("pk_test");
+		} finally {
+			await api.close();
+		}
+	});
+});
+
 describe("restore", () => {
 	test("sends nodes or a dry run, and exits 1 when a job leaves an item in the Trash", async () => {
 		const api = await start_api((request, response) => {

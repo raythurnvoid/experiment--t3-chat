@@ -2598,10 +2598,22 @@ describe("/api/v1/auth/verify", () => {
 		expect(await verified.json()).toEqual({
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
+			organizationName: "test-organization",
+			workspaceName: "test-workspace",
 			sponsorUserId: fixture.userId,
 			serviceAccountId: null,
 			scopes: ["plugin_data:read"],
 		});
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations", fixture.organizationId, { name: "renamed-org" });
+			await ctx.db.patch("organizations_workspaces", fixture.workspaceId, { name: "renamed-workspace" });
+		});
+		const renamed = await t.fetch("/api/v1/auth/verify", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${created._yay.credential}` },
+		});
+		expect(await renamed.json()).toMatchObject({ organizationName: "renamed-org", workspaceName: "renamed-workspace" });
 
 		const revoked = await fixture.asUser.mutation(api.public_api.api_credential_revoke, {
 			membershipId: fixture.membershipId,
@@ -2646,6 +2658,8 @@ describe("/api/v1/auth/verify", () => {
 		expect(await verified.json()).toEqual({
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
+			organizationName: "test-organization",
+			workspaceName: "test-workspace",
 			sponsorUserId: viewer.userId,
 			serviceAccountId: null,
 			scopes: ["plugin_data:read"],

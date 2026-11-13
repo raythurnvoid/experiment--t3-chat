@@ -140,6 +140,16 @@ Put an exact shell command in its own paragraph or code block, without trailing 
 A period beside a command can become a real operand. Check the stored command and exit code before
 scoring the app; a model's success summary does not prove the command succeeded.
 
+## Reply-limit notice
+
+For a cheap real-provider check, temporarily lower `create_agent_turn_stream`'s output cap only
+for the reused QA thread. Keep the normal 16,000 constant. Ask a calculation that needs reasoning,
+with no tools. Require the saved step's `finishReason` to be `length`; a failed request is not proof.
+The last assistant message must show exactly one reply-limit notice, and the same text must stay
+after reload through `ai_chat_runs.branch_page`. With the notice branch off, this assertion must
+fail on the empty reply. Save both temporary patches outside the repo and restore the normal cap
+before the final deployment. Verified with the real provider on 2026-11-13.
+
 ## Tool cards keep a real rect while their disclosure is closed
 
 A tool part renders as `<details class="AiChatMessagePartDisclosure">`, and the cards inside it (`.AiChatMessagePartToolTextAreaSection`, `.DiffMonospaceBlock`) still report a plausible `getBoundingClientRect` while the disclosure is closed. Neighbouring cards then report overlapping rects, and `document.elementFromPoint` at a card center returns `.AiChatMessagePartDisclosureButton` instead. A pointer probe aimed at those coordinates silently hovers the summary, so a hover test reports "nothing is hovered" and reads like a broken app.

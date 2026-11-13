@@ -27,6 +27,14 @@ The synthetic workspace root has no flag.
 
 `files_nodes` stores `readOnly: boolean` and the internal `readOnlyDecisionId: string | null`.
 
+Public `files/list` and `files/stat` show the local flag as `readOnly`, or `null` for a locked
+item. They do not compute inherited access or expose `readOnlyDecisionId`. API keys can use
+`files/read-only/get` with `{ nodeId }` or `{ path }` and the `files:read` scope. Set takes
+exactly one target plus `readOnly` and needs `files:read-only` and current Can edit. A path
+setter resolves the saved path and writes the flag in the same mutation. The workspace
+root has no flag. Path requests keep denied places distinct from missing names (403/404);
+existing node-ID requests keep their unavailable-target 404.
+
 - False means null ID. Setting false to true mints one server UUID.
 - True to true keeps its ID. Clearing and setting again makes a new ID.
 - Move, Rename, Restore, and forced writes preserve both fields.

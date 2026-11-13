@@ -944,17 +944,19 @@ describe("file Read-only API", () => {
 				readOnly: true,
 			}),
 		).toEqual({ _yay: null });
-		const request = () =>
+		const request = (target: { nodeId: string } | { path: string } = { nodeId }) =>
 			t.fetch("/api/v1/files/read-only/set", {
 				method: "POST",
 				headers: auth_headers(key._yay.credential),
-				body: JSON.stringify({ nodeId, readOnly: false }),
+				body: JSON.stringify({ ...target, readOnly: false }),
 			});
 		expect((await request()).status).toBe(200);
+		expect((await request({ path: "/managed" })).status, "path setter needs only content.write").toBe(200);
 		const before = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(before?.readOnly).toBe(false);
 		await t.run((ctx) => ctx.db.delete("access_control_permission_grants", manager.grantId));
 		expect((await request()).status).toBe(404);
+		expect((await request({ path: "/managed" })).status).toBe(403);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
 	});
 
@@ -1522,6 +1524,10 @@ describe("service-bound API credentials", () => {
 		// The key acts as the account. File scopes are checked on each file, so the key keeps them even
 		// though the account holds no grant yet.
 		expect(await inspected.json()).toMatchObject({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			organizationName: "test-organization",
+			workspaceName: "test-workspace",
 			serviceAccountId,
 			sponsorUserId: db.userId,
 			scopes: ["files:read", "files:permissions"],
@@ -4692,19 +4698,89 @@ describe("locked and missing paths", () => {
 		}
 	});
 
-	test("files list shows a locked child of a readable folder as a locked item", async () => {
+	test("locked list and stat items have null readOnly", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
+		for (const nodeId of [f.hiddenFileId, f.secretId]) {
+			expect(
+				await f.asOwner.mutation(api.files_nodes.read_only_set, {
+					membershipId: f.db.membershipId,
+					nodeId,
+					readOnly: true,
+				}),
+			).toEqual({ _yay: null });
+		}
 
 		const listed = await list(t, f.memberCredential, { path: "/" });
 		expect(listed.status).toBe(200);
 		// A locked item keeps its name and kind, with no asset state.
-		expect(listed.body.items).toMatchObject([
-			{ path: "/b.md", locked: false },
-			{ path: "/hidden.md", kind: "file", nodeId: f.hiddenFileId, locked: true, status: null },
-			{ path: "/notes", locked: false },
-			{ path: "/secret", kind: "folder", nodeId: f.secretId, locked: true },
+		expect.soft(listed.body.items).toMatchObject([
+			{ path: "/b.md", locked: false, readOnly: false },
+			{ path: "/hidden.md", kind: "file", nodeId: f.hiddenFileId, locked: true, status: null, readOnly: null },
+			{ path: "/notes", locked: false, readOnly: false },
+			{ path: "/secret", kind: "folder", nodeId: f.secretId, locked: true, readOnly: null },
 		]);
+		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/hidden.md", "/secret"] })).toMatchObject(
+			{
+				status: 200,
+				body: {
+					items: [
+						{ path: "/hidden.md", item: { locked: true, readOnly: null } },
+						{ path: "/secret", item: { locked: true, readOnly: null } },
+					],
+				},
+			},
+		);
+	});
+
+	test("path policy calls preserve denied and missing answers", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		const member = t.withIdentity({ issuer: "https://clerk.test", external_id: f.memberUserId });
+		const key = await member.mutation(api.public_api.api_credential_create, {
+			membershipId: f.memberMembershipId,
+			serviceAccountId: null,
+			name: "Flags",
+			scopes: ["files:read", "files:read-only"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		for (const action of ["get", "set"]) {
+			const route = `/api/v1/files/read-only/${action}`;
+			const flag = action === "set" ? { readOnly: true } : {};
+			for (const path of ["/hidden.md", "/secret", "/secret/h01.md", "/secret/missing.md"]) {
+				expect(await post(t, route, key._yay.credential, { path, ...flag }), path).toEqual({
+					status: 403,
+					body: { message: "Permission denied" },
+				});
+			}
+			expect(await post(t, route, key._yay.credential, { path: "/notes/missing", ...flag })).toEqual({
+				status: 404,
+				body: { message: "Not found" },
+			});
+			expect(await post(t, route, key._yay.credential, { nodeId: f.hiddenFileId, ...flag })).toEqual({
+				status: 404,
+				body: { message: "Not found" },
+			});
+		}
+		expect(
+			await post(t, "/api/v1/files/read-only/set", key._yay.credential, {
+				path: "/secret/shared/ok.md",
+				readOnly: true,
+			}),
+		).toEqual({ status: 403, body: { message: "Permission denied" } });
+		expect(
+			(await post(t, "/api/v1/files/read-only/get", key._yay.credential, { path: "/secret/shared/ok.md" })).status,
+		).toBe(200);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+		expect(
+			(
+				await member.mutation(api.public_api.api_credential_revoke, {
+					membershipId: f.memberMembershipId,
+					credentialId: key._yay.credentialId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await post(t, "/api/v1/files/read-only/get", key._yay.credential, { path: "/b.md" })).status).toBe(401);
 	});
 
 	test('files list with order "desc" pages a folder in reverse name order, locked children included', async () => {

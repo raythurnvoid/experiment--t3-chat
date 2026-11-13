@@ -41,6 +41,7 @@ import {
 	type InferUIMessageChunk,
 	type LanguageModelMiddleware,
 	type ModelMessage,
+	type TextStreamPart,
 	type ToolSet,
 } from "ai";
 import { z } from "zod";
@@ -2438,9 +2439,8 @@ const AI_CHAT_MAX_STEPS = 25;
  * The output ceiling of one chat step. The chat models reason, so the provider charges their
  * thinking against the same ceiling as the answer and tool calls.
  *
- * If a step spends the whole ceiling on reasoning, it ends at `length` with no text and no tool
- * call, and the reply stops in silence. So keep room for long plans and for tool calls that write
- * whole files.
+ * Keep room for long plans and tool calls that write whole files. If a step spends the whole
+ * ceiling on reasoning, the stream saves a short notice instead of leaving an empty reply.
  */
 const AI_CHAT_STEP_MAX_OUTPUT_TOKENS = 16_000;
 
@@ -2770,6 +2770,7 @@ async function create_agent_turn_stream(args: {
 	let modelStepIndex = 0;
 	let savedStepCount = 0;
 	let savedPartCount = 0;
+	const stepFinishReasons: string[] = [];
 	// Job finishes shown to this turn, oldest first. The SDK rebuilds each step's input from the
 	// initial plus response messages, so the step override below re-appends the whole list at every
 	// boundary; without that a finish would vanish after one step.
@@ -3106,6 +3107,37 @@ async function create_agent_turn_stream(args: {
 				maxOutputTokens: AI_CHAT_STEP_MAX_OUTPUT_TOKENS,
 				abortSignal,
 				activeTools,
+				experimental_transform: () => {
+					let hasText = false;
+					let hasToolCall = false;
+					let hasError = false;
+					return new TransformStream<TextStreamPart<typeof tools>, TextStreamPart<typeof tools>>({
+						transform(part, controller) {
+							if (part.type === "start-step") {
+								hasText = false;
+								hasToolCall = false;
+								hasError = false;
+							} else if (part.type === "text-delta" && part.text.trim()) hasText = true;
+							else if (part.type === "tool-call") hasToolCall = true;
+							else if (part.type === "error" || part.type === "abort") hasError = true;
+							else if (part.type === "finish-step") {
+								stepFinishReasons.push(part.finishReason);
+								if (part.finishReason === "length" && !hasText && !hasToolCall && !hasError && !abortSignal.aborted) {
+									// The UI saves at finish-step, so the notice must arrive before that event.
+									const id = crypto.randomUUID();
+									controller.enqueue({ type: "text-start", id });
+									controller.enqueue({
+										type: "text-delta",
+										id,
+										text: 'The agent reached its reply limit before it could answer. Send "continue" to try again.',
+									});
+									controller.enqueue({ type: "text-end", id });
+								}
+							}
+							controller.enqueue(part);
+						},
+					});
+				},
 				experimental_repairToolCall: async (failed) => {
 					const lowerToolName = failed.toolCall.toolName.toLowerCase();
 					// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
@@ -3241,6 +3273,7 @@ async function create_agent_turn_stream(args: {
 		},
 		// Runs at each step end, before the step's end reaches the browser.
 		onStepFinish: async ({ responseMessage }) => {
+			const finishReason = stepFinishReasons.shift()!;
 			const parts = responseMessage.parts.slice(savedPartCount);
 			check_step_parts(parts);
 			const saved = await ctx.runMutation(internal.ai_chat_runs.step_complete, {
@@ -3248,7 +3281,7 @@ async function create_agent_turn_stream(args: {
 				generation: run.generation,
 				stepIndex: savedStepCount,
 				parts,
-				finishReason: null,
+				finishReason,
 			});
 			// Stop raised the generation. `finish` below saves this step as the stopped one.
 			if (!saved.saved) {

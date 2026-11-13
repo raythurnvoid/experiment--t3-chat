@@ -1069,6 +1069,7 @@ export type BonoboHttpApi = {
 							status: "ready" | "pending" | null;
 							size: number | null;
 							locked: boolean;
+							readOnly: boolean | null;
 						}[];
 						cursor: string | null;
 						isDone: boolean;

@@ -102,6 +102,7 @@ export const get_paths = internalQuery({
 					updatedAt: v.number(),
 					assetId: v.union(v.id("files_r2_assets"), v.null()),
 					locked: v.boolean(),
+					readOnly: v.union(v.boolean(), v.null()),
 				}),
 			}),
 			v.object({ path: v.string(), status: v.union(v.literal("missing"), v.literal("denied")) }),
@@ -126,6 +127,7 @@ export const get_paths = internalQuery({
 						updatedAt: access.node.updatedAt,
 						assetId: access.node.assetId,
 						locked: access.status === "locked",
+						readOnly: access.status === "locked" ? null : access.node.readOnly,
 					},
 				};
 			}),
@@ -231,6 +233,7 @@ export async function public_api_files_organize_http_stat(args: {
 								: null,
 						size: assetState ? assetState.size : null,
 						locked: node.locked,
+						readOnly: node.readOnly,
 					},
 				};
 			}),

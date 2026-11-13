@@ -294,6 +294,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 													: null,
 											size: assetState ? assetState.size : null,
 											locked: item.locked,
+											readOnly: item.locked ? null : item.readOnly,
 										};
 									}),
 									// End with `null`, like every other public paged route. The saved list answers an

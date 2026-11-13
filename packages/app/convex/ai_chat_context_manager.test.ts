@@ -1,7 +1,7 @@
 import { Workpool } from "@convex-dev/workpool";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { ai_chat_runs_db_insert_node } from "./ai_chat_runs.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -43,6 +43,7 @@ function step_stream(args: {
 	step: { text: string } | ToolCall | { calls: ToolCall[] };
 	inputTokens: number;
 	finishReason?: "length";
+	beforeToolText?: string;
 }) {
 	const { step, inputTokens, finishReason } = args;
 
@@ -54,6 +55,13 @@ function step_stream(args: {
 			{ type: "text-end", id: "answer" },
 		);
 	} else {
+		if (args.beforeToolText !== undefined) {
+			parts.push(
+				{ type: "text-start", id: "answer" },
+				{ type: "text-delta", id: "answer", delta: args.beforeToolText },
+				{ type: "text-end", id: "answer" },
+			);
+		}
 		for (const call of "calls" in step ? step.calls : [step]) {
 			parts.push({
 				type: "tool-call",
@@ -141,6 +149,7 @@ async function send(
 	});
 	const body = await response.text();
 	expect(response.status, body).toBe(200);
+	return body;
 }
 
 /**
@@ -171,6 +180,86 @@ async function seed_long_branch(fx: Awaited<ReturnType<typeof setup>>) {
 		return ids;
 	});
 }
+
+describe("/api/chat reply limit context", () => {
+	test("keeps a tool call at the limit without adding a notice", async () => {
+		const fx = await setup();
+		provider.model = new MockLanguageModelV3({
+			doStream: async () =>
+				step_stream({
+					step: {
+						toolCallId: "read-image",
+						toolName: "view_image",
+						input: { workspace: "current", path: "/missing.png" },
+					},
+					inputTokens: 10,
+					finishReason: "length",
+				}),
+		});
+		const body = await send(fx, { messageId: "first", text: "Check this image.", parentId: null });
+		expect(body).not.toContain("reached its reply limit");
+		expect(provider.model.doStreamCalls).toHaveLength(1);
+		const steps = await fx.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+		expect(steps).toHaveLength(1);
+		expect(steps[0]?.finishReason).toBe("length");
+		// The SDK does not execute calls cut by a length finish.
+		expect(steps[0]?.parts.filter((part) => part.type === "tool-view_image")).toMatchObject([
+			{ toolCallId: "read-image", state: "input-available" },
+		]);
+	});
+
+	test.each([undefined, "I will check this image."])(
+		"resets answer flags after a tool step and keeps the notice for continue: %s",
+		async (beforeToolText) => {
+			const fx = await setup();
+			provider.model = new MockLanguageModelV3({
+				doStream: async () => {
+					const index = provider.model!.doStreamCalls.length - 1;
+					return index === 0
+						? step_stream({
+								step: {
+									toolCallId: "read-image",
+									toolName: "view_image",
+									input: { workspace: "current", path: "/missing.png" },
+								},
+								beforeToolText,
+								inputTokens: 10,
+							})
+						: step_stream({
+								step: { text: index === 1 ? "" : "Here is the answer." },
+								inputTokens: 10,
+								finishReason: index === 1 ? "length" : undefined,
+							});
+				},
+			});
+			const notice = 'The agent reached its reply limit before it could answer. Send "continue" to try again.';
+			const body = await send(fx, { messageId: "first", text: "Check this image.", parentId: null });
+			expect(body.split(JSON.stringify(notice))).toHaveLength(2);
+			expect(provider.model.doStreamCalls).toHaveLength(2);
+			const steps = await fx.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+			expect(steps).toHaveLength(2);
+			expect(steps[0]?.finishReason).toBe("tool-calls");
+			expect(steps[0]?.parts.filter((part) => part.type === "tool-view_image")).toMatchObject([
+				{ toolCallId: "read-image", state: "output-available" },
+			]);
+			if (beforeToolText) expect(steps[0]?.parts).toContainEqual({ type: "text", text: beforeToolText, state: "done" });
+			expect(steps[1]?.finishReason).toBe("length");
+			expect(steps[1]?.parts).toContainEqual({ type: "text", text: notice, state: "done" });
+
+			await fx.t.mutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "ai_chat_http",
+				key: fx.membership.userId,
+			});
+			const nextBody = await send(fx, { messageId: "continue", text: "continue", parentId: steps[1]!.messageId });
+			expect(provider.model.doStreamCalls).toHaveLength(3);
+			expect(JSON.stringify(provider.model.doStreamCalls[2]!.prompt)).toContain(JSON.stringify(notice));
+			expect(nextBody).toContain("Here is the answer.");
+			expect(nextBody).not.toContain("reached its reply limit");
+			const nextSteps = await fx.t.run((ctx) => ctx.db.query("ai_chat_run_steps").collect());
+			expect(nextSteps.at(-1)?.parts).toContainEqual({ type: "text", text: "Here is the answer.", state: "done" });
+		},
+	);
+});
 
 describe("/api/chat history compaction", () => {
 	test("summarizes the older part of a long branch once, and the next walk shows the summary", async () => {

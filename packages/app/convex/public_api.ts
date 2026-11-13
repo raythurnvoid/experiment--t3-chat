@@ -2264,7 +2264,8 @@ async function db_authorize_file_policy_request(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
-		nodeId: string;
+		nodeId?: string;
+		path?: string;
 		requiredScope: "files:read" | "files:read-only" | "files:publish";
 	},
 ) {
@@ -2273,19 +2274,29 @@ async function db_authorize_file_policy_request(
 		return liveCredential;
 	}
 
-	const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
-	const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+	const credential = liveCredential._yay;
+	const subject = credential_subject(credential);
+	const nodeId = args.nodeId === undefined ? null : ctx.db.normalizeId("files_nodes", args.nodeId);
+	// Resolve a path in the same transaction as the policy change, so a move cannot leave a stale ID.
+	const node =
+		args.path !== undefined
+			? await (await files_db_create_path_lookups(ctx, args)).get(args.path)
+			: nodeId
+				? await files_saved_placement_db_get_node(ctx.db, nodeId)
+				: null;
 	if (
 		!node ||
 		node.organizationId !== args.organizationId ||
 		node.workspaceId !== args.workspaceId ||
 		node.archiveOperationId !== null
 	) {
+		if (args.path !== undefined) {
+			const access = await files_db_get_path_access(ctx, { ...args, subject, path: args.path });
+			if (access.status === "locked") return Result({ _nay: { message: "Permission denied" } });
+		}
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	const credential = liveCredential._yay;
-	const subject = credential_subject(credential);
 	if (
 		!(await has_workspace_content_permission(ctx, {
 			organizationId: args.organizationId,
@@ -2296,7 +2307,7 @@ async function db_authorize_file_policy_request(
 			permission: args.requiredScope === "files:read" ? "content.read" : "content.write",
 		}))
 	) {
-		return Result({ _nay: { message: "Not found" } });
+		return Result({ _nay: { message: args.path === undefined ? "Not found" : "Permission denied" } });
 	}
 
 	const writeContext: files_nodes_WriteContext = {
@@ -2315,7 +2326,8 @@ export const get_file_read_only = internalQuery({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		nodeId: v.string(),
+		nodeId: v.optional(v.string()),
+		path: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: files_nodes_read_only_state_validator }),
 	handler: async (ctx, args) => {
@@ -2339,17 +2351,20 @@ export const set_file_read_only = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		nodeId: v.string(),
+		nodeId: v.optional(v.string()),
+		path: v.optional(v.string()),
 		readOnly: v.boolean(),
 	},
-	returns: v_result({ _yay: v.null() }),
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:read-only" });
 		if (authorized._nay) {
 			return authorized;
 		}
 
-		return await files_nodes_db_set_read_only(ctx, { ...authorized._yay, readOnly: args.readOnly });
+		const result = await files_nodes_db_set_read_only(ctx, { ...authorized._yay, readOnly: args.readOnly });
+		if (result._nay) return result;
+		return Result({ _yay: { nodeId: authorized._yay.node._id } });
 	},
 });
 
@@ -6745,7 +6760,10 @@ export async function public_api_http_read_file(args: {
 	return result;
 }
 
-const get_file_read_only_body_validator = z.object({ nodeId: z.string() }).strict();
+const get_file_read_only_body_validator = z
+	.object({ nodeId: z.string().optional(), path: z.string().optional() })
+	.strict()
+	.refine((body) => (body.nodeId === undefined) !== (body.path === undefined));
 
 export type public_api_http_get_file_read_only_Body = z.infer<typeof get_file_read_only_body_validator>;
 
@@ -6771,6 +6789,17 @@ export async function public_api_http_get_file_read_only(args: {
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
+	if (body._yay.path !== undefined) {
+		if (!body._yay.path.startsWith("/")) {
+			return { status: 400, body: { message: "Path must be absolute." } } as const;
+		}
+		const length = files_check_request_path_length(body._yay.path);
+		if (length._nay) return { status: 400, body: { message: length._nay.message } } as const;
+		body._yay.path = server_path_normalize(body._yay.path);
+		if (body._yay.path === "/") {
+			return { status: 400, body: { message: "Path must not be the workspace root." } } as const;
+		}
+	}
 
 	const principal = auth._yay.principal;
 	const result = (await ctx.runQuery(internal.public_api.get_file_read_only, {
@@ -6778,7 +6807,7 @@ export async function public_api_http_get_file_read_only(args: {
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		userId: principal.userId,
-		nodeId: body._yay.nodeId,
+		...body._yay,
 	})) as get_file_read_only_Result;
 	if (result._nay) {
 		return {
@@ -6792,10 +6821,12 @@ export async function public_api_http_get_file_read_only(args: {
 
 const set_file_read_only_body_validator = z
 	.object({
-		nodeId: z.string(),
+		nodeId: z.string().optional(),
+		path: z.string().optional(),
 		readOnly: z.boolean(),
 	})
-	.strict();
+	.strict()
+	.refine((body) => (body.nodeId === undefined) !== (body.path === undefined));
 
 export type public_api_http_set_file_read_only_Body = z.infer<typeof set_file_read_only_body_validator>;
 
@@ -6821,6 +6852,17 @@ export async function public_api_http_set_file_read_only(args: {
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
 	}
+	if (body._yay.path !== undefined) {
+		if (!body._yay.path.startsWith("/")) {
+			return { status: 400, body: { message: "Path must be absolute." } } as const;
+		}
+		const length = files_check_request_path_length(body._yay.path);
+		if (length._nay) return { status: 400, body: { message: length._nay.message } } as const;
+		body._yay.path = server_path_normalize(body._yay.path);
+		if (body._yay.path === "/") {
+			return { status: 400, body: { message: "Path must not be the workspace root." } } as const;
+		}
+	}
 
 	const principal = auth._yay.principal;
 	const result = (await ctx.runMutation(internal.public_api.set_file_read_only, {
@@ -6837,7 +6879,7 @@ export async function public_api_http_set_file_read_only(args: {
 		} as const;
 	}
 
-	return { status: 200, body: { nodeId: body._yay.nodeId }, headers: { "Cache-Control": "no-store" } } as const;
+	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
 
 const set_file_public_body_validator = z
@@ -8979,11 +9021,17 @@ export async function public_api_http_verify_key(args: {
 	}
 
 	const principal = auth._yay.principal;
+	const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+	});
 	return {
 		status: 200,
 		body: {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
+			organizationName: tenant.organization.name,
+			workspaceName: tenant.workspace.name,
 			scopes: auth._yay.allowedScopes,
 			serviceAccountId: principal.serviceAccountId,
 			sponsorUserId: principal.userId,
