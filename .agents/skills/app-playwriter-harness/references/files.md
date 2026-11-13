@@ -1654,6 +1654,8 @@ requirements. Spec: `.agents/skills/file-metadata/SKILL.md` and
   `Partly completed` and page refused items and retained folders through `files_archive_runs.list_outcomes`.
   Hidden results say `Permission denied` without a path. No app force action is added. This new outcome
   contract needs native QA. The button is `View progress` while it runs and `Open` after.
+  A delete sent with an API key (`/api/v1/files/delete`) shows the same card and dialog for the key's
+  person, also when the job ended inside the request (checked 2026-11-13).
   The job dialog lists the trashed full paths in the read-only `textbox` `Items moved to Trash` and the refused
   ones under the region `Not moved (N)`, one `textbox` per reason named `Not moved: <reason>`.
   Its heading holds the job's `[data-activity-status-icon]`. The `Open` button can sit below the visible part of the popover list:

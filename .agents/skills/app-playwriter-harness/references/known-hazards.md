@@ -29,6 +29,13 @@ in a background tab, so never call `bringToFront()` before typing into an editor
 Read the result from the DOM instead of a screenshot, or take the screenshot in a separate call after
 the typing is checked.
 
+A mouse click on a button can stall the same way in a background tab of the user's Edge window. To
+press the button without `bringToFront()`, focus it from page code and press Enter with the real
+keyboard: `await page.evaluate(...)` calls `button.focus()` and checks `document.activeElement`, then
+`await page.keyboard.press("Enter")`. On 2026-11-13 a click on a job card's `Open` button in the
+Notifications popover timed out while a hit test found the button on top; focus plus Enter opened
+the job dialog.
+
 Before the first attempt at a new interaction type (upload, download, screenshot, toast, tooltip, hovercard, dialog, navigation, sign-in), search this file for that word — the recipe often already exists, and finding it before the attempt is much cheaper than after the failure. Routing hints:
 
 - **File upload / folder import** — try `setInputFiles` under a Windows relay first; use the fallback under Playwriter Availability only after an actual failure.
