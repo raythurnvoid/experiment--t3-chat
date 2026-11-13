@@ -15,6 +15,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
+import { files_trash_requests_db_get_summary } from "./files_trash_requests.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;
@@ -64,7 +65,8 @@ export async function files_pending_list_db_get_summary(args: {
 		count += rows.length;
 		if (count > 500) break;
 	}
-	return { count: Math.min(count, 500), truncated: count > 500 };
+	const requests = await files_trash_requests_db_get_summary({ ctx, membership, listKey });
+	return { count: Math.min(count, 500) + requests.count, truncated: count > 500 };
 }
 
 /**

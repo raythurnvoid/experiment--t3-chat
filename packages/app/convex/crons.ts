@@ -165,6 +165,7 @@ crons.cron("recover expired transfer attempts", "*/5 * * * *", internal.files_tr
 
 // Every 5 minutes — resume interrupted review plans and commits.
 crons.cron("recover pending review jobs", "*/5 * * * *", internal.files_pending_update_runs.recover, {});
+crons.cron("recover Trash requests", "*/5 * * * *", internal.files_trash_requests.recover, {});
 crons.cron("recover Move groups", "*/5 * * * *", internal.files_move_cohorts.recover, {});
 crons.cron("recover saved file indexes", "*/5 * * * *", internal.files_index.recover, {});
 

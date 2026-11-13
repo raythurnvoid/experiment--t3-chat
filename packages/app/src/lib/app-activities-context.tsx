@@ -17,7 +17,9 @@ type StopResult = app_convex_FunctionReturnType<typeof app_convex_api.activities
 type ReviewSelection = Pick<
 	app_convex_FunctionArgs<typeof app_convex_api.files_pending_update_runs.start>,
 	"kind" | "items"
->;
+> & {
+	trashRequestIds?: app_convex_Id<"files_trash_requests">[];
+};
 
 const AppActivitiesContext = createContext<{
 	pendingStopSourceIds: ReadonlySet<ActivitySourceId>;
@@ -134,7 +136,10 @@ const AppActivitiesProvider = Object.assign(
 
 		const startReview = useFn(async (selection: ReviewSelection) => {
 			if (reviewPending.current) throw new Error("Your changes are already being sent.");
-			if (selection.items.length === 0) throw new Error("Select at least one pending change.");
+			const trashRequestIds = selection.trashRequestIds ?? [];
+			if (selection.items.length === 0 && trashRequestIds.length === 0) {
+				throw new Error("Select at least one pending change.");
+			}
 			reviewPending.current = true;
 			setIsStartingReview(true);
 			// Keep the same request and pages after a lost reply. Only Seal starts the worker.
@@ -146,40 +151,68 @@ const AppActivitiesProvider = Object.assign(
 			// The React Compiler has trouble lowering `try`/`finally` inside a component, so the
 			// cleanup runs in `.finally(...)` on this IIFE instead.
 			return (async (/* iife */) => {
-				const started = await app_convex.mutation(app_convex_api.files_pending_update_runs.start, {
-					membershipId,
-					requestId: request.requestId,
-					kind: selection.kind,
-					expectedItemCount: selection.items.length,
-					items: selection.items.slice(0, 100),
-				});
-				if (started._nay) {
-					reviewRequest.current = null;
-					throw new Error(started._nay.message);
-				}
-				const runId = started._yay.runId;
-				request.runId = runId;
-				const count = selection.items.length;
-				watchReviewRun({ runId, kind: selection.kind, subject: `${count} ${count === 1 ? "change" : "changes"}` });
-				for (let offset = 100; offset < selection.items.length; offset += 100) {
-					const appended = await app_convex.mutation(app_convex_api.files_pending_update_runs.append_items, {
+				let runId: app_convex_Id<"files_pending_update_runs"> | null = null;
+				if (selection.items.length > 0) {
+					const started = await app_convex.mutation(app_convex_api.files_pending_update_runs.start, {
 						membershipId,
-						runId,
-						offset,
-						items: selection.items.slice(offset, offset + 100),
+						requestId: request.requestId,
+						kind: selection.kind,
+						expectedItemCount: selection.items.length,
+						items: selection.items.slice(0, 100),
 					});
-					if (appended._nay) {
+					if (started._nay) {
 						reviewRequest.current = null;
-						throw new Error(appended._nay.message);
+						throw new Error(started._nay.message);
+					}
+					runId = started._yay.runId;
+					request.runId = runId;
+					const count = selection.items.length;
+					watchReviewRun({ runId, kind: selection.kind, subject: `${count} ${count === 1 ? "change" : "changes"}` });
+					for (let offset = 100; offset < selection.items.length; offset += 100) {
+						const appended = await app_convex.mutation(app_convex_api.files_pending_update_runs.append_items, {
+							membershipId,
+							runId,
+							offset,
+							items: selection.items.slice(offset, offset + 100),
+						});
+						if (appended._nay) {
+							reviewRequest.current = null;
+							throw new Error(appended._nay.message);
+						}
 					}
 				}
-				const sealed = await app_convex.mutation(app_convex_api.files_pending_update_runs.seal, {
-					membershipId,
-					runId,
-				});
-				if (sealed._nay) {
-					reviewRequest.current = null;
-					throw new Error(sealed._nay.message);
+				if (trashRequestIds.length > 0) {
+					const started = await app_convex.mutation(app_convex_api.files_trash_requests.start, {
+						membershipId,
+						requestId: request.requestId,
+						kind: selection.kind,
+						expectedItemCount: trashRequestIds.length,
+						requestIds: trashRequestIds.slice(0, 100),
+						afterReviewRunId: runId,
+					});
+					if (started._nay) throw new Error(started._nay.message);
+					const batchId = started._yay.batchId;
+					for (let offset = 100; offset < trashRequestIds.length; offset += 100) {
+						const appended = await app_convex.mutation(app_convex_api.files_trash_requests.append_items, {
+							membershipId,
+							batchId,
+							offset,
+							requestIds: trashRequestIds.slice(offset, offset + 100),
+						});
+						if (appended._nay) throw new Error(appended._nay.message);
+					}
+					// Seal starts both phases in one transaction. Trash waits for the file review to finish.
+					const sealed = await app_convex.mutation(app_convex_api.files_trash_requests.seal, { membershipId, batchId });
+					if (sealed._nay) throw new Error(sealed._nay.message);
+				} else if (runId) {
+					const sealed = await app_convex.mutation(app_convex_api.files_pending_update_runs.seal, {
+						membershipId,
+						runId,
+					});
+					if (sealed._nay) {
+						reviewRequest.current = null;
+						throw new Error(sealed._nay.message);
+					}
 				}
 				reviewRequest.current = null;
 			})().finally(() => {

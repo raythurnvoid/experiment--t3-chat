@@ -358,6 +358,48 @@
 	}
 	/* #endregion item */
 
+	/* #region trash request */
+	.FileEditorSidebarPendingTrashRequest {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 8px;
+		padding: 12px 16px;
+		border-bottom: 1px solid var(--color-fg-02);
+		overflow-wrap: anywhere;
+	}
+
+	.FileEditorSidebarPendingTrashRequest-label,
+	.FileEditorSidebarPendingTrashRequest-path,
+	.FileEditorSidebarPendingTrashRequest-status {
+		margin: 0;
+	}
+
+	.FileEditorSidebarPendingTrashRequest-label,
+	.FileEditorSidebarPendingTrashRequest-path {
+		font-size: 16px;
+		font-weight: 500;
+		color: var(--color-fg-11);
+	}
+
+	.FileEditorSidebarPendingTrashRequest-status {
+		font-size: 15px;
+		color: var(--color-fg-08);
+	}
+
+	.FileEditorSidebarPendingTrashRequest-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-left: auto;
+
+		& > .MyButton {
+			min-height: 44px;
+		}
+	}
+	/* #endregion trash request */
+
 	/* #region ignore read-only modal */
 	.FileEditorSidebarPendingIgnoreReadOnlyModal {
 		width: min(92vw, 480px);

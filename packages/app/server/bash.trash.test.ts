@@ -8,9 +8,12 @@ import {
 	create_bash_runner,
 	default_organization_files,
 	drain_scheduled_continuations,
+	get_seeded_node,
 	get_seeded_node_id,
 	list_pending_updates,
 	list_pending_updates_for_node,
+	push_unsaved_rich_text_edit,
+	readme_seed_content,
 	runner_as_user,
 } from "./bash.setup.test.ts";
 import * as resolver from "./files-visible-resolve.ts";
@@ -267,6 +270,167 @@ describe("bash_run_command", () => {
 		});
 	});
 
+	describe("trash cat", () => {
+		test("reads saved text exactly and leaves an old content draft alone", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/exact.txt", content: "saved text", nonCollaborative: true }],
+			});
+			const nodeId = await get_seeded_node_id(runner, "/exact.txt");
+			expect((await runner.run({ command: "echo 'draft text' > exact.txt" })).metadata.exitCode).toBe(0);
+			const drafts = await list_pending_updates_for_node(runner, nodeId);
+			expect(drafts).toHaveLength(1);
+			await archive(runner, ["/exact.txt"]);
+			const id = `${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId}`;
+
+			const read = await runner.run({ command: `trash cat ${id}` });
+
+			expect(read.metadata.exitCode, read.stderr).toBe(0);
+			expect(read.stdout).toBe("saved text");
+			expect(read.stderr).toBe("");
+			expect(await list_pending_updates_for_node(runner, nodeId)).toEqual(drafts);
+		});
+
+		test("follows line pages beyond the second page without skipping text", async () => {
+			const content = Array.from({ length: 1200 }, (_, index) => `${index + 1}: ${"a".repeat(80)}\n`).join("");
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/large.txt", content, nonCollaborative: true }],
+			});
+			const {
+				nodeIds: [nodeId],
+			} = await archive(runner, ["/large.txt"]);
+			const id = `${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId}`;
+			let command = `trash cat ${id}`;
+			const pages: string[] = [];
+			for (let index = 0; index < 6; index++) {
+				const read = await runner.run({ command });
+				expect(read.metadata.exitCode, read.stderr).toBe(0);
+				expect(new TextEncoder().encode(read.stdout).length).toBeLessThanOrEqual(64 * 1024);
+				pages.push(read.stdout);
+				const next = /Next page: (.*)\n/.exec(read.stderr);
+				if (!next) break;
+				command = next[1];
+			}
+			expect(pages.length).toBeGreaterThanOrEqual(3);
+			expect(pages.join("")).toBe(content);
+			const pastEnd = await runner.run({ command: `trash cat ${id} --start-line 9999` });
+			expect(pastEnd.metadata.exitCode, pastEnd.stderr).toBe(0);
+			expect(pastEnd.stdout).toBe("");
+			expect(pastEnd.stderr).toBe("");
+		});
+
+		test("uses an explicit line window for a small file", async () => {
+			const runner = await create_bash_runner();
+			const {
+				nodeIds: [nodeId],
+			} = await archive(runner, ["/docs/readme.md"]);
+			const read = await runner.run({
+				command: `trash cat ${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId} --start-line 2`,
+			});
+			expect(read.metadata.exitCode, read.stderr).toBe(0);
+			expect(read.stdout).toBe(readme_seed_content.split("\n").slice(1).join("\n"));
+		});
+
+		test("names a scan-bound long line separately from unavailable text", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/long.txt", content: "x".repeat(300_000), nonCollaborative: true },
+					{ path: "/unavailable.txt", content: "not materialized", materialized: false },
+				],
+			});
+			const { nodeIds } = await archive(runner, ["/long.txt", "/unavailable.txt"]);
+			for (const [index, nodeId] of nodeIds.entries()) {
+				const read = await runner.run({
+					command: `trash cat ${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId}`,
+				});
+				expect(read.metadata.exitCode).toBe(1);
+				expect(read.stdout).toBe("");
+				expect(read.stderr).toContain(index === 0 ? "This line is too long" : "Text is not available");
+			}
+		});
+
+		test("refuses stale saved chunks without collecting the update log", async () => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			await push_unsaved_rich_text_edit({
+				runner,
+				fileNode: await get_seeded_node(runner, "/docs/readme.md"),
+				text: "new editor text",
+			});
+			await archive(runner, ["/docs/readme.md"]);
+			const read = await runner.run({
+				command: `trash cat ${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId}`,
+			});
+			expect(read.metadata.exitCode).toBe(1);
+			expect(read.stdout).toBe("");
+			expect(read.stderr).toContain("Text is not available");
+		});
+	});
+
+	describe("trash requests", () => {
+		test("proposes several saved restores and cancels only the named request", async () => {
+			const runner = await create_bash_runner();
+			expect((await runner.run({ command: "echo 'old draft' > docs/readme.md" })).metadata.exitCode).toBe(0);
+			const { nodeIds } = await archive(runner, ["/docs/readme.md", "/reports/summary.md"]);
+			const drafts = await list_pending_updates(runner);
+			const nodes = await Promise.all(nodeIds.map((id) => read_node(runner, id)));
+			const proposed = await runner.run({
+				command: `trash restore --id ${nodes.map((node) => `${node._id}:${node.archiveOperationId}`).join(" ")}`,
+			});
+			expect(proposed.metadata.exitCode, proposed.stderr).toBe(0);
+			expect(proposed.stdout.match(/restore request created:/g)).toHaveLength(2);
+			expect(await Promise.all(nodeIds.map((id) => read_node(runner, id)))).toEqual(nodes);
+			const listed = await runner.run({ command: "trash requests --format json --limit 1" });
+			expect(listed.metadata.exitCode, listed.stderr).toBe(0);
+			const first = JSON.parse(listed.stdout);
+			expect(first.requests).toHaveLength(1);
+			expect(first.requests[0]).toMatchObject({ kind: "restore", status: "waiting" });
+			expect(first.nextCursor).toBeTruthy();
+			const next = await runner.run({ command: `trash requests --format json --limit 1 --cursor ${first.nextCursor}` });
+			expect(next.metadata.exitCode, next.stderr).toBe(0);
+			expect(JSON.parse(next.stdout).requests[0].requestId).not.toBe(first.requests[0].requestId);
+			expect((await runner.run({ command: `trash cancel ${first.requests[0].requestId}` })).metadata.exitCode).toBe(0);
+			const remaining = await runner.run({ command: "trash requests --format json" });
+			expect(JSON.parse(remaining.stdout).requests).toHaveLength(1);
+			expect(await list_pending_updates(runner)).toEqual(drafts);
+			expect(await Promise.all(nodeIds.map((id) => read_node(runner, id)))).toEqual(nodes);
+		});
+
+		test("proposes purge and Empty without deleting anything, and refuses a pending purge", async () => {
+			const runner = await create_bash_runner();
+			const {
+				nodeIds: [nodeId],
+			} = await archive(runner, ["/docs/readme.md"]);
+			const node = await read_node(runner, nodeId);
+			const purge = await runner.run({ command: `trash purge --id ${nodeId}:${node.archiveOperationId}` });
+			expect(purge.metadata.exitCode, purge.stderr).toBe(0);
+			expect(purge.stdout).toContain("purge request created:");
+			const empty = await runner.run({ command: "trash empty" });
+			expect(empty.metadata.exitCode, empty.stderr).toBe(0);
+			expect(empty.stdout).toContain("when accepted");
+			expect(await read_node(runner, nodeId)).toEqual(node);
+			const pending = await runner.run({ command: `trash purge --id ${nodeId}:pending` });
+			expect(pending.metadata.exitCode).toBe(1);
+			expect(pending.stderr).toContain("save the pending delete first");
+		});
+
+		test("allows reads in Ask and refuses every request write", async () => {
+			const runner = await create_bash_runner({ allowDbFilesMkdir: false });
+			const {
+				nodeIds: [nodeId],
+			} = await archive(runner, ["/docs/readme.md"]);
+			const id = `${nodeId}:${(await read_node(runner, nodeId)).archiveOperationId}`;
+			for (const command of [`trash cat ${id}`, "trash requests"]) {
+				const read = await runner.run({ command });
+				expect(read.metadata.exitCode, read.stderr).toBe(0);
+			}
+			for (const command of [`trash restore --id ${id}`, `trash purge --id ${id}`, "trash empty", "trash cancel x"]) {
+				const write = await runner.run({ command });
+				expect(write.metadata.exitCode).toBe(1);
+				expect(write.stderr).toContain("Ask mode is read-only");
+			}
+		});
+	});
+
 	describe("guests", () => {
 		test("get the guest message from every trash command", async () => {
 			const owner = await create_team_runner();
@@ -278,6 +442,12 @@ describe("bash_run_command", () => {
 				"trash areas",
 				`trash ls --in ${docsId}:t000000000000001-x`,
 				`trash restore --id ${docsId}:pending`,
+				`trash restore --id ${docsId}:t000000000000001-x`,
+				`trash purge --id ${docsId}:t000000000000001-x`,
+				`trash cat ${docsId}:t000000000000001-x`,
+				"trash empty",
+				"trash requests",
+				"trash cancel x",
 			]) {
 				const result = await guest.run({ command });
 				expect(result.metadata.exitCode, `${command}\n${result.stdout}${result.stderr}`).toBe(1);
@@ -303,6 +473,13 @@ describe("bash_run_command", () => {
 			]);
 			expect(wrongOperation.metadata.exitCode).toBe(1);
 			expect(wrongOperation.stderr).toBe(`trash: cannot open '${lockedId}:t000000000000001-x': Permission denied\n`);
+			for (const command of ["cat", "restore --id", "purge --id"]) {
+				const denied = await member.run({ command: `trash ${command} ${lockedId}:t000000000000001-x` });
+				expect(denied.metadata.exitCode).toBe(1);
+				expect(denied.stderr).toContain("Permission denied");
+				expect(denied.stderr).not.toContain("changed");
+				expect(denied.stderr).not.toContain("directory");
+			}
 		});
 
 		test("restore by path says Permission denied inside a locked folder, for a missing name too", async () => {

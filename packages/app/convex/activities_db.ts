@@ -1,6 +1,7 @@
 // Producers share Activity state without importing the handlers that dispatch back to them.
 
 import type { Doc, Id } from "./_generated/dataModel.js";
+import { internal } from "./_generated/api.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MOVE_REPAIR_STUCK_CODE } from "../shared/files.ts";
@@ -162,6 +163,9 @@ export async function activities_db_finish(
 				: args.now + (activity.source.kind === "plugin_run" ? 30 : 7) * 24 * 60 * 60 * 1000,
 		updatedAt: args.now,
 	});
+	if (activity.source.kind === "files_pending_update_run") {
+		await ctx.scheduler.runAfter(0, internal.files_trash_requests.wake_review, { runId: activity.source.id });
+	}
 }
 
 export async function activities_db_add_target(

@@ -89,6 +89,10 @@ type FileEditorSidebarPendingView = NonNullable<
 	FunctionReturnType<typeof app_convex_api.files_pending_target.get_file_pending_target>
 >;
 
+type FileEditorSidebarPendingTrashRequest = NonNullable<
+	FunctionReturnType<typeof app_convex_api.files_trash_requests.get_request>
+>;
+
 type FileEditorSidebarPendingOccupant = FunctionReturnType<
 	typeof app_convex_api.files_pending_updates.get_pending_move_occupant
 >;
@@ -1414,6 +1418,177 @@ const FileEditorSidebarPendingRestrictedItem = memo(function FileEditorSidebarPe
 });
 // #endregion restricted item
 
+// #region trash request
+type FileEditorSidebarPendingTrashRequest_ClassNames =
+	| "FileEditorSidebarPendingTrashRequest"
+	| "FileEditorSidebarPendingTrashRequest-label"
+	| "FileEditorSidebarPendingTrashRequest-path"
+	| "FileEditorSidebarPendingTrashRequest-status"
+	| "FileEditorSidebarPendingTrashRequest-actions";
+
+type FileEditorSidebarPendingTrashRequest_CustomAttributes = {
+	"data-trash-request-id": string;
+	"data-trash-request-status": FileEditorSidebarPendingTrashRequest["status"];
+};
+
+const FileEditorSidebarPendingTrashRequestItem = memo(function FileEditorSidebarPendingTrashRequestItem(props: {
+	request: FileEditorSidebarPendingTrashRequest;
+	disabled: boolean;
+	onActionSuccess: (message: string) => void;
+}) {
+	const { request, disabled, onActionSuccess } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const { startReview, openArchiveRun } = AppActivitiesProvider.useContext();
+	const [isBusy, setIsBusy] = useState(false);
+	const itemRef = useRef<HTMLLIElement>(null);
+	const label = { restore: "Restore", purge: "Delete permanently", empty: "Empty Trash" }[request.kind];
+	const actionLabel = `${label.toLowerCase()}${request.path ? ` ${request.path}` : " request"}`;
+
+	// The action buttons change when work starts or ends. Keep focus in this row or its panel.
+	useLayoutEffect(() => {
+		const item = itemRef.current;
+		return () => {
+			if (!item?.contains(document.activeElement)) return;
+			const panel = item.closest<HTMLElement>(".FileEditorSidebarPending");
+			queueMicrotask(() => {
+				if (document.activeElement === document.body) (item.isConnected ? item : panel)?.focus();
+			});
+		};
+	}, [request.status]);
+
+	const handleAccept = useFn(() => {
+		if (isBusy || disabled || !request.canAccept) return;
+		setIsBusy(true);
+		startReview({ kind: "accept", items: [], trashRequestIds: [request.requestId] })
+			.then(() => onActionSuccess(`Accepted ${actionLabel}`))
+			.catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Failed to accept request"))
+			.finally(() => setIsBusy(false));
+	});
+	const handleAction = useFn((action: "discard" | "stop" | "dismiss") => {
+		if (isBusy || disabled) return;
+		if (action === "discard" ? !request.canDiscard : action === "stop" ? !request.canStop : !request.canDismiss) return;
+		setIsBusy(true);
+		app_convex
+			.mutation(app_convex_api.files_trash_requests[action], { membershipId, requestId: request.requestId })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+				onActionSuccess(
+					`${{ discard: "Discarded", stop: "Stop requested for", dismiss: "Dismissed" }[action]} ${actionLabel}`,
+				);
+			})
+			.catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Failed to update request"))
+			.finally(() => setIsBusy(false));
+	});
+
+	return (
+		<li
+			ref={itemRef}
+			tabIndex={-1}
+			className={"FileEditorSidebarPendingTrashRequest" satisfies FileEditorSidebarPendingTrashRequest_ClassNames}
+			{...({
+				"data-trash-request-id": request.requestId,
+				"data-trash-request-status": request.status,
+			} satisfies FileEditorSidebarPendingTrashRequest_CustomAttributes)}
+		>
+			<div>
+				<p
+					className={
+						"FileEditorSidebarPendingTrashRequest-label" satisfies FileEditorSidebarPendingTrashRequest_ClassNames
+					}
+				>
+					{label}
+				</p>
+				{request.path ? (
+					<p
+						className={
+							"FileEditorSidebarPendingTrashRequest-path" satisfies FileEditorSidebarPendingTrashRequest_ClassNames
+						}
+					>
+						{request.path}
+					</p>
+				) : null}
+				<p
+					className={
+						"FileEditorSidebarPendingTrashRequest-status" satisfies FileEditorSidebarPendingTrashRequest_ClassNames
+					}
+				>
+					{request.outcome?.message ??
+						(request.locked
+							? "Permission denied"
+							: { waiting: "Waiting for approval", queued: "Queued", running: "Working", finished: "Finished" }[
+									request.status
+								])}
+				</p>
+			</div>
+			<div
+				className={
+					"FileEditorSidebarPendingTrashRequest-actions" satisfies FileEditorSidebarPendingTrashRequest_ClassNames
+				}
+			>
+				{request.status === "waiting" ? (
+					<MyButton
+						variant="ghost"
+						className={"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames}
+						aria-label={`Accept ${actionLabel}`}
+						aria-busy={isBusy}
+						disabled={!request.canAccept}
+						aria-disabled={isBusy || disabled || !request.canAccept}
+						onClick={handleAccept}
+					>
+						Accept
+					</MyButton>
+				) : null}
+				{request.canDiscard ? (
+					<MyButton
+						variant="ghost_destructive"
+						aria-label={`Discard ${actionLabel}`}
+						aria-busy={isBusy}
+						aria-disabled={isBusy || disabled}
+						onClick={() => handleAction("discard")}
+					>
+						Discard
+					</MyButton>
+				) : null}
+				{request.archiveRunId ? (
+					<MyButton
+						variant="ghost"
+						aria-label={`Open job for ${actionLabel}`}
+						onClick={() => openArchiveRun(request.archiveRunId!)}
+					>
+						Open job
+					</MyButton>
+				) : null}
+				{request.canStop ? (
+					<MyButton
+						variant="ghost"
+						aria-label={`Stop ${actionLabel}`}
+						aria-busy={isBusy}
+						aria-disabled={isBusy || disabled}
+						onClick={() => handleAction("stop")}
+					>
+						Stop
+					</MyButton>
+				) : null}
+				{request.canDismiss ? (
+					<MyButton
+						variant="ghost"
+						aria-label={`Dismiss ${actionLabel}`}
+						aria-busy={isBusy}
+						aria-disabled={isBusy || disabled}
+						onClick={() => handleAction("dismiss")}
+					>
+						Dismiss
+					</MyButton>
+				) : null}
+			</div>
+		</li>
+	);
+});
+// #endregion trash request
+
 // #region unloaded item
 type FileEditorSidebarPendingUnloadedItem_Props = {
 	/**
@@ -1549,7 +1724,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 	// Busy review buttons keep focus while the job starts. Handlers block repeated clicks.
 	const isBulkBusy = isSubmitting || isStartingReview;
 	// The rows Accept all keeps until the user answers the dialog about deletes that ignore Read-only.
-	const [confirmAcceptRows, setConfirmAcceptRows] = useState<FileEditorSidebarPendingRow[] | null>(null);
+	const [confirmAcceptSelection, setConfirmAcceptSelection] = useState<{
+		rows: FileEditorSidebarPendingRow[];
+		trashRequestIds: app_convex_Id<"files_trash_requests">[];
+	} | null>(null);
 	const [selectedSource, setSelectedSource] = useState<FileEditorSidebarPendingSource>(
 		initialThreadId ?? PENDING_SOURCE_ALL,
 	);
@@ -1581,14 +1759,24 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		savedView.cohort ? { membershipId, savedStream: savedView.cohort } : "skip",
 		{ initialNumItems: 20 },
 	);
-	const sourceStreams = savedView.normal ? [normalSources, ...(savedView.cohort ? [cohortSources] : [])] : [];
-	const sourceMerge = files_merge_sorted_streams({
+	const requestSources = useFilesPaginatedQuery(
+		app_convex_api.files_trash_requests.list_sources,
+		{ membershipId },
+		{ initialNumItems: 20 },
+	);
+	const sourceStreams = savedView.normal
+		? [normalSources, ...(savedView.cohort ? [cohortSources] : []), requestSources]
+		: [requestSources];
+	const sourceMerge = files_merge_sorted_streams<
+		| FunctionReturnType<typeof app_convex_api.files_pending_list.list_files_pending_sources>["page"][number]
+		| FunctionReturnType<typeof app_convex_api.files_trash_requests.list_sources>["page"][number]
+	>({
 		streams: sourceStreams.map((stream) => ({ rows: stream.results, isDone: stream.status === "Exhausted" })),
 		compare: (a, b) =>
 			-compareValues([a.lastUpdatedAt, a.keyCreationTime, a.keyId], [b.lastUpdatedAt, b.keyCreationTime, b.keyId]),
 		key: (row) => row.listKey,
 	});
-	const sourceKeys = sourceMerge.rows.map((row) => row.listKey);
+	const sourceKeys = sourceMerge.rows.map((row) => row.listKey as FileEditorSidebarPendingSource);
 	// A chosen chat can be outside the loaded pages after a Move resets them.
 	if (selectedSource !== PENDING_SOURCE_ALL && !sourceKeys.includes(selectedSource)) sourceKeys.push(selectedSource);
 	const sourcesStatus =
@@ -1659,7 +1847,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		membershipId,
 		listKey: activeSource,
 	});
-	const sourceCount = summary === undefined ? "…" : summary.truncated ? "500+" : String(summary.count);
+	const sourceCount = summary === undefined ? "…" : `${summary.count}${summary.truncated ? "+" : ""}`;
 
 	// The list rows hold stored fields only, so a page costs the same at any path depth. Each row
 	// loads its own view below, with its own read budget.
@@ -1668,6 +1856,36 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		status: pendingUpdatesStatus,
 		loadMore,
 	} = useFilesPendingUpdates({ membershipId, listKey: activeSource });
+	const {
+		results: requestListRows,
+		status: requestsStatus,
+		loadMore: loadMoreRequests,
+	} = useFilesPaginatedQuery(
+		app_convex_api.files_trash_requests.list_requests,
+		{ membershipId, listKey: activeSource },
+		{ initialNumItems: 20 },
+	);
+	const requestIdsKey = JSON.stringify(requestListRows.map((row) => row.requestId));
+	const requestViews = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					(JSON.parse(requestIdsKey) as app_convex_Id<"files_trash_requests">[]).map((requestId) => [
+						requestId,
+						{ query: app_convex_api.files_trash_requests.get_request, args: { membershipId, requestId } },
+					]),
+				),
+			[membershipId, requestIdsKey],
+		),
+	) as Record<string, FileEditorSidebarPendingTrashRequest | null | undefined | Error>;
+	const requests = requestListRows.flatMap((row) => {
+		const request = requestViews[row.requestId];
+		return request && !(request instanceof Error) ? [request] : [];
+	});
+	const acceptRequestIds = requests.filter((request) => request.canAccept).map((request) => request.requestId);
+	const discardRequestIds = requests
+		.filter((request) => (request.status === "waiting" ? request.canDiscard : request.canDismiss))
+		.map((request) => request.requestId);
 	const targetsKey = JSON.stringify(listRows.map((row) => [row.pendingUpdateId, row.target]));
 	// A view that throws, such as a draft too deep for its read limit, comes back as an `Error` for
 	// that row only.
@@ -1810,11 +2028,16 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 
 	// A row whose view is loading, restricted or failed blocks Accept all.
 	const canAcceptAllShownRows =
-		listRows.length > 0 &&
+		(listRows.length > 0 || acceptRequestIds.length > 0) &&
 		listRows.every((listRow) => {
 			const row = rowsById.get(listRow.pendingUpdateId);
 			return row !== undefined && canAcceptRow(row);
+		}) &&
+		requestListRows.every((row) => {
+			const request = requestViews[row.requestId];
+			return request && !(request instanceof Error) && (request.status !== "waiting" || request.canAccept);
 		});
+	const canDiscardAllShownRows = listRows.length > 0 || discardRequestIds.length > 0;
 
 	useEffect(() => {
 		if (selectedSource !== activeSource) {
@@ -1824,14 +2047,18 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 
 	// A hidden folder draft goes with the drafts inside it. So Accept all sends each shown draft's
 	// pending parent folders first, like row Accept.
-	const startAccept = (acceptRows: FileEditorSidebarPendingRow[]) => {
-		if (acceptRows.length === 0) return;
+	const startAccept = (
+		acceptRows: FileEditorSidebarPendingRow[],
+		trashRequestIds: app_convex_Id<"files_trash_requests">[],
+	) => {
+		if (acceptRows.length === 0 && trashRequestIds.length === 0) return;
 		const parentsById = new Map(
 			acceptRows.flatMap((row) => row.requiredParents.map((parent) => [parent.pendingUpdateId, parent] as const)),
 		);
 		setIsSubmitting(true);
 		startReview({
 			kind: "accept",
+			...(trashRequestIds.length > 0 ? { trashRequestIds } : {}),
 			items: [
 				...[...parentsById.values()].map((parent) => ({
 					pendingUpdateId: parent.pendingUpdateId,
@@ -1852,7 +2079,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		})
 			.then(() =>
 				announceActionSuccess(
-					`Started accepting ${acceptRows.length} pending ${acceptRows.length === 1 ? "change" : "changes"}`,
+					`Started accepting ${acceptRows.length + trashRequestIds.length} pending ${acceptRows.length + trashRequestIds.length === 1 ? "change" : "changes"}`,
 				),
 			)
 			.catch((error: unknown) => {
@@ -1869,34 +2096,37 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		// The dialog exists because Accept all sends every row at once, so the user may not see that a
 		// delete ignores Read-only. Find a way to show that consent on the rows instead.
 		if (acceptRows.some((row) => row.pendingUpdate.pendingArchive?.ignoreReadOnly)) {
-			setConfirmAcceptRows(acceptRows);
+			setConfirmAcceptSelection({ rows: acceptRows, trashRequestIds: acceptRequestIds });
 			return;
 		}
-		startAccept(acceptRows);
+		startAccept(acceptRows, acceptRequestIds);
 	});
 
 	const handleIgnoreReadOnlyCancel = useFn(() => {
-		setConfirmAcceptRows(null);
+		setConfirmAcceptSelection(null);
 	});
 
 	const handleIgnoreReadOnlyAccept = useFn(() => {
-		if (!confirmAcceptRows) return;
-		setConfirmAcceptRows(null);
-		startAccept(confirmAcceptRows);
+		if (!confirmAcceptSelection) return;
+		setConfirmAcceptSelection(null);
+		startAccept(confirmAcceptSelection.rows, confirmAcceptSelection.trashRequestIds);
 	});
 
 	const handleIgnoreReadOnlySkip = useFn(() => {
-		if (!confirmAcceptRows) return;
-		setConfirmAcceptRows(null);
+		if (!confirmAcceptSelection) return;
+		setConfirmAcceptSelection(null);
 		toast.info("The deletes that ignore Read-only stay pending.");
-		startAccept(confirmAcceptRows.filter((row) => !row.pendingUpdate.pendingArchive?.ignoreReadOnly));
+		startAccept(
+			confirmAcceptSelection.rows.filter((row) => !row.pendingUpdate.pendingArchive?.ignoreReadOnly),
+			confirmAcceptSelection.trashRequestIds,
+		);
 	});
 
 	// Discard all sends every loaded row, and each shown draft's hidden parent folders with
 	// `onlyIfEmpty`. The list does not show every draft inside a folder, for example another chat's,
 	// so the server removes such a folder only when nothing else is left in it.
 	const handleDiscardAll = useFn(() => {
-		if (isBulkBusy) return;
+		if (isBulkBusy || !canDiscardAllShownRows) return;
 		const rowIds = new Set<string>(listRows.map((row) => row.pendingUpdateId));
 		// A parent folder of another source stays. So every folder above it stays too, because it
 		// holds that folder. `requiredParents` is root-first.
@@ -1919,6 +2149,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		setIsSubmitting(true);
 		startReview({
 			kind: "discard",
+			...(discardRequestIds.length > 0 ? { trashRequestIds: discardRequestIds } : {}),
 			items: [
 				...[...parentsById.values()].map((parent) => ({
 					pendingUpdateId: parent.pendingUpdateId,
@@ -1935,7 +2166,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 		})
 			.then(() =>
 				announceActionSuccess(
-					`Started discarding ${listRows.length} pending ${listRows.length === 1 ? "change" : "changes"}`,
+					`Started discarding ${listRows.length + discardRequestIds.length} pending ${listRows.length + discardRequestIds.length === 1 ? "change" : "changes"}`,
 				),
 			)
 			.catch((error: unknown) => {
@@ -1963,8 +2194,18 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 				{pendingUpdatesStatus === "LoadingMore" ? "Loading more…" : "Load more pending changes"}
 			</MyButton>
 		) : null;
+	const requestPaginationControl =
+		requestsStatus !== "Exhausted" && requestsStatus !== "LoadingFirstPage" ? (
+			<MyButton
+				variant="ghost"
+				disabled={isBulkBusy || requestsStatus === "LoadingMore"}
+				onClick={() => loadMoreRequests(20)}
+			>
+				{requestsStatus === "LoadingMore" ? "Loading more…" : "Load more Trash requests"}
+			</MyButton>
+		) : null;
 
-	if (pendingUpdatesStatus === "LoadingFirstPage" || listRows.length === 0) {
+	if (listRows.length === 0 && requestListRows.length === 0) {
 		return (
 			<>
 				{statusElement}
@@ -1980,12 +2221,13 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 						"FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames,
 					)}
 				>
-					{pendingUpdatesStatus === "LoadingFirstPage"
+					{pendingUpdatesStatus === "LoadingFirstPage" || requestsStatus === "LoadingFirstPage"
 						? "Loading pending changes…"
-						: pendingUpdatesStatus === "Exhausted"
+						: pendingUpdatesStatus === "Exhausted" && requestsStatus === "Exhausted"
 							? "No pending changes"
 							: "No changes on the loaded pages"}
 					{paginationControl}
+					{requestPaginationControl}
 				</div>
 			</>
 		);
@@ -2052,7 +2294,8 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 							className={cn("FileEditorSidebarPending-header-button" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label="Discard all shown pending changes"
 							aria-busy={isBulkBusy}
-							aria-disabled={isBulkBusy}
+							disabled={!canDiscardAllShownRows}
+							aria-disabled={isBulkBusy || !canDiscardAllShownRows}
 							onClick={handleDiscardAll}
 						>
 							<MyButtonIcon
@@ -2064,7 +2307,12 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 						</MyButton>
 					</div>
 				</div>
-				{pendingUpdatesStatus !== "Exhausted" ? <p>Actions apply to the changes shown below.</p> : null}
+				{pendingUpdatesStatus !== "Exhausted" || requestsStatus !== "Exhausted" ? (
+					<p>Actions apply to the changes shown below.</p>
+				) : null}
+				{requests.some((request) => request.status === "queued" || request.status === "running") ? (
+					<p>Trash requests already in progress keep running. Use their row to stop or cancel them.</p>
+				) : null}
 				<ul className={cn("FileEditorSidebarPending-list" satisfies FileEditorSidebarPending_ClassNames)}>
 					{listRows.map((listRow) => {
 						const row = rowsById.get(listRow.pendingUpdateId);
@@ -2114,13 +2362,34 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending(p
 							/>
 						);
 					})}
+					{requestListRows.map((listRow) => {
+						const request = requestViews[listRow.requestId];
+						if (request && !(request instanceof Error)) {
+							return (
+								<FileEditorSidebarPendingTrashRequestItem
+									key={listRow.requestId}
+									request={request}
+									disabled={isBulkBusy}
+									onActionSuccess={announceActionSuccess}
+								/>
+							);
+						}
+						return (
+							<FileEditorSidebarPendingUnloadedItem
+								key={listRow.requestId}
+								error={request instanceof Error ? request : undefined}
+							/>
+						);
+					})}
 				</ul>
 				{paginationControl}
+				{requestPaginationControl}
 			</div>
 			<FileEditorSidebarPendingIgnoreReadOnlyModal
 				paths={
-					confirmAcceptRows?.filter((row) => row.pendingUpdate.pendingArchive?.ignoreReadOnly).map((row) => row.path) ??
-					null
+					confirmAcceptSelection?.rows
+						.filter((row) => row.pendingUpdate.pendingArchive?.ignoreReadOnly)
+						.map((row) => row.path) ?? null
 				}
 				onCancel={handleIgnoreReadOnlyCancel}
 				onSkip={handleIgnoreReadOnlySkip}

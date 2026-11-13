@@ -30,11 +30,20 @@ import {
 } from "./files_tree_db.ts";
 import { files_tree_db_list_trash_entries } from "./files_tree.ts";
 import { files_pending_update_db_settle_archive_row } from "./files_pending_updates.ts";
+import { db_get_file_content_materialization_header } from "./files_nodes_db.ts";
+import {
+	files_READ_RANGE_MAX_LINES,
+	files_read_forward_line_range_from_ordered_chunks,
+	files_read_prefix_from_ordered_chunks,
+} from "./files_nodes.ts";
+import { files_saved_content_db_text_chunks } from "../server/files-saved-content.ts";
+import { files_node_has_editable_text_content, files_node_has_editable_yjs_state } from "../shared/files.ts";
 
 /**
  * The page size of every list here, like the app's Trash view (`TRASH_ENTRIES_PAGE_MAX_ITEMS`).
  */
 const PAGE_MAX_ITEMS = 50;
+const TEXT_MAX_BYTES = 64 * 1024;
 
 const GUEST_MESSAGE =
 	"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.";
@@ -100,7 +109,7 @@ const pending_item_validator = v.union(
 	}),
 );
 
-async function db_get_reader(
+export async function files_trash_agent_db_get_reader(
 	ctx: QueryCtx,
 	args: {
 		userId: Id<"users">;
@@ -130,7 +139,10 @@ async function db_get_reader(
  * active restricted folder. A folder inside an area names the area it lists in, or null when the reader
  * cannot open that area.
  */
-async function db_check_area(ctx: QueryCtx, args: { reader: files_tree_db_Reader; area: Id<"files_nodes"> | null }) {
+export async function files_trash_agent_db_check_area(
+	ctx: QueryCtx,
+	args: { reader: files_tree_db_Reader; area: Id<"files_nodes"> | null },
+) {
 	const { reader, area } = args;
 	if (area === null) return Result({ _yay: null });
 
@@ -237,9 +249,9 @@ export const list_entries = internalQuery({
 		_nay: { data: v.object({ areaPath: v.union(v.string(), v.null()) }) },
 	}),
 	handler: async (ctx, args) => {
-		const reader = await db_get_reader(ctx, args);
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
 		if (reader._nay) return reader;
-		const area = await db_check_area(ctx, { reader: reader._yay, area: args.area });
+		const area = await files_trash_agent_db_check_area(ctx, { reader: reader._yay, area: args.area });
 		if (area._nay) return area;
 
 		const result = await files_tree_db_list_trash_entries(ctx, {
@@ -269,9 +281,9 @@ export const list_pending_deletes = internalQuery({
 		_nay: { data: v.object({ areaPath: v.union(v.string(), v.null()) }) },
 	}),
 	handler: async (ctx, args) => {
-		const reader = await db_get_reader(ctx, args);
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
 		if (reader._nay) return reader;
-		const area = await db_check_area(ctx, { reader: reader._yay, area: args.area });
+		const area = await files_trash_agent_db_check_area(ctx, { reader: reader._yay, area: args.area });
 		if (area._nay) return area;
 		const { membership, checker } = reader._yay;
 
@@ -323,7 +335,7 @@ export const get_pending_delete_path = internalQuery({
 	args: { ...agent_args, pendingUpdateId: v.id("files_pending_updates") },
 	returns: v_result({ _yay: v.union(v.string(), v.null()) }),
 	handler: async (ctx, args) => {
-		const reader = await db_get_reader(ctx, args);
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
 		if (reader._nay) return reader;
 		const { membership } = reader._yay;
 
@@ -373,7 +385,7 @@ export const list_children = internalQuery({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const reader = await db_get_reader(ctx, args);
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
 		if (reader._nay) return reader;
 		const { membership, checker } = reader._yay;
 
@@ -448,6 +460,84 @@ export const list_children = internalQuery({
 });
 
 /**
+ * `trash cat`: read the saved text of one pinned Trash item. Older content drafts never take part.
+ */
+export const read_text = internalQuery({
+	args: {
+		...agent_args,
+		nodeId: v.string(),
+		archiveOperationId: v.string(),
+		startLine: v.optional(v.number()),
+	},
+	returns: v_result({
+		_yay: v.object({ content: v.string(), nextLine: v.union(v.number(), v.null()) }),
+	}),
+	handler: async (ctx, args) => {
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
+		if (reader._nay) return reader;
+		const { membership, checker } = reader._yay;
+		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
+		const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
+		if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
+			return Result({ _nay: { name: "not_found", message: "No Trash item" } });
+		if (!(await checker.can(node, "content.read"))) return Result({ _nay: { message: "Permission denied" } });
+		if (node.archiveOperationId !== args.archiveOperationId)
+			return Result({ _nay: { name: "changed", message: "This Trash item changed. Run trash ls and pick it again." } });
+		if (node.kind !== "file") return Result({ _nay: { message: "Is a directory" } });
+		if (args.startLine !== undefined && (!Number.isSafeInteger(args.startLine) || args.startLine < 1))
+			return Result({ _nay: { message: "Start line must be a positive integer" } });
+		if (!files_node_has_editable_text_content(node) && !node.contentType?.startsWith("text/plain"))
+			return Result({ _nay: { message: "This file has no readable text. Restore it before opening it." } });
+
+		const scope = { organizationId: membership.organizationId, workspaceId: membership.workspaceId, nodeId: node._id };
+		const unavailable = {
+			name: "content_unavailable",
+			message: "Text is not available from the saved chunks. Restore the file before reading it.",
+		};
+		let byteSize: number;
+		if (files_node_has_editable_yjs_state(node)) {
+			// Read only the header. A pending materialization can have a large update log.
+			const header = await db_get_file_content_materialization_header(ctx, scope);
+			if (!header || header.yjsLastSequenceDoc.lastSequence > header.yjsSnapshotDoc.sequence)
+				return Result({ _nay: unavailable });
+			byteSize = header.asset.size;
+		} else {
+			const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			if (!asset || asset.organizationId !== membership.organizationId || asset.workspaceId !== membership.workspaceId)
+				return Result({ _nay: unavailable });
+			byteSize = asset.size;
+		}
+
+		if (args.startLine === undefined && byteSize <= TEXT_MAX_BYTES) {
+			const text = await files_read_prefix_from_ordered_chunks(
+				files_saved_content_db_text_chunks(ctx.db, scope),
+				TEXT_MAX_BYTES,
+			);
+			if (!text || (!text.hasChunks && byteSize > 0)) return Result({ _nay: unavailable });
+			if (!text.moreLines) return Result({ _yay: { content: text.content, nextLine: null } });
+		}
+
+		const startLine = args.startLine ?? 1;
+		let scanTooLong = false;
+		const page = await files_read_forward_line_range_from_ordered_chunks(
+			files_saved_content_db_text_chunks(ctx.db, { ...scope, startLine }),
+			{ startLine, maxLines: files_READ_RANGE_MAX_LINES, onScanLimit: () => (scanTooLong = true) },
+		);
+		if (scanTooLong)
+			return Result({ _nay: { message: "This line is too long to read here. Restore the file before reading it." } });
+		if (!page) return Result({ _nay: unavailable });
+		if (!page.hasChunks && byteSize > 0) {
+			const { value: firstChunk } = await files_saved_content_db_text_chunks(ctx.db, scope).next();
+			if (!firstChunk) return Result({ _nay: unavailable });
+		}
+		const linesReturned = page.content.split("\n").length - 1;
+		return Result({
+			_yay: { content: page.content, nextLine: page.moreLines ? startLine + linesReturned : null },
+		});
+	},
+});
+
+/**
  * `trash restore`: undo the user's own draft delete (`rm`) of one item. Like Discard of the delete in
  * the Pending tab, it leaves no Pending row: a doc with only the delete goes away.
  *
@@ -460,7 +550,7 @@ export const restore_pending_delete = internalMutation({
 	},
 	returns: v_result({ _yay: v.object({ path: v.string(), kind: kind_validator }) }),
 	handler: async (ctx, args) => {
-		const reader = await db_get_reader(ctx, args);
+		const reader = await files_trash_agent_db_get_reader(ctx, args);
 		if (reader._nay) return reader;
 		const { membership, checker } = reader._yay;
 

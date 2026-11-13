@@ -320,6 +320,18 @@ that user's dismissals; shared Activities and other viewers' dismissals remain u
 
 Current purge coverage includes:
 
+- Trash request batches, requests and summaries before Trash jobs. Drain by owner in
+  both account cleanup paths and by tenant in workspace cleanup. Stop and settle a
+  running child before removing its request. Requests own no file bytes or quota holds.
+  Cancel/Discard never remove unrelated file drafts.
+- A sealed Empty request retains archive completion proof while it waits. History and
+  account cleanup keep the terminal archive run and Activity when an active approved
+  Empty in the same workspace has an approval time at or before that run's finish.
+  This includes an Empty owned by another user. The lookup is indexed, and a held
+  record must not prevent other history cleanup. Workspace purge drains the batches
+  first, so it can then remove all proof. After the batch ends, normal history expiry
+  can remove the held proof. This prevents a delayed Empty from deleting an item whose
+  move to Trash completed after approval.
 - Pending review runs before pending-state payloads. Stop invalidates active workers; retire prepared bytes before deleting item rows. Review units and the paired Activity follow. Delete the owner's review clock only after all proposals, private nodes, and runs are gone.
 - `files_write_policy_runs` (protection jobs) right after review runs, one job per pass through `files_write_policy_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing.
 - `files_archive_runs` (Trash and restore jobs) right after protection jobs, one job per pass through `files_archive_runs_db_delete_run_batch`. It stops the job first, so a scheduled step writes nothing. Then it deletes the job's `files_archive_run_items` rows (API Restore changes and forced delete refusals), 50 per pass, before the Activity and the run. Workspace deletion can stop any job because its files are being purged too. People can stop forced moves to Trash; ordinary moves to Trash have no Stop. Stopping a restore job also ends the queued jobs of the same Restore request. Ending a job deletes its `files_subtree_ops` op, which can start another waiting op; a later pass stops and deletes that one too.

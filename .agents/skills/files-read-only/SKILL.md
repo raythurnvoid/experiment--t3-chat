@@ -222,6 +222,11 @@ queued jobs as blockers. Restore uses it during admission and later work. Many u
 can make it hit the database read limit. The user accepted keeping this scan for development
 and Plugin Restore on 2026-11-06. Keep the overlap check; this exception allows no new scans.
 
+Agent Trash requests use the same Restore/Purge checks and jobs after approval. They
+grant no Read-only bypass. They check current authority at proposal and again before
+execution. Discard and Cancel remove only the request; they need no write to its file.
+See [Trash requests](../files-agent-pending-updates/SKILL.md#trash-requests).
+
 A folder's name stays taken while its move to Trash runs. The job stamps the items inside page by
 page, and until it ends they are still live under the old path. A new folder at that path, from a
 create, upload, `mkdir`, import or copy, would share their paths. So it is refused with `path_busy`:

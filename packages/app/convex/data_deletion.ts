@@ -62,6 +62,10 @@ import {
 import { files_pending_update_runs_db_delete_run_batch } from "./files_pending_update_runs.ts";
 import { files_write_policy_runs_db_delete_run_batch } from "./files_write_policy_runs.ts";
 import { files_archive_runs_db_delete_run_batch, files_archive_runs_db_request_stop } from "./files_archive_runs.ts";
+import {
+	files_trash_requests_db_delete_batch,
+	files_trash_requests_db_hold_archive_history,
+} from "./files_trash_requests.ts";
 import { files_subtree_ops_db_delete, files_subtree_ops_db_is_near_limits } from "./files_subtree_ops_db.ts";
 import { files_subtree_op_paths_db_advance } from "./files_subtree_op_paths_db.ts";
 import { files_db_delete_pending_update, files_db_expire_pending_update_operation_batch } from "../server/files.ts";
@@ -603,6 +607,8 @@ async function db_purge_organization_workspace_content_batch(
 		const purged = await files_transfer_db_delete_run_batch(ctx, { runId: transferRun._id, batchSize });
 		return { done: false, deletedCount: purged.deletedCount };
 	}
+	const trashRequests = await files_trash_requests_db_delete_batch(ctx, { organizationId, workspaceId });
+	if (!trashRequests.done) return trashRequests;
 	const reviewRun = await ctx.db
 		.query("files_pending_update_runs")
 		.withIndex("by_organization_workspace", (q) =>
@@ -2397,6 +2403,7 @@ async function db_drain_user_write_policy_runs_batch(ctx: MutationCtx, args: { u
 async function db_drain_user_archive_runs_batch(ctx: MutationCtx, args: { userId: Id<"users"> }) {
 	// Skip the stamping archives, so the user's other jobs behind them are still found.
 	for await (const run of ctx.db.query("files_archive_runs").withIndex("by_user", (q) => q.eq("userId", args.userId))) {
+		if (await files_trash_requests_db_hold_archive_history(ctx, run)) continue;
 		if (run.active && run.kind === "archive" && run.phase === "apply" && !run.force) continue;
 		if (run.active && run.kind === "purge") continue;
 		if (run.active && run.phase === "apply" && (run.kind === "restore" || run.force)) {
@@ -3134,6 +3141,9 @@ async function db_drain_user_finalization_batch(
 
 	const bashJobCount = await db_drain_user_bash_jobs_batch(ctx, args);
 	if (bashJobCount > 0) return { done: false, deletedCount: bashJobCount };
+
+	const trashRequests = await files_trash_requests_db_delete_batch(ctx, { userId: args.userId });
+	if (!trashRequests.done) return trashRequests;
 
 	const reviewRuns = await db_drain_user_pending_review_runs_batch(ctx, args);
 	if (!reviewRuns.done) return reviewRuns;
@@ -4526,6 +4536,9 @@ export const prepare_user_for_hard_deletion = internalMutation({
 
 		const deletedBashJobCount = await db_drain_user_bash_jobs_batch(ctx, { userId: args.userId, batchSize });
 		if (deletedBashJobCount > 0) return false;
+
+		const trashRequests = await files_trash_requests_db_delete_batch(ctx, { userId: args.userId });
+		if (!trashRequests.done) return false;
 
 		const reviewRuns = await db_drain_user_pending_review_runs_batch(ctx, {
 			userId: args.userId,

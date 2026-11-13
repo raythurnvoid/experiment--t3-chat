@@ -6788,6 +6788,122 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion files write policy runs
 
+	/**
+	 * An agent's request to restore or permanently delete saved Trash. These docs own no file drafts.
+	 * A claimed doc stays until its batch ends, so repeated approval pages can check the same ids.
+	 */
+	files_trash_requests: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		threadId: v.id("ai_chat_threads"),
+		kind: v.union(v.literal("restore"), v.literal("purge"), v.literal("empty")),
+		source: v.union(
+			v.object({ kind: v.literal("node"), nodeId: v.id("files_nodes"), archiveOperationId: v.string() }),
+			v.object({ kind: v.literal("area"), area: v.union(v.id("files_nodes"), v.null()) }),
+		),
+		originalPath: v.string(),
+		status: v.union(v.literal("waiting"), v.literal("queued"), v.literal("running"), v.literal("finished")),
+		batchId: v.union(v.id("files_trash_request_batches"), v.null()),
+		batchOrder: v.union(v.number(), v.null()),
+		archiveRunId: v.union(v.id("files_archive_runs"), v.null()),
+		activityId: v.union(v.id("activities"), v.null()),
+		outcome: v.union(
+			v.null(),
+			v.object({
+				status: v.union(
+					v.literal("succeeded"),
+					v.literal("noop"),
+					v.literal("blocked"),
+					v.literal("partial"),
+					v.literal("failed"),
+					v.literal("canceled"),
+					v.literal("timed_out"),
+				),
+				message: v.string(),
+			}),
+		),
+		updatedAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_org_ws_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_org_ws_user_thread", ["organizationId", "workspaceId", "userId", "threadId"])
+		.index("by_batch_order", ["batchId", "batchOrder"])
+		.index("by_batch_status_kind", ["batchId", "status", "kind"])
+		.index("by_status_expiresAt", ["status", "expiresAt"])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * A finite approval of shown Trash requests. Intake pages claim requests before Seal starts work.
+	 * A batch runs its ordinary file review first, then Restore, Delete permanently, and Empty Trash.
+	 */
+	files_trash_request_batches: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		membershipLifetime: v.number(),
+		requestId: v.string(),
+		requestHash: v.string(),
+		kind: v.union(v.literal("accept"), v.literal("discard")),
+		step: v.union(v.literal("uploading"), v.literal("running"), v.literal("finished")),
+		active: v.boolean(),
+		expectedItemCount: v.number(),
+		itemCount: v.number(),
+		afterReviewRunId: v.union(v.id("files_pending_update_runs"), v.null()),
+		/**
+		 * Set at Seal. Missing means this intake has not been approved for execution yet.
+		 */
+		approvedAt: v.optional(v.number()),
+		hasEmpty: v.boolean(),
+		phase: v.union(v.literal("restore"), v.literal("purge"), v.literal("empty")),
+		currentRequestId: v.union(v.id("files_trash_requests"), v.null()),
+		destructiveBlockedReason: v.union(v.string(), v.null()),
+		stopping: v.boolean(),
+		errorMessage: v.union(v.string(), v.null()),
+		updatedAt: v.number(),
+	})
+		.index("by_user_requestId", ["userId", "requestId"])
+		.index("by_org_ws_user_active", ["organizationId", "workspaceId", "userId", "active"])
+		.index("by_step_updatedAt", ["step", "updatedAt"])
+		.index("by_afterReviewRun", ["afterReviewRunId"])
+		.index("by_org_ws_active_hasEmpty_approvedAt", [
+			"organizationId",
+			"workspaceId",
+			"active",
+			"hasEmpty",
+			"approvedAt",
+		])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
+	/**
+	 * Exact counts for the owner's Pending badge and one source choice per chat with Trash requests.
+	 * Each request contributes only to its owner's "all" summary and its chat's summary.
+	 */
+	files_trash_request_summaries: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		listKey: v.string(),
+		isSource: v.boolean(),
+		count: v.number(),
+		lastUpdatedAt: v.number(),
+	})
+		.index("by_org_ws_user_listKey", ["organizationId", "workspaceId", "userId", "listKey"])
+		.index("by_org_ws_user_isSource_lastUpdatedAt", [
+			"organizationId",
+			"workspaceId",
+			"userId",
+			"isSource",
+			"lastUpdatedAt",
+		])
+		.index("by_user", ["userId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	// #region files archive runs
 	/**
 	 * One archive or restore that is too big for one mutation. Each step changes a batch of nodes and
@@ -6797,6 +6913,10 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		/**
+		 * The accepted agent request that owns this job. Missing for ordinary app, API, or plugin jobs.
+		 */
+		trashRequestId: v.optional(v.id("files_trash_requests")),
 		/**
 		 * Set when an API key started this job. Missing for jobs started in the app. The job stops its
 		 * checks once the key is revoked or loses `files:write`, like it does when the person leaves.
@@ -6998,6 +7118,8 @@ const app_convex_schema = defineSchema({
 		),
 	})
 		.index("by_organization_workspace_active_kind", ["organizationId", "workspaceId", "active", "kind"])
+		.index("by_org_ws_active_emptyArchive_cutoff", ["organizationId", "workspaceId", "active", "emptyArchive.cutoff"])
+		.index("by_org_ws_archiveOperation_kind", ["organizationId", "workspaceId", "archiveOperationId", "kind"])
 		.index("by_organization_workspace_active_pathIndexWaiting", [
 			"organizationId",
 			"workspaceId",

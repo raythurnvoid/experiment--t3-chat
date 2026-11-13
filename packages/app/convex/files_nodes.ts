@@ -3856,23 +3856,21 @@ export const empty_archive = mutation({
 			return Result({ _nay: { message: "Files are still moving in this workspace. Try again when the move ends." } });
 		}
 
-		// One Empty Trash at a time in a workspace. A workspace has few active purge jobs, because each
-		// one needs a person's request.
-		for await (const run of ctx.db
+		// Seek Empty jobs directly; unrelated purges do not affect this check's cost.
+		const emptyRun = await ctx.db
 			.query("files_archive_runs")
-			.withIndex("by_organization_workspace_active_kind", (q) =>
+			.withIndex("by_org_ws_active_emptyArchive_cutoff", (q) =>
 				q
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
 					.eq("active", true)
-					.eq("kind", "purge"),
-			)) {
-			if (run.emptyArchive) {
-				return Result({
-					_nay: { name: "busy", message: "The Trash is already being emptied. Wait for it to finish." },
-				});
-			}
-		}
+					.gte("emptyArchive.cutoff", ""),
+			)
+			.first();
+		if (emptyRun)
+			return Result({
+				_nay: { name: "busy", message: "The Trash is already being emptied. Wait for it to finish." },
+			});
 
 		return await files_archive_runs_db_start_purge(ctx, {
 			userAuth,
@@ -4939,7 +4937,7 @@ export function files_merge_contiguous_chunks(
 	return out;
 }
 
-async function files_read_prefix_from_ordered_chunks(
+export async function files_read_prefix_from_ordered_chunks(
 	chunks: AsyncIterable<{ startIndex: number; endIndex: number; textChunk: string }>,
 	maxBytes: number,
 ) {
@@ -4972,7 +4970,7 @@ async function files_read_prefix_from_ordered_chunks(
  * one contiguous text span, and then slices the merged text with the same line helper used
  * by action fallbacks.
  */
-async function files_read_forward_line_range_from_ordered_chunks(
+export async function files_read_forward_line_range_from_ordered_chunks(
 	chunks: AsyncIterable<{
 		startIndex: number;
 		endIndex: number;
@@ -4980,7 +4978,7 @@ async function files_read_forward_line_range_from_ordered_chunks(
 		lineEnd: number;
 		textChunk: string;
 	}>,
-	args: { startLine: number; maxLines: number },
+	args: { startLine: number; maxLines: number; onScanLimit?: () => void },
 ) {
 	const startLine = Math.max(1, Math.trunc(args.startLine));
 	const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
@@ -5017,8 +5015,10 @@ async function files_read_forward_line_range_from_ordered_chunks(
 		// reports that one line's number, so the line-based stop above can never fire inside it
 		// and `head -n 5 huge.json` would otherwise buffer every chunk of the file into one
 		// query. Give up instead; the caller falls back to its bounded byte-window read.
+		// Trash has no byte fallback; the callback gives it a distinct long-line error.
 		overlappingLength += chunk.textChunk.length;
 		if (overlappingLength > files_READ_RANGE_MAX_SCAN_CHARS) {
+			args.onScanLimit?.();
 			return null;
 		}
 		overlapping.push(chunk);

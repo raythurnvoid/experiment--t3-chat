@@ -56,6 +56,10 @@ import {
 } from "./activities_db.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import {
+	files_trash_requests_db_hold_archive_history,
+	files_trash_requests_db_settle_child,
+} from "./files_trash_requests.ts";
+import {
 	authorize_leaving_restricted_scope,
 	files_nodes_db_archive_node,
 	files_nodes_db_restore_node,
@@ -1262,9 +1266,10 @@ async function db_check_purge_node(
  * them like a Delete permanently of the same items. Returns null when the walk can go on, or the
  * step's outcome.
  *
- * An entry goes only when its item was archived before the job started. Its operation id must sort
- * below the cutoff, and no archive job of that operation may still stamp items or have ended after the
- * start. A forced archive gives some entries late, under the early time of its operation id.
+ * An entry goes only when its item was archived before the cutoff: approval time for an agent
+ * request, job start for other callers. Its operation id must sort below it, and no archive job of
+ * that operation may still stamp items or have ended after it. A forced archive gives some entries
+ * late, under the early time of its operation id.
  */
 async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome | null> {
 	const emptyArchive = args.run.emptyArchive!;
@@ -1275,7 +1280,7 @@ async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Pr
 	// Convex allows one native page per mutation, including the child walk below.
 	if (args.budget.hasPaginated) return { kind: "continue" };
 	args.budget.hasPaginated = true;
-	// Entries deleted after the start sort first, so the range starts after them. An id of the same
+	// Entries deleted after the cutoff sort first, so the range starts after them. An id of the same
 	// millisecond as the cutoff still sorts in. The check below skips it.
 	const result = await ctx.db
 		.query("files_trash_entries")
@@ -1298,19 +1303,20 @@ async function db_queue_empty_archive_page(ctx: MutationCtx, args: StepArgs): Pr
 		const operationId = node.archiveOperationId!;
 		if (operationId >= emptyArchive.cutoff) continue;
 		// One operation has one archive job and a few restore jobs, one per Restore of its leftovers.
-		let isArchivedLate = false;
-		for await (const operationRun of ctx.db
+		const operationRun = await ctx.db
 			.query("files_archive_runs")
-			.withIndex("by_organization_workspace_archiveOperation_active", (q) =>
+			.withIndex("by_org_ws_archiveOperation_kind", (q) =>
 				q
 					.eq("organizationId", args.run.organizationId)
 					.eq("workspaceId", args.run.workspaceId)
-					.eq("archiveOperationId", operationId),
-			)) {
-			if (operationRun.kind !== "archive") continue;
+					.eq("archiveOperationId", operationId)
+					.eq("kind", "archive"),
+			)
+			.first();
+		let isArchivedLate = false;
+		if (operationRun) {
 			const finishedAt = (await activities_db_require_by_source_id(ctx, operationRun._id)).finishedAt;
 			isArchivedLate = operationRun.active || finishedAt === undefined || finishedAt >= startedAt;
-			break;
 		}
 		if (!isArchivedLate) tops.push(node);
 	}
@@ -2344,6 +2350,16 @@ async function db_land_node(
 		)
 		.first();
 	if (occupant) {
+		// An approved agent request never replaces, joins, or renames an existing item.
+		if (run.trashRequestId) {
+			return {
+				kind: "failed",
+				nay: {
+					name: "name_conflict",
+					message: `"${node.name}" already exists in its original folder. Move or rename it, then ask for restore again.`,
+				},
+			};
+		}
 		const membership = args.membership;
 		if (!membership) return MEMBERSHIP_LOST;
 
@@ -3062,6 +3078,7 @@ async function db_finish_run(
 
 	await ctx.db.patch("files_archive_runs", runId, { active: false });
 	await activities_db_finish(ctx, { sourceId: runId, ...previousArgs });
+	await files_trash_requests_db_settle_child(ctx, (await ctx.db.get("files_archive_runs", runId))!);
 
 	// Deleting the op starts the jobs that waited for it, like the next restore of the same request.
 	const op = await ctx.db
@@ -3215,7 +3232,12 @@ async function db_settle_step(
 					.join(" "),
 				// The person's Activity keeps the full message. A plugin reads only this code, because the
 				// message can name items the plugin may not read.
-				errorCode: args.run.plugin !== undefined ? get_plugin_restore_refusal(args.outcome.nay).name : "failed",
+				errorCode:
+					args.run.plugin !== undefined
+						? get_plugin_restore_refusal(args.outcome.nay).name
+						: args.run.trashRequestId !== undefined
+							? (args.outcome.nay.name ?? "failed")
+							: "failed",
 				now: args.now,
 			});
 			return;
@@ -3410,6 +3432,10 @@ export async function files_archive_runs_db_start(
 		 */
 		credentialId: Id<"api_credentials"> | null;
 		/**
+		 * Missing for work that is not owned by an approved Trash request.
+		 */
+		trashRequestId?: Id<"files_trash_requests">;
+		/**
 		 * Restore: the pins of the plugin run that started the job. The job then acts as the saved file
 		 * pair at every step. Missing for the app and for an API key.
 		 */
@@ -3539,6 +3565,7 @@ export async function files_archive_runs_db_start(
 		workspaceId: args.membership.workspaceId,
 		userId: args.userAuth.id,
 		credentialId: args.credentialId ?? undefined,
+		trashRequestId: args.trashRequestId,
 		plugin: args.plugin,
 		force,
 		kind: args.kind,
@@ -3659,11 +3686,12 @@ export async function files_archive_runs_db_start(
 	// restore that kept items archived because their paths got too long, so its Activity says so. So
 	// does a restore an API key or a plugin started, so a retry with the same request id finds it.
 	if (
-		(outcome?.kind === "done" &&
+		args.trashRequestId === undefined &&
+		((outcome?.kind === "done" &&
 			progress.blocked === 0 &&
 			run.longPathOperationId === undefined &&
 			!(args.kind === "restore" && (args.credentialId !== null || args.plugin !== undefined))) ||
-		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
+			(outcome?.kind === "failed" && !stepArgs.writeState.isWritten))
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
 		await ctx.db.delete("files_archive_runs", runId);
@@ -3751,6 +3779,10 @@ export async function files_archive_runs_db_start_purge(
 		membership: Doc<"organizations_workspaces_users">;
 		nodes: Doc<"files_nodes">[];
 		emptyArchive: { area: Id<"files_nodes"> | null; cutoff: string } | null;
+		/**
+		 * Missing for work that is not owned by an approved Trash request.
+		 */
+		trashRequestId?: Id<"files_trash_requests">;
 	},
 ) {
 	const { organizationId, workspaceId } = args.membership;
@@ -3772,6 +3804,7 @@ export async function files_archive_runs_db_start_purge(
 		userId: args.userAuth.id,
 		force: false,
 		kind: "purge",
+		trashRequestId: args.trashRequestId,
 		// The named items can come from several archive operations. A new id matches none of them, so
 		// the restore busy check never refuses because of this job. Restore waits for the paths instead.
 		archiveOperationId: files_archive_operation_id_new(now),
@@ -3887,8 +3920,9 @@ export async function files_archive_runs_db_start_purge(
 			};
 	// Work that ended inside the request with nothing kept leaves no job.
 	if (
-		(outcome?.kind === "done" && progress.blocked === 0) ||
-		(outcome?.kind === "failed" && !stepArgs.writeState.isWritten)
+		args.trashRequestId === undefined &&
+		((outcome?.kind === "done" && progress.blocked === 0) ||
+			(outcome?.kind === "failed" && !stepArgs.writeState.isWritten))
 	) {
 		await files_subtree_ops_db_delete(ctx, { opId, now });
 		await ctx.db.delete("files_archive_runs", runId);
@@ -4401,6 +4435,8 @@ export async function files_archive_runs_db_delete_run_batch(
 ) {
 	const run = await ctx.db.get("files_archive_runs", args.runId);
 	if (!run) return { done: true, deletedCount: 0 };
+	if (await files_trash_requests_db_hold_archive_history(ctx, run)) return { done: false, deletedCount: 0 };
+	await files_trash_requests_db_settle_child(ctx, run);
 
 	// Stop first, so a step that is already scheduled writes nothing. A purge that deletes a node does
 	// not stop at once, and neither does a job that still gives Trash entries. This deletion cannot wait,

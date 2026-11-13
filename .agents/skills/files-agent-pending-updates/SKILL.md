@@ -97,6 +97,51 @@ old source chat. New copies use destination read access; replacements keep desti
 
 Move-only docs have no `content` object and use `size: 0`. Private creates and proposals with a move or delete may remain when the three content states match.
 
+# Trash Requests
+
+**Keep Trash requests separate from file drafts.** A request asks to act on the original
+saved item after approval. It does not create a draft copy, reserve a path, change Bash
+reads, or make normal writes depend on approval. This keeps Restore and later edits
+independent. `rm` never silently cancels a request; the agent uses `trash cancel ID`.
+
+`files_trash_requests` holds Restore, Delete permanently and Empty requests. Each has
+one Pending row. Restore and Purge pin the node and its exact delete. Restore keeps
+the node ID, history, comments and links. If it is live, gone, deleted again, or its
+name is taken, approval does nothing and records the reason. Folders do not merge or
+replace. Normal Trash UI restore choices stay unchanged.
+
+Waiting rows offer Accept and Discard. Accepted rows show queued/running state and
+their Activity. Running rows offer Stop. Stop keeps completed work and waits for
+repair before the result is final. Finished rows keep the outcome until Dismiss or
+idle expiry. Another attempt needs a new request; accepting twice cannot repeat it.
+Discard affects only the request. Actual Purge still removes old drafts through the
+normal purge job. Lost source access hides its path and outcome details.
+
+Requests have a separate paged stream and one exact count per owner/list key. Combined
+Pending counts include requests in Files, chat and phone views. Content counts still
+have their existing 500-row bound; the display adds the exact request count before
+the `+`. Source choices merge and deduplicate the request and ordinary draft streams.
+
+Bulk review acts on loaded eligible rows. An approval batch claims request IDs in
+bounded pages. For a mixed selection, its Seal seals the ordinary review in the same
+transaction. It waits for that review's Activity to finish, then runs Restore, Purge,
+and Empty in that order, by request creation within each group. A draft save or Restore
+that does not fully succeed blocks later destructive requests in that batch. Other
+restores can still finish. Empty freezes its cutoff at approval, not job start.
+
+`convex/files_trash_requests.ts` owns intake, fresh permissions, execution, summaries,
+cancel, recovery and cleanup. Jobs reuse `files_archive_runs`; a request's optional
+link keeps even an immediate job result until it is copied into the outcome. A
+stopped ordinary review is not done until its Activity ends. Append receipts remain
+until the batch ends, so canceled requests cannot change the meaning of a retry.
+
+Idle expiry waits four hours after both the last change and the owner's visible
+activity, like file drafts. A running child is stopped and settled, never deleted
+under its queue. Abandoned intake releases claims in pages. Both account cleanup
+paths and workspace cleanup drain requests, batches and summaries. Workspace cleanup
+does so before Trash jobs. The [deletion spec](../data-deletion/SKILL.md) owns retained
+archive completion proof for a delayed, approved Empty.
+
 # Data Model
 
 Saved file facts stay shared. Owner rows represent real pending changes and their effects; do not create a copy of every saved file for each user. For a new derived view, follow "Reads must scale: no scans" in the root `AGENTS.md`, including its storage and write-cost checks. A single pending folder change can affect many descendants, so count those effects explicitly.

@@ -3,8 +3,20 @@ import { useSyncExternalStore, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 
-import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
+import type {
+	app_convex_api,
+	app_convex_Doc,
+	app_convex_FunctionReturnType,
+	app_convex_Id,
+} from "@/lib/app-convex-client.ts";
 import { useFilesPendingUpdates } from "@/hooks/files-pending-list-hooks.ts";
+
+type TrashRequestFixture = NonNullable<
+	app_convex_FunctionReturnType<typeof app_convex_api.files_trash_requests.get_request>
+> & {
+	threadId: app_convex_Id<"ai_chat_threads">;
+	updatedAt: number;
+};
 
 const {
 	tenantContextMock,
@@ -26,6 +38,7 @@ const {
 	reviewStart,
 	moveView,
 	cohortUpdates,
+	trashRequests,
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
@@ -54,6 +67,7 @@ const {
 		searchGeneration: 0,
 	},
 	cohortUpdates: { current: [] as app_convex_Doc<"files_pending_updates">[] },
+	trashRequests: { current: [] as TrashRequestFixture[], pageSize: null as number | null },
 }));
 
 // Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
@@ -84,6 +98,31 @@ vi.mock("convex/react", () => ({
 			() => sourcePagination.current,
 		);
 		if (args === "skip") return { results: [], status: "Exhausted", loadMore: loadMoreMock };
+		if (query === "list_trash_requests") {
+			const requests = trashRequests.current.filter(
+				(request) => args.listKey === "all" || request.threadId === args.listKey,
+			);
+			return {
+				results: (trashRequests.pageSize === null ? requests : requests.slice(0, trashRequests.pageSize)).map(
+					({ requestId, kind, status, updatedAt }) => ({ requestId, kind, status, updatedAt }),
+				),
+				status:
+					trashRequests.pageSize !== null && requests.length > trashRequests.pageSize ? "CanLoadMore" : "Exhausted",
+				loadMore: loadMoreMock,
+			};
+		}
+		if (query === "list_trash_sources") {
+			return {
+				results: [...new Set(trashRequests.current.map((request) => request.threadId))].map((listKey, index) => ({
+					listKey,
+					lastUpdatedAt: 100 - index,
+					keyCreationTime: index,
+					keyId: `${listKey}_trash`,
+				})),
+				status: "Exhausted",
+				loadMore: loadMoreMock,
+			};
+		}
 		const updates: app_convex_Doc<"files_pending_updates">[] | undefined =
 			args.savedStream?.kind === "cohort" ? cohortUpdates.current : queryResultMock("list_files_pending_updates", args);
 		if (query === "list_files_pending_sources" && sourcePage.waitingForView)
@@ -159,7 +198,7 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 // The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL), and the
 // codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
-	app_convex: { action: actionMock },
+	app_convex: { action: actionMock, mutation: mutationMock },
 	app_convex_api: {
 		users: { get_anagraphic: "get_anagraphic" },
 		files_pending_update_runs: { get: "review_get", list_items: "review_list_items" },
@@ -167,6 +206,14 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			list_files_pending_updates: "list_files_pending_updates",
 			list_files_pending_sources: "list_files_pending_sources",
 			get_files_pending_updates_summary: "get_files_pending_updates_summary",
+		},
+		files_trash_requests: {
+			list_requests: "list_trash_requests",
+			list_sources: "list_trash_sources",
+			get_request: "get_trash_request",
+			discard: "discard_trash_request",
+			stop: "stop_trash_request",
+			dismiss: "dismiss_trash_request",
 		},
 		files_pending_target: {
 			get_file_pending_target: "get_file_pending_target",
@@ -443,7 +490,15 @@ function makeSourceKeyFixtures(updates: app_convex_Doc<"files_pending_updates">[
 }
 
 function makeSummaryFixture(updates: app_convex_Doc<"files_pending_updates">[] | undefined, listKey: string) {
-	return updates && (summary.override ?? { count: makeListRowFixtures(updates, listKey)!.length, truncated: false });
+	return (
+		updates &&
+		(summary.override ?? {
+			count:
+				makeListRowFixtures(updates, listKey)!.length +
+				trashRequests.current.filter((request) => listKey === "all" || request.threadId === listKey).length,
+			truncated: false,
+		})
+	);
 }
 
 // Each row's view, the move occupants and the nodes come from the fixtures. Chat titles come from
@@ -453,6 +508,8 @@ function useQueriesFixture(queries: Record<string, { query: unknown; args: Recor
 	const nodes: app_convex_Doc<"files_nodes">[] | undefined = treeNodesMock();
 	return Object.fromEntries(
 		Object.entries(queries).map(([key, { query, args }]) => {
+			if (query === "get_trash_request")
+				return [key, trashRequests.current.find((request) => request.requestId === args.requestId)];
 			if (query === "get_file_pending_target") {
 				return [
 					key,
@@ -596,9 +653,31 @@ function makeNode(args: {
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 
+function makeTrashRequest(overrides: Partial<TrashRequestFixture> = {}): TrashRequestFixture {
+	return {
+		requestId: "request_1" as app_convex_Id<"files_trash_requests">,
+		threadId: "chat_1" as app_convex_Id<"ai_chat_threads">,
+		updatedAt: 1,
+		kind: "restore",
+		status: "waiting",
+		path: "/old-note.md",
+		locked: false,
+		outcome: null,
+		archiveRunId: null,
+		activityId: null,
+		canAccept: true,
+		canDiscard: true,
+		canStop: false,
+		canDismiss: false,
+		...overrides,
+	};
+}
+
 beforeEach(() => {
 	Object.assign(moveView, { cohortId: null, view: null, generation: 0, searchGeneration: 0 });
 	cohortUpdates.current = [];
+	trashRequests.current = [];
+	trashRequests.pageSize = null;
 	startReviewMock.mockReset();
 	startReviewMock.mockResolvedValue(undefined);
 	reviewStart.isStarting = false;
@@ -652,6 +731,134 @@ afterEach(() => {
 });
 
 describe("FileEditorSidebarPending", () => {
+	describe("Trash requests", () => {
+		beforeEach(() => {
+			useQueryMock.mockReturnValue([]);
+			treeNodesMock.mockReturnValue([]);
+		});
+
+		test("shows and accepts a request when no file drafts exist", async () => {
+			trashRequests.current = [makeTrashRequest()];
+			render(<FileEditorSidebarPending />);
+			expect(screen.queryByText("Waiting for approval"), "request-only changes stay visible").toBeTruthy();
+			expect(screen.getByRole("combobox", { name: "Pending changes source: All changes, 1 change" })).toBeTruthy();
+			expect(screen.queryByText("No pending changes")).toBeNull();
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Accept restore /old-note.md" })));
+			expect(startReviewMock).toHaveBeenCalledWith({ kind: "accept", items: [], trashRequestIds: ["request_1"] });
+			expect(fetchPendingStateMock).not.toHaveBeenCalled();
+		});
+
+		test("accepts only loaded requests and drafts from the selected chat", async () => {
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({ id: "pu_note", fileNodeId: "note", privatePath: "/note.md", threadIds: ["chat_1"] }),
+				makePendingUpdate({ id: "pu_other", fileNodeId: "other", privatePath: "/other.md", threadIds: ["chat_2"] }),
+			]);
+			trashRequests.current = [
+				makeTrashRequest(),
+				makeTrashRequest({ requestId: "request_2" as app_convex_Id<"files_trash_requests">, path: "/unloaded.md" }),
+				makeTrashRequest({
+					requestId: "request_3" as app_convex_Id<"files_trash_requests">,
+					threadId: "chat_2" as app_convex_Id<"ai_chat_threads">,
+				}),
+			];
+			trashRequests.pageSize = 1;
+			useQueriesMock.mockReturnValue({ chat_1: makeThread({ id: "chat_1", title: "Restore notes" }) });
+			render(<FileEditorSidebarPending initialThreadId={"chat_1" as app_convex_Id<"ai_chat_threads">} />);
+			expect(screen.getByRole("combobox", { name: "Pending changes source: Restore notes, 3 changes" })).toBeTruthy();
+			expect(screen.queryByText("/unloaded.md")).toBeNull();
+			expect(screen.queryByRole("link", { name: "/other.md" })).toBeNull();
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Accept all shown pending changes" })));
+			expect(startReviewMock).toHaveBeenCalledWith({
+				kind: "accept",
+				items: [{ pendingUpdateId: "pu_note", reviewedRevision: 1, selectedContentStateId: null }],
+				trashRequestIds: ["request_1"],
+			});
+			fireEvent.click(screen.getByRole("button", { name: "Load more Trash requests" }));
+			expect(loadMoreMock).toHaveBeenCalledWith(20);
+		});
+
+		test("keeps a request-only chat selected and offers it in the source picker", async () => {
+			trashRequests.current = [makeTrashRequest()];
+			useQueriesMock.mockReturnValue({ chat_1: makeThread({ id: "chat_1", title: "Restore notes" }) });
+			render(<FileEditorSidebarPending initialThreadId={"chat_1" as app_convex_Id<"ai_chat_threads">} />);
+			const picker = screen.getByRole("combobox", { name: "Pending changes source: Restore notes, 1 change" });
+			await act(async () => fireEvent.click(picker));
+			expect(screen.getByRole("option", { name: /Restore notes/ })).toBeTruthy();
+		});
+
+		test("keeps a finished reason until Dismiss without offering Accept", async () => {
+			trashRequests.current = [
+				makeTrashRequest({
+					status: "finished",
+					path: null,
+					outcome: { status: "noop", message: "This item was already restored." },
+					canAccept: false,
+					canDiscard: false,
+					canDismiss: true,
+				}),
+			];
+			render(<FileEditorSidebarPending />);
+			expect(screen.getByText("This item was already restored.")).toBeTruthy();
+			expect(screen.getByRole("button", { name: "Accept all shown pending changes" }).matches(":disabled")).toBe(true);
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Dismiss restore request" })));
+			expect(mutationMock).toHaveBeenCalledWith("dismiss_trash_request", {
+				membershipId: MEMBERSHIP_ID,
+				requestId: "request_1",
+			});
+		});
+
+		test("discards a locked request without selecting a file draft", async () => {
+			trashRequests.current = [makeTrashRequest({ path: null, locked: true, canAccept: false })];
+			render(<FileEditorSidebarPending />);
+			expect(screen.getByText("Permission denied")).toBeTruthy();
+			expect(screen.queryByText("/old-note.md")).toBeNull();
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Discard restore request" })));
+			expect(mutationMock).toHaveBeenCalledWith("discard_trash_request", {
+				membershipId: MEMBERSHIP_ID,
+				requestId: "request_1",
+			});
+			expect(startReviewMock).not.toHaveBeenCalled();
+		});
+
+		test("uses Stop for running work and skips it in bulk Discard", async () => {
+			trashRequests.current = [
+				makeTrashRequest({ status: "running", canAccept: false, canDiscard: false, canStop: true }),
+				makeTrashRequest({
+					requestId: "request_2" as app_convex_Id<"files_trash_requests">,
+					status: "finished",
+					canAccept: false,
+					canDiscard: false,
+					canDismiss: true,
+				}),
+			];
+			render(<FileEditorSidebarPending />);
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Stop restore /old-note.md" })));
+			expect(mutationMock).toHaveBeenCalledWith("stop_trash_request", {
+				membershipId: MEMBERSHIP_ID,
+				requestId: "request_1",
+			});
+			await act(async () => fireEvent.click(screen.getByRole("button", { name: "Discard all shown pending changes" })));
+			expect(startReviewMock).toHaveBeenCalledWith({ kind: "discard", items: [], trashRequestIds: ["request_2"] });
+		});
+
+		test("returns focus to the panel after dismissing its last request", async () => {
+			trashRequests.current = [
+				makeTrashRequest({ status: "finished", canAccept: false, canDiscard: false, canDismiss: true }),
+			];
+			render(<FileEditorSidebarPending />);
+			const dismiss = screen.getByRole("button", { name: "Dismiss restore /old-note.md" });
+			dismiss.focus();
+			await act(async () => fireEvent.click(dismiss));
+			await act(async () => {
+				trashRequests.current = [];
+				sourcePagination.current = { ...sourcePagination.current };
+				sourcePagination.listeners.forEach((listener) => listener());
+			});
+			expect(document.activeElement?.getAttribute("aria-label")).toBe("Pending changes");
+			expect(screen.getByText("No pending changes")).toBeTruthy();
+		});
+	});
+
 	test("merges normal and selected Pending rows once by the full sort key", () => {
 		Object.assign(moveView, { cohortId: "cohort_1", view: "before", generation: 6 });
 		const normal = makePendingUpdate({ id: "pu_a", fileNodeId: "a" });

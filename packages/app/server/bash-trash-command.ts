@@ -32,15 +32,21 @@ const USAGE =
 	"Usage: trash ls --in ID [--format text|json]\n" +
 	"Usage: trash areas [--format text|json]\n" +
 	"Usage: trash restore PATH... | --id ID...   (Agent mode)\n" +
-	"All commands: [--workspace current|home] [--limit 1..50] [--cursor CURSOR]\n" +
+	"Usage: trash purge --id ID... | trash empty [AREA_PATH]   (Agent mode)\n" +
+	"Usage: trash requests [--format text|json]\n" +
+	"Usage: trash cancel REQUEST_ID...   (Agent mode)\n" +
+	"Usage: trash cat ID [--start-line N]\n" +
+	"All commands: [--workspace current|home]. Lists: [--limit 1..50] [--cursor CURSOR]\n" +
 	"Rows: time, kind, deleted by, id, path. Your own rm shows as (pending delete) until the user saves it,\n" +
 	"or (pending delete, now in Trash) when a saved delete already moved the item to Trash.\n" +
-	"trash restore undoes your own pending delete. Restoring a saved Trash item is not available yet.\n";
+	"trash restore undoes your own pending delete. Saved restore, purge and empty create requests in Pending.\n" +
+	"Requests do not change your file view. Accept checks access and names again; occupied names stay unchanged.\n" +
+	"Read Trash text with trash cat. Use trash requests for outcomes and trash cancel to drop a request.\n";
 const GUEST_MESSAGE =
 	"Permission denied. Guests have no Trash view. A workspace member can do this, or ask for workspace access.";
 const cursor_schema = z.object({
 	key: z.string(),
-	stream: z.enum(["pending", "saved", "children", "areas"]),
+	stream: z.enum(["pending", "saved", "children", "areas", "requests"]),
 	cursor: z.string().nullable(),
 	afterKey: z.unknown(),
 });
@@ -80,8 +86,8 @@ function item_line(item: Item) {
 }
 
 /**
- * The agent's view of the Trash: list an area, look inside a deleted folder, list the areas, and undo its
- * own draft deletes. Reads use the app's Trash view rules (`convex/files_trash_agent.ts`).
+ * Read Trash and propose independent requests. Own pending-delete undo still changes the draft view.
+ * Reads use the app's Trash view rules (`convex/files_trash_agent.ts`).
  */
 // Command keeps the generated API from inferring this handler through the Bash action.
 export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoots): Command {
@@ -96,28 +102,42 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		const first = args[0];
 		if (first === "rm")
 			return fail(
-				"to move an item to Trash, use rm (rm -r for a folder). Deleting items in Trash permanently is not available yet.",
+				"to move an item to Trash, use rm (rm -r for a folder). For permanent deletion, use trash purge --id ID.",
 				true,
 			);
-		if (first === "purge" || first === "empty") return fail(`${first} is not available yet.`, true);
 		// Bare `trash` and `trash PATH` list, like `trash ls`.
-		const command = first === "ls" || first === "list" ? "ls" : first === "areas" || first === "restore" ? first : null;
+		const command =
+			first === "ls" || first === "list"
+				? "ls"
+				: first === "areas" ||
+					  first === "restore" ||
+					  first === "purge" ||
+					  first === "empty" ||
+					  first === "requests" ||
+					  first === "cancel" ||
+					  first === "cat"
+					? first
+					: null;
 		const rest = command === null ? args : args.slice(1);
+		const isWrite = command === "restore" || command === "purge" || command === "empty" || command === "cancel";
+		const isList = command === null || command === "ls" || command === "areas" || command === "requests";
 
 		const options: Record<string, string> = {};
 		const ids: string[] = [];
 		const operands: string[] = [];
+		let readingIds = false;
 		const allowed = new Set([
 			"workspace",
-			"limit",
-			"cursor",
-			...(command === "restore" ? ["id"] : ["format"]),
-			...(command !== "restore" && command !== "areas" ? ["in"] : []),
+			...(isList ? ["limit", "cursor", "format"] : []),
+			...(command === "restore" || command === "purge" ? ["id"] : []),
+			...(command === null || command === "ls" ? ["in"] : []),
+			...(command === "cat" ? ["start-line"] : []),
 		]);
 		for (let index = 0; index < rest.length; index++) {
 			const arg = rest[index];
 			if (!arg.startsWith("--")) {
-				operands.push(arg);
+				if (readingIds) ids.push(arg);
+				else operands.push(arg);
 				continue;
 			}
 			const equals = arg.indexOf("=");
@@ -131,8 +151,10 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				value = read._yay.value;
 				index++;
 			}
-			if (name === "id") ids.push(value);
-			else options[name] = value;
+			if (name === "id") {
+				ids.push(value);
+				readingIds = true;
+			} else options[name] = value;
 		}
 		if (options.workspace && options.workspace !== "current" && options.workspace !== "home")
 			return fail("Workspace must be current or home", true);
@@ -140,11 +162,17 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			return fail("Format must be text or json", true);
 		const limit = bash_parse_limit({ command: "trash", value: options.limit, defaultLimit: 50, maxLimit: 50 });
 		if (limit._nay) return fail(limit._nay.message, true);
-		if (command === "areas" && operands.length > 0) return fail(`Unexpected argument ${operands[0]}`, true);
-		if (command !== "restore" && command !== "areas" && operands.length + (options.in ? 1 : 0) > 1)
+		if ((command === "areas" || command === "requests" || command === "purge") && operands.length > 0)
+			return fail(`Unexpected argument ${operands[0]}`, true);
+		if ((isList || command === "empty" || command === "cat") && operands.length + (options.in ? 1 : 0) > 1)
 			return fail(`Unexpected argument ${operands.at(-1)}`, true);
 		if (command === "restore" && operands.length === 0 && ids.length === 0)
 			return fail("Missing PATH or --id ID", true);
+		if (command === "purge" && ids.length === 0) return fail("Missing --id ID", true);
+		if ((command === "cat" || command === "cancel") && operands.length === 0) return fail("Missing ID", true);
+		const startLine = options["start-line"] === undefined ? undefined : Number(options["start-line"]);
+		if (startLine !== undefined && (!Number.isSafeInteger(startLine) || startLine < 1))
+			return fail("Start line must be a positive integer", true);
 
 		// A PATH picks the workspace that holds it. Without one: --workspace, else the shell's folder.
 		const optionRoot =
@@ -152,7 +180,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		const cwd = bash_resolve_db_files_shell_path(commandCtx.cwd, roots);
 		const cwdRoot = cwd.kind === "app" ? [roots.app, roots.personal].find((item) => item?.fs === cwd.fs) : undefined;
 		const paths: Array<{ operand: string; root: bash_DbFilesRoot; dbFilesPath: string }> = [];
-		for (const operand of operands) {
+		for (const operand of command === "cat" || command === "cancel" ? [] : operands) {
 			const shellPath = bash_resolve_path(commandCtx.cwd, operand);
 			const resolved = bash_resolve_db_files_shell_path(shellPath, roots);
 			const root = [roots.app, roots.personal].find((item) => item?.fs === resolved.fs);
@@ -170,8 +198,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 
 		const source = root.fs.ctxData.agentSource;
 		if (!source || !root.fs.writeScope) return fail("An active workspace chat is required");
-		if (command === "restore" && !root.fs.allowDbFilesMkdir)
-			return fail("restore is available in Agent mode. Ask mode is read-only for app files.");
+		if (isWrite && !root.fs.allowDbFilesMkdir)
+			return fail(`${command} is available in Agent mode. Ask mode is read-only for app files.`);
 		const resolved = (await ctx.runQuery(internal.ai_chat_workspaces.resolve, {
 			source,
 			workspace: root.fs.ctxData.workspaceId === source.workspaceId ? "current" : "personal",
@@ -182,7 +210,45 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 		const render = (dbFilesPath: string) =>
 			bash_db_files_path_to_current_workspace_path(root.currentWorkspacePath, dbFilesPath);
 
-		if (command === "restore") {
+		if (command === "cat") {
+			const id = operands[0]!;
+			const separator = id.lastIndexOf(":");
+			if (separator <= 0) return fail(`'${id}' is not a Trash id. Copy the id column of trash ls.`);
+			if (id.slice(separator + 1) === "pending")
+				return fail("This is your pending delete. Undo it with trash restore, then read the file with cat.");
+			const text = await ctx.runQuery(internal.files_trash_agent.read_text, {
+				...common,
+				nodeId: id.slice(0, separator),
+				archiveOperationId: id.slice(separator + 1),
+				startLine,
+			});
+			if (text._nay) return fail(`cannot read '${id}': ${text._nay.message}`);
+			const next = text._yay.nextLine;
+			return {
+				stdout: text._yay.content,
+				stderr:
+					next === null
+						? ""
+						: `Next page: trash cat ${bash_shell_arg_quote(id)} --start-line ${next} --workspace ${root === roots.app ? "current" : "home"}\n`,
+				exitCode: 0,
+			};
+		}
+
+		if (command === "cancel") {
+			let stdout = "";
+			let stderr = "";
+			for (const requestId of operands) {
+				const canceled = await ctx.runMutation(internal.files_trash_requests.cancel_for_agent, {
+					...common,
+					requestId,
+				});
+				if (canceled._nay) stderr += `trash: cannot cancel '${requestId}': ${canceled._nay.message}\n`;
+				else stdout += `request canceled: ${requestId}\n`;
+			}
+			return { stdout, stderr, exitCode: stderr ? bash_COMMAND_EXIT_FAILURE : 0 };
+		}
+
+		if (command === "restore" || command === "purge") {
 			let stdout = "";
 			let stderr = "";
 			let exitCode = 0;
@@ -201,7 +267,19 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 						continue;
 					}
 					if (entry.id.slice(separator + 1) !== "pending") {
-						stderr += `trash: cannot restore '${entry.id}': restoring a saved Trash item is not available yet. Ask the user to restore it in Files (Trash).\n`;
+						const proposed = await ctx.runMutation(internal.files_trash_requests.propose, {
+							...common,
+							request: { kind: command, nodeId, archiveOperationId: entry.id.slice(separator + 1) },
+						});
+						if (proposed._nay) {
+							stderr += `trash: cannot ${command} '${entry.id}': ${proposed._nay.message}\n`;
+							exitCode = bash_COMMAND_EXIT_FAILURE;
+						} else
+							stdout += `${command} request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; review in Files\n`;
+						continue;
+					}
+					if (command === "purge") {
+						stderr += `trash: cannot purge '${entry.id}': save the pending delete first, then use its saved Trash id.\n`;
 						exitCode = bash_COMMAND_EXIT_FAILURE;
 						continue;
 					}
@@ -217,9 +295,8 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 						not_found: "No such file or directory",
 						not_deleted: "it is not deleted.",
 						no_pending_delete:
-							"it is not your pending delete. Restoring a saved Trash item is not available yet: ask the user to restore it in Files (Trash).",
-						in_trash:
-							"it is in Trash now. Restoring a saved Trash item is not available yet: ask the user to restore it in Files (Trash).",
+							"it is not your pending delete. Use trash ls and trash restore --id ID for a saved Trash item.",
+						in_trash: "it is in Trash now. Use trash ls and trash restore --id ID to request its restore.",
 						parent_hidden: "its folder is deleted too. Restore the folder first.",
 						exists: "File exists. Move or remove the item at that path first.",
 					};
@@ -247,7 +324,7 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 					`'${options.in}' is your own pending delete. Its items are still in place: run trash restore --id ${options.in}, then ls it.`,
 				);
 			inFolder = { nodeId: options.in.slice(0, separator), archiveOperationId: options.in.slice(separator + 1) };
-		} else if (command !== "areas" && paths[0]) {
+		} else if (command !== "areas" && command !== "requests" && paths[0]) {
 			const { operand, dbFilesPath } = paths[0];
 			let entry;
 			try {
@@ -266,6 +343,18 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 				return fail(`'${operand}' is a new folder that is not saved yet. It has no Trash.`);
 			area = entry.target.kind === "root" ? null : entry.target.id;
 			areaPath = dbFilesPath;
+		}
+		if (command === "empty") {
+			const proposed = await ctx.runMutation(internal.files_trash_requests.propose, {
+				...common,
+				request: { kind: "empty", area },
+			});
+			if (proposed._nay) return fail(`cannot empty '${render(areaPath)}': ${proposed._nay.message}`);
+			return {
+				stdout: `empty request created: ${proposed._yay.requestId} - ${render(proposed._yay.path)}; deletes items already in this area's Trash when accepted; review in Files\n`,
+				stderr: "",
+				exitCode: 0,
+			};
 		}
 
 		const key = JSON.stringify({
@@ -292,6 +381,53 @@ export function bash_trash_command_create(ctx: ActionCtx, roots: bash_DbFilesRoo
 			if (!parsed.success || parsed.data.key !== key)
 				return fail("Cursor belongs to another command. Run this command again.");
 			stored = parsed.data;
+		}
+
+		if (command === "requests") {
+			const listed = await ctx.runQuery(internal.files_trash_requests.list_for_agent, {
+				...common,
+				paginationOpts: { numItems: limit._yay.limit, cursor: stored?.cursor ?? null },
+			});
+			if (listed._nay) return fail(listed._nay.message);
+			const views = Result_all(
+				await Promise.all(
+					listed._yay.page.map(
+						async ({ requestId }) =>
+							await ctx.runQuery(internal.files_trash_requests.get_for_agent, { ...common, requestId }),
+					),
+				),
+			);
+			if (views._nay) return fail(views._nay.message);
+			const requests = views._yay.flatMap((view) =>
+				view ? [{ ...view, path: view.path === null ? null : render(view.path) }] : [],
+			);
+			const nextCursor = listed._yay.isDone
+				? null
+				: await bash_cursor_id_create(
+						ctx,
+						source.userId,
+						JSON.stringify({ key, stream: "requests", cursor: listed._yay.continueCursor, afterKey: null }),
+					);
+			const note = limit._yay.note ? `${limit._yay.note}\n` : "";
+			if (json) return { stdout: `${JSON.stringify({ requests, nextCursor })}\n`, stderr: note, exitCode: 0 };
+			const lines = requests.map((request) =>
+				[
+					request.requestId,
+					request.kind,
+					request.status,
+					request.path ?? (request.locked ? "(locked)" : "(unavailable)"),
+					request.outcome?.message ?? "",
+					request.activityId ? `Activity ${request.activityId}` : "",
+				].join("\t"),
+			);
+			const nextLine = nextCursor
+				? `Next page: trash requests --workspace ${root === roots.app ? "current" : "home"} --limit ${limit._yay.limit} --cursor ${bash_shell_arg_quote(nextCursor)}\n`
+				: "";
+			return {
+				stdout: lines.length ? `${lines.join("\n")}\n` : "",
+				stderr: `${note}${lines.length || nextCursor ? "" : "(No Trash requests)\n"}${nextLine}`,
+				exitCode: 0,
+			};
 		}
 
 		const items: Item[] = [];

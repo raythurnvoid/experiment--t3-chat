@@ -1106,6 +1106,14 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 
 ### Trash view and Delete permanently
 
+The agent can propose Restore, Delete permanently, or Empty through Bash `trash`.
+These are separate Pending rows. They leave the Trash and file view unchanged until
+accepted. Request Restore keeps the original item and refuses a taken name, including
+a folder; it never offers an automatic merge or replacement. Normal Trash UI choices
+below stay unchanged. See [Trash requests](../files-agent-pending-updates/SKILL.md#trash-requests)
+for review, order, Stop and outcomes, and [Bash Trash](../ai-chat-agent/SKILL.md#trash-command)
+for command syntax.
+
 **Files delete words.** Use "Trash", "Move to Trash", "in Trash", "Restore", "Delete permanently"
 and "Empty Trash" in UI, agent output and API messages. Moving an item to Trash keeps it restorable
 and keeps its storage. Archive stays for channels, chats and file versions. Code and stored fields

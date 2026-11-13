@@ -117,6 +117,11 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			seal: "files_pending_update_runs.seal",
 			get: "files_pending_update_runs.get",
 		},
+		files_trash_requests: {
+			start: "files_trash_requests.start",
+			append_items: "files_trash_requests.append_items",
+			seal: "files_trash_requests.seal",
+		},
 		files_transfer_status: { get: "files_transfer_status.get" },
 		files_archive_runs: { get: "files_archive_runs.get" },
 		access_control: {
@@ -230,7 +235,7 @@ function ReviewControl(props: {
 	selection: Pick<
 		app_convex_FunctionArgs<typeof import("@/lib/app-convex-client.ts").app_convex_api.files_pending_update_runs.start>,
 		"kind" | "items"
-	>;
+	> & { trashRequestIds?: app_convex_Id<"files_trash_requests">[] };
 	onError: (error: unknown) => void;
 }) {
 	const { startReview, isStartingReview } = AppActivitiesProvider.useContext();
@@ -798,6 +803,91 @@ describe("AppActivitiesProvider", () => {
 		mutationMock.mockReset();
 	});
 	afterEach(() => cleanup());
+
+	test.each(["accept", "discard"] as const)("seals mixed %s through the Trash batch only", async (kind) => {
+		const selection = {
+			kind,
+			items: [
+				{
+					pendingUpdateId: "proposal_1" as app_convex_Id<"files_pending_updates">,
+					reviewedRevision: 4,
+					selectedContentStateId: null,
+				},
+			],
+			trashRequestIds: ["request_1" as app_convex_Id<"files_trash_requests">],
+		};
+		const onError = vi.fn();
+		mutationMock.mockImplementation(async (ref: string) =>
+			ref === "files_pending_update_runs.start"
+				? { _yay: { runId: "review_1", activityId: "activity_1" } }
+				: ref === "files_trash_requests.start"
+					? { _yay: { batchId: "batch_1" } }
+					: { _yay: null },
+		);
+		render(
+			<AppActivitiesProvider membershipId={"membership_1" as app_convex_Id<"organizations_workspaces_users">}>
+				<ReviewControl selection={selection} onError={onError} />
+			</AppActivitiesProvider>,
+		);
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
+		expect(onError).not.toHaveBeenCalled();
+		expect(
+			mutationMock.mock.calls.map(([ref]) => ref),
+			"one seal atomically starts both phases",
+		).toEqual(["files_pending_update_runs.start", "files_trash_requests.start", "files_trash_requests.seal"]);
+		expect(mutationMock.mock.calls[1]?.[1]).toEqual({
+			membershipId: "membership_1",
+			requestId: mutationMock.mock.calls[0]?.[1].requestId,
+			kind,
+			expectedItemCount: 1,
+			requestIds: ["request_1"],
+			afterReviewRunId: "review_1",
+		});
+	});
+
+	test("uploads request-only approval in pages and reuses intake after a lost reply", async () => {
+		const trashRequestIds = Array.from(
+			{ length: 205 },
+			(_, index) => `request_${index}` as app_convex_Id<"files_trash_requests">,
+		);
+		const onError = vi.fn();
+		let appendCalls = 0;
+		mutationMock.mockImplementation(async (ref: string) => {
+			if (ref === "files_trash_requests.start") return { _yay: { batchId: "batch_1" } };
+			if (ref === "files_trash_requests.append_items" && appendCalls++ === 0) throw new Error("Connection lost");
+			return { _yay: null };
+		});
+		render(
+			<AppActivitiesProvider membershipId={"membership_1" as app_convex_Id<"organizations_workspaces_users">}>
+				<ReviewControl selection={{ kind: "accept", items: [], trashRequestIds }} onError={onError} />
+			</AppActivitiesProvider>,
+		);
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
+		expect(onError).toHaveBeenCalledTimes(1);
+		expect(mutationMock.mock.calls.map(([ref]) => ref)).toEqual([
+			"files_trash_requests.start",
+			"files_trash_requests.append_items",
+		]);
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
+		expect(mutationMock.mock.calls[2]).toEqual(mutationMock.mock.calls[0]);
+		expect(mutationMock.mock.calls[3]).toEqual(mutationMock.mock.calls[1]);
+		expect(mutationMock.mock.calls[0]?.[1]).toEqual({
+			membershipId: "membership_1",
+			requestId: expect.any(String),
+			kind: "accept",
+			expectedItemCount: 205,
+			requestIds: trashRequestIds.slice(0, 100),
+			afterReviewRunId: null,
+		});
+		expect(mutationMock.mock.calls[4]).toEqual([
+			"files_trash_requests.append_items",
+			{ membershipId: "membership_1", batchId: "batch_1", offset: 200, requestIds: trashRequestIds.slice(200) },
+		]);
+		expect(mutationMock.mock.calls[5]).toEqual([
+			"files_trash_requests.seal",
+			{ membershipId: "membership_1", batchId: "batch_1" },
+		]);
+	});
 
 	test("uploads the exact selection in bounded pages before sealing", async () => {
 		const items = Array.from({ length: 205 }, (_, index) => ({
