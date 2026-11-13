@@ -588,7 +588,7 @@ export const delete_paths = internalMutation({
 			force: args.force === true,
 		});
 		const refusedData = archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
-		// The job stopped inside the request. Its one message is for every found path.
+		// Refused before any file write. Its one message is for every found path.
 		if (archived._nay && !refusedData) {
 			for (const path of pathByNodeId.values()) refused.push({ path, message: archived._nay.message });
 			return { jobId: null, isDone: true, refused };
@@ -666,9 +666,19 @@ export async function public_api_files_organize_http_delete(args: {
 	}
 	const principal = auth._yay.principal;
 
-	const body = await server_request_json_parse_and_validate(request, delete_body_validator);
+	// Handle a missing ID here to name it in the error; the public body type still requires it.
+	const body = await server_request_json_parse_and_validate(
+		request,
+		delete_body_validator.partial({ requestId: true }),
+	);
 	if (body._nay) {
 		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+	if (body._yay.requestId === undefined) {
+		return {
+			status: 400,
+			body: { message: "requestId is required. Send a unique ID and reuse it when retrying the same delete." },
+		} as const;
 	}
 	// Count the paths here, not in the schema, so the answer names the limit.
 	if (body._yay.paths.length > DELETE_MAX_PATHS) {

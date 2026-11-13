@@ -5319,6 +5319,36 @@ describe("locked and missing paths", () => {
 		});
 	});
 
+	test("files delete names the missing requestId before starting work", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_folder(t);
+		let deleteCalls = 0;
+		test_spy_handler(delete_paths, async (handler, ctx, args) => {
+			deleteCalls++;
+			return await handler(ctx, args);
+		});
+
+		expect(await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/b.md"] })).toEqual({
+			status: 400,
+			body: { message: "requestId is required. Send a unique ID and reuse it when retrying the same delete." },
+		});
+		for (const requestId of [null, 1, "", "x".repeat(65)]) {
+			expect(await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/b.md"], requestId })).toEqual({
+				status: 400,
+				body: { message: "Request body validation failed" },
+			});
+		}
+		expect(deleteCalls, "invalid requests never start the delete mutation").toBe(0);
+		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/b.md"] })).toMatchObject({
+			body: { items: [{ status: "found" }] },
+		});
+		expect(
+			await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/missing.md"], requestId: "valid" }),
+		).toMatchObject({ status: 200, body: { refused: [{ path: "/missing.md", message: "Not found" }] } });
+		expect(deleteCalls, "a valid request reaches the delete mutation").toBe(1);
+		expectTypeOf<api_schemas_Main["/api/v1/files/delete"]["POST"]["body"]["requestId"]>().toEqualTypeOf<string>();
+	});
+
 	test("files delete keeps each path's own reason when every path is refused", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
