@@ -75,6 +75,11 @@ Use the installed bundled CLI. Importing its unbundled files can fail on absent 
 
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
+In PowerShell 5.1, do not combine `$ErrorActionPreference = 'Stop'` with `2>&1` when
+running the deploy script. Git writes normal progress to stderr, which PowerShell
+can treat as `NativeCommandError` and hide the real result. Run it directly, or use
+Node to save both streams and check the child exit code. Seen 2026-11-13.
+
 # Push Only A Pushed Commit
 
 `convex dev --once` and the `convex dev` watcher push the whole working tree, not a commit. In the shared checkout that includes other agents' uncommitted work. On 2026-10-10 a push from the shared checkout shipped another agent's half-done change. It put a new index reader live before its backfill, so Gallery showed "No images or videos yet". A later backfill then broke public node reads (`get_folder_readme` failed with "Unexpected field") until a fixed push landed.
