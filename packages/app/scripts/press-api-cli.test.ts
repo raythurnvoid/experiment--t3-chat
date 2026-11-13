@@ -319,6 +319,34 @@ describe("stat", () => {
 });
 
 describe("rm", () => {
+	test.each([
+		[true, "succeeded", [], 0],
+		[false, "succeeded", [], 0],
+		[true, "failed", [], 1],
+		[false, "failed", [], 1],
+		[true, "succeeded", [{ path: "/a/locked.md", message: "Permission denied" }], 1],
+		[false, "succeeded", [{ path: "/a/locked.md", message: "Permission denied" }], 1],
+	] as const)("--wait reads the final job: isDone %s, status %s, refused %j", async (isDone, status, refused, code) => {
+		const job = { jobId: "j1", status, refused, renamed: [], refusedCursor: null };
+		const api = await start_api((request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(
+				JSON.stringify(request.route.endsWith("/files/jobs/get") ? job : { jobId: "j1", isDone, refused: [] }),
+			);
+		});
+		try {
+			const result = await run_cli(api.origin, ["rm", "/a", "--wait", "--request-id", "retry"]);
+			expect(result.code, result.stderr).toBe(code);
+			expect(JSON.parse(result.stdout.toString("utf8")).job).toEqual(job);
+			expect(api.requests).toEqual([
+				{ route: "/api/v1/files/delete", body: { paths: ["/a"], requestId: "retry" } },
+				{ route: "/api/v1/files/jobs/get", body: { jobId: "j1" } },
+			]);
+		} finally {
+			await api.close();
+		}
+	});
+
 	test("sends force only when requested", async () => {
 		const api = await start_api((_request, response) => {
 			response.writeHead(200, { "content-type": "application/json" });

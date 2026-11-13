@@ -5386,9 +5386,13 @@ describe("locked and missing paths", () => {
 	test("files delete archives what it can and refuses locked and missing paths alone", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);
+		const readOnlyId = await seed_markdown_file({ t, ...f.db, path: "/ro.md", committedMarkdown: "# read-only" });
+		await t.run((ctx) =>
+			ctx.db.patch("files_nodes", readOnlyId, { readOnly: true, readOnlyDecisionId: crypto.randomUUID() }),
+		);
 
 		const body = {
-			paths: ["/b.md", "/hidden.md", "/secret/h01.md", "/secret/nope.md", "/missing.md"],
+			paths: ["/b.md", "/hidden.md", "/secret/h01.md", "/secret/nope.md", "/missing.md", "/ro.md"],
 			requestId: "mixed",
 		};
 		const first = await post(t, "/api/v1/files/delete", f.memberCredential, body);
@@ -5404,8 +5408,15 @@ describe("locked and missing paths", () => {
 					{ path: "/secret/h01.md", message: "Permission denied" },
 					{ path: "/secret/nope.md", message: "Permission denied" },
 					{ path: "/missing.md", message: "Not found" },
+					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again." },
 				],
 			},
+		});
+		const deleted = first.body as { jobId: Id<"activities">; refused: Array<{ path: string; message: string }> };
+		// The saved job keeps early refusals and lists the inline Read-only refusal only once.
+		expect(await post(t, "/api/v1/files/jobs/get", f.memberCredential, { jobId: deleted.jobId })).toMatchObject({
+			status: 200,
+			body: { refused: deleted.refused },
 		});
 		expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/b.md", "/hidden.md"] })).toMatchObject({
 			body: { items: [{ status: "missing" }, { status: "found" }] },

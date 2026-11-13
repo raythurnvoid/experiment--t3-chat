@@ -3203,12 +3203,19 @@ export const get_job = internalQuery({
 			errorMessage: activity.errorMessage,
 			refused: [
 				// A delete names at most 200 paths and a restore at most 100, so their refused paths fit on the first page.
-				// The paths a restore refused come only on the job that holds the request, its last job. A
-				// delete's saved answer is not listed: it repeats `refusedItems` below.
+				// A restore keeps its request on its last job. A delete also keeps early path refusals;
+				// omit exact repeats of the job's refusals below.
 				...(args.cursor
 					? []
 					: [
-							...(run.kind === "restore" ? (run.apiRequest?.refused ?? []) : []),
+							...(run.apiRequest?.refused ?? []).filter(
+								(item) =>
+									!run.refusedItems.some(
+										(refusedItem) =>
+											pathByNodeId.get(refusedItem.nodeId) === item.path &&
+											refusedItem.refusal.message === item.message,
+									),
+							),
 							...run.refusedItems.map((refusedItem) => ({
 								path: pathByNodeId.get(refusedItem.nodeId) ?? null,
 								message: refusedItem.refusal.message,

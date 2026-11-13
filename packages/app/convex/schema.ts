@@ -7107,7 +7107,8 @@ const app_convex_schema = defineSchema({
 				 */
 				inputHash: v.string(),
 				/**
-				 * The paths or node ids refused before any job started. A node keeps its current path, or null
+				 * Restore: paths or node ids refused before any job started. Delete: the first answer's
+				 * refused paths, including work inside the request. A node keeps its current path, or null
 				 * when the key cannot open it or it is missing.
 				 */
 				refused: v.array(
