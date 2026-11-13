@@ -190,7 +190,10 @@ const AppActivitiesProvider = Object.assign(
 						requestIds: trashRequestIds.slice(0, 100),
 						afterReviewRunId: runId,
 					});
-					if (started._nay) throw new Error(started._nay.message);
+					if (started._nay) {
+						reviewRequest.current = null;
+						throw new Error(started._nay.message);
+					}
 					const batchId = started._yay.batchId;
 					for (let offset = 100; offset < trashRequestIds.length; offset += 100) {
 						const appended = await app_convex.mutation(app_convex_api.files_trash_requests.append_items, {
@@ -199,11 +202,17 @@ const AppActivitiesProvider = Object.assign(
 							offset,
 							requestIds: trashRequestIds.slice(offset, offset + 100),
 						});
-						if (appended._nay) throw new Error(appended._nay.message);
+						if (appended._nay) {
+							reviewRequest.current = null;
+							throw new Error(appended._nay.message);
+						}
 					}
 					// Seal starts both phases in one transaction. Trash waits for the file review to finish.
 					const sealed = await app_convex.mutation(app_convex_api.files_trash_requests.seal, { membershipId, batchId });
-					if (sealed._nay) throw new Error(sealed._nay.message);
+					if (sealed._nay) {
+						reviewRequest.current = null;
+						throw new Error(sealed._nay.message);
+					}
 				} else if (runId) {
 					const sealed = await app_convex.mutation(app_convex_api.files_pending_update_runs.seal, {
 						membershipId,

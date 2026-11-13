@@ -200,6 +200,37 @@ describe("Trash requests", () => {
 		expect(await view(f, emptyId)).toMatchObject({ outcome: { status: "blocked" } });
 	});
 
+	test("a restore queued behind purge does not allow later Empty when its source disappears", async () => {
+		const f = await fixture();
+		const tree = await seed_tree(f, { name: "purging", folderCount: 2, filesPerFolder: 55 });
+		await run_to_end(f, (await archive(f, [tree.topId]))._yay!);
+		const kept = await deleted_folder(f, "/keep");
+		const restoreId = await propose(f, {
+			kind: "restore",
+			nodeId: tree.topId,
+			archiveOperationId: (await read_node(f, tree.topId)).archiveOperationId!,
+		});
+		const emptyId = await propose(f, { kind: "empty", area: null });
+		const purged = await f.asOwner.mutation(api.files_nodes.purge_nodes, {
+			membershipId: f.db.membershipId,
+			nodeIds: [tree.topId],
+		});
+		if (purged._nay || !purged._yay.runId) throw new Error("Expected a purge job");
+		expect((await f.t.run((ctx) => ctx.db.get("files_archive_runs", purged._yay!.runId!)))?.active).toBe(true);
+		vi.setSystemTime(Date.now() + 1000);
+		const batchId = await approve(f, [restoreId, emptyId]);
+		await f.t.mutation(internal.files_trash_requests.advance, { batchId });
+		expect(await view(f, restoreId)).toMatchObject({ status: "running" });
+		for (let pass = 0; pass < 100; pass++) if (!(await step(f, purged._yay.runId))?.active) break;
+		expect(await read_node(f, tree.topId)).toBeNull();
+		await finish(f, batchId);
+		expect(await view(f, restoreId), "a restore that changed nothing is a no-op").toMatchObject({
+			outcome: { status: "noop" },
+		});
+		expect(await view(f, emptyId)).toMatchObject({ outcome: { status: "blocked" } });
+		expect(await read_node(f, kept.nodeId)).not.toBeNull();
+	});
+
 	test("a pinned request never acts on a later delete", async () => {
 		const f = await fixture();
 		const item = await deleted_folder(f, "/docs");
@@ -484,18 +515,36 @@ describe("Trash requests", () => {
 		const f = await fixture();
 		const item = await deleted_folder(f, "/docs");
 		const requestId = await propose(f, { kind: "restore", ...item });
-		const started = await f.asOwner.mutation(api.files_trash_requests.start, {
+		const startArgs = {
 			membershipId: f.db.membershipId,
 			requestId: crypto.randomUUID(),
-			kind: "accept",
+			kind: "accept" as const,
 			expectedItemCount: 2,
 			requestIds: [requestId],
 			afterReviewRunId: null,
-		});
+		};
+		const started = await f.asOwner.mutation(api.files_trash_requests.start, startArgs);
 		vi.setSystemTime(Date.now() + 6 * 60 * 1000);
 		await f.t.mutation(internal.files_trash_requests.recover, {});
 		await finish(f, started._yay!.batchId);
 		expect(await view(f, requestId)).toMatchObject({ status: "waiting", canAccept: true });
+		expect
+			.soft(
+				(await f.asOwner.mutation(api.files_trash_requests.start, startArgs))._nay,
+				"a recovered intake cannot replay as a successful approval",
+			)
+			.toBeDefined();
+		expect
+			.soft(
+				(
+					await f.asOwner.mutation(api.files_trash_requests.seal, {
+						membershipId: f.db.membershipId,
+						batchId: started._yay!.batchId,
+					})
+				)._nay,
+				"an unapproved finished batch cannot be sealed",
+			)
+			.toBeDefined();
 		const batchId = await approve(f, [requestId]);
 		vi.setSystemTime(Date.now() + 6 * 60 * 1000);
 		await f.t.mutation(internal.files_trash_requests.recover, {});

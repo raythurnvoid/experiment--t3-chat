@@ -127,13 +127,16 @@ bounded pages. For a mixed selection, its Seal seals the ordinary review in the 
 transaction. It waits for that review's Activity to finish, then runs Restore, Purge,
 and Empty in that order, by request creation within each group. A draft save or Restore
 that does not fully succeed blocks later destructive requests in that batch. Other
-restores can still finish. Empty freezes its cutoff at approval, not job start.
+restores can still finish. A queued Restore that finds nothing left is a no-op, not
+successful recovery. Empty freezes its cutoff at approval, not job start.
 
 `convex/files_trash_requests.ts` owns intake, fresh permissions, execution, summaries,
 cancel, recovery and cleanup. Jobs reuse `files_archive_runs`; a request's optional
 link keeps even an immediate job result until it is copied into the outcome. A
 stopped ordinary review is not done until its Activity ends. Append receipts remain
 until the batch ends, so canceled requests cannot change the meaning of a retry.
+Recovered intake that was never sealed refuses replay. The UI starts a new intake
+after that refusal; a lost network reply keeps the same ID while work is uncertain.
 
 Idle expiry waits four hours after both the last change and the owner's visible
 activity, like file drafts. A running child is stopped and settled, never deleted

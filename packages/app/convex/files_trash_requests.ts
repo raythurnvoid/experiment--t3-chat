@@ -597,10 +597,13 @@ export const start = mutation({
 			.query("files_trash_request_batches")
 			.withIndex("by_user_requestId", (q) => q.eq("userId", membership.userId).eq("requestId", args.requestId))
 			.first();
-		if (existing)
-			return existing.requestHash === requestHash && (await db_get_batch_membership(ctx, existing))
-				? Result({ _yay: { batchId: existing._id } })
-				: Result({ _nay: { message: "This request ID was already used for another selection." } });
+		if (existing) {
+			if (existing.requestHash !== requestHash || !(await db_get_batch_membership(ctx, existing)))
+				return Result({ _nay: { message: "This request ID was already used for another selection." } });
+			if (existing.stopping && existing.approvedAt === undefined)
+				return Result({ _nay: { message: "This review did not start. Select the requests again." } });
+			return Result({ _yay: { batchId: existing._id } });
+		}
 		const active = await ctx.db
 			.query("files_trash_request_batches")
 			.withIndex("by_org_ws_user_active", (q) =>
@@ -738,6 +741,8 @@ export const seal = mutation({
 		if (membership._nay) return membership;
 		const batch = await db_get_owned_batch(ctx, membership._yay, args.batchId);
 		if (!batch || !(await db_get_batch_membership(ctx, batch))) return Result({ _nay: { message: "Not found" } });
+		if (batch.stopping && batch.approvedAt === undefined)
+			return Result({ _nay: { message: "This review did not start. Select the requests again." } });
 		if (batch.step !== "uploading") return Result({ _yay: null });
 		if (batch.itemCount !== batch.expectedItemCount || batch.stopping)
 			return Result({ _nay: { message: "Send all selected requests before starting." } });
@@ -798,8 +803,11 @@ export async function files_trash_requests_db_settle_child(ctx: MutationCtx, run
 	if (!activity || activities_is_active(activity.status)) return;
 	const batch = request.batchId ? await ctx.db.get("files_trash_request_batches", request.batchId) : null;
 	await ctx.db.patch("files_trash_requests", request._id, { archiveRunId: run._id, activityId: activity._id });
+	// A queued restore can find its source gone after an earlier purge finishes.
+	const restoredNothing =
+		request.kind === "restore" && activity.status === "succeeded" && !activity.progress?.completed;
 	const status =
-		activity.errorCode === "name_conflict" && !activity.progress?.completed
+		restoredNothing || (activity.errorCode === "name_conflict" && !activity.progress?.completed)
 			? "noop"
 			: activity.status === "succeeded"
 				? "succeeded"
@@ -811,9 +819,11 @@ export async function files_trash_requests_db_settle_child(ctx: MutationCtx, run
 	await db_finish_request(ctx, request, {
 		status,
 		message:
-			(batch?.stopping && status !== "succeeded"
-				? "Workspace access changed. Completed changes were kept."
-				: activity.errorMessage) ??
+			(restoredNothing
+				? "The original Trash item was not restored. No files were changed."
+				: batch?.stopping && status !== "succeeded"
+					? "Workspace access changed. Completed changes were kept."
+					: activity.errorMessage) ??
 			(status === "succeeded"
 				? "Finished."
 				: status === "partial"

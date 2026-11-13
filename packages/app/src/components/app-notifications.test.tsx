@@ -889,6 +889,34 @@ describe("AppActivitiesProvider", () => {
 		]);
 	});
 
+	test.each(["start", "append_items", "seal"] as const)("retries refused Trash %s with a new ID", async (door) => {
+		const trashRequestIds = Array.from(
+			{ length: 101 },
+			(_, index) => `request_${index}` as app_convex_Id<"files_trash_requests">,
+		);
+		const onError = vi.fn();
+		let refused = false;
+		mutationMock.mockImplementation(async (ref: string) => {
+			if (ref === `files_trash_requests.${door}` && !refused) {
+				refused = true;
+				return { _nay: { message: "The selection upload expired. Select the requests again." } };
+			}
+			return ref === "files_trash_requests.start" ? { _yay: { batchId: "batch_1" } } : { _yay: null };
+		});
+		render(
+			<AppActivitiesProvider membershipId={"membership_1" as app_convex_Id<"organizations_workspaces_users">}>
+				<ReviewControl selection={{ kind: "accept", items: [], trashRequestIds }} onError={onError} />
+			</AppActivitiesProvider>,
+		);
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
+		expect(onError).toHaveBeenCalledTimes(1);
+		await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start review" })));
+		const starts = mutationMock.mock.calls.filter(([ref]) => ref === "files_trash_requests.start");
+		expect(starts).toHaveLength(2);
+		expect(starts[1]![1].requestId, "a refused intake gets a new approval ID").not.toBe(starts[0]![1].requestId);
+		expect(onError).toHaveBeenCalledTimes(1);
+	});
+
 	test("uploads the exact selection in bounded pages before sealing", async () => {
 		const items = Array.from({ length: 205 }, (_, index) => ({
 			pendingUpdateId: `proposal_${index}` as app_convex_Id<"files_pending_updates">,
