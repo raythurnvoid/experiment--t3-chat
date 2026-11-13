@@ -11,5 +11,5 @@
 		"stylesheet": "./src/app.css",
 		"functions": ["cn"]
 	},
-	"ignorePatterns": ["vendor", "dist", "convex/_generated"]
+	"ignorePatterns": ["vendor", "dist", "convex/_generated", "server/ai-chat-builtin-skills.ts"]
 }

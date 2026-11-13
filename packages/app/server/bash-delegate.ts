@@ -22,6 +22,7 @@ import {
 	bash_DEV_ZERO_PATH,
 	bash_TMP_MOUNT,
 	bash_TOOL_OUTPUT_MOUNT,
+	bash_SKILLS_MOUNT,
 	bash_is_path_under_current_workspace_path,
 	bash_normalize_path,
 	bash_resolve_path,
@@ -156,11 +157,11 @@ export async function bash_delegate_builtin_command(args: {
 
 /**
  * Returns whether a path is in the direct-access surface for Native Just Bash
- * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, `/tool-output`, or a descendant of
- * `/tmp` or `/tool-output`.
+ * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, `/tool-output`, `/skills`, or a
+ * descendant of `/tmp`, `/tool-output` or `/skills`.
  *
- * `/tool-output` holds plain stored text, not app files, so `sed -n` and `awk` can read it. Its
- * mount refuses every write.
+ * `/tool-output` and `/skills` hold plain text, not app files, so `sed -n` and `awk` can read
+ * them. Their mounts refuse every write.
  *
  * Synthetic command lookup paths are handled separately.
  */
@@ -174,7 +175,9 @@ function is_native_just_bash_tmp_path(path: string) {
 		normalizedPath === bash_TMP_MOUNT ||
 		normalizedPath.startsWith(`${bash_TMP_MOUNT}/`) ||
 		normalizedPath === bash_TOOL_OUTPUT_MOUNT ||
-		normalizedPath.startsWith(`${bash_TOOL_OUTPUT_MOUNT}/`)
+		normalizedPath.startsWith(`${bash_TOOL_OUTPUT_MOUNT}/`) ||
+		normalizedPath === bash_SKILLS_MOUNT ||
+		normalizedPath.startsWith(`${bash_SKILLS_MOUNT}/`)
 	);
 }
 

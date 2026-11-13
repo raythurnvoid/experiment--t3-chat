@@ -77,6 +77,7 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_tool_output_keep } from "./ai-chat-tool-output.ts";
+import { ai_chat_builtin_skills_FILES } from "./ai-chat-builtin-skills.ts";
 import { r2, r2_fetch_object_range_from_bucket } from "../convex/r2_client.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS } from "../convex/r2_assets.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
@@ -134,6 +135,7 @@ import {
 	bash_TMP_MOUNT,
 	bash_SHELLS_MOUNT,
 	bash_TOOL_OUTPUT_MOUNT,
+	bash_SKILLS_MOUNT,
 	bash_DbFilesFs,
 	bash_ABORT_REASON_STOPPED,
 	bash_COMMAND_EXIT_FAILURE,
@@ -1175,6 +1177,12 @@ async function bash_fs_create(args: {
 		});
 	}
 
+	// The built-in skills ship in the app bundle, so every chat sees the copy that matches this deploy.
+	const skillsFs = new InMemoryFs();
+	for (const [path, text] of Object.entries(ai_chat_builtin_skills_FILES)) {
+		skillsFs.writeFileSync(path, text);
+	}
+
 	const toolOutputReader = { source: agentSource, runId: args.toolOutputRunId };
 	const toolOutputFs = new BashToolOutputFs(
 		args.ctx,
@@ -1324,6 +1332,7 @@ async function bash_fs_create(args: {
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 			{ mountPoint: bash_SHELLS_MOUNT, filesystem: new ReadOnlyInMemoryFs(shellsFs) },
 			{ mountPoint: bash_TOOL_OUTPUT_MOUNT, filesystem: toolOutputFs },
+			{ mountPoint: bash_SKILLS_MOUNT, filesystem: new ReadOnlyInMemoryFs(skillsFs) },
 		],
 	});
 
@@ -2223,10 +2232,10 @@ async function run_command_and_diagnose(args: {
 		result.stderr += `bash: ${diagnostic.name} exited ${diagnostic.exitCode} and its stderr was discarded; it said:\n${guidance}\n`;
 	}
 
-	// Only paths under HOME, `/tmp`, `/shells`, `/tool-output`, and the read-only `/.mounts` and
-	// `/.plugins` trees survive between runs (`/tmp` is restored from the db; `/shells`,
-	// `/tool-output` and the mounts are rebuilt from the db and the reserved scopes; everything else
-	// is synthetic mount scaffolding). A
+	// Only paths under HOME, `/tmp`, `/shells`, `/tool-output`, `/skills`, and the read-only `/.mounts`
+	// and `/.plugins` trees survive between runs (`/tmp` is restored from the db; `/shells`,
+	// `/tool-output` and the mounts are rebuilt from the db and the reserved scopes; `/skills` comes
+	// from the app bundle; everything else is synthetic mount scaffolding). A
 	// `/.plugins` cwd can still vanish when the plugin is uninstalled; the nearest-existing-dir
 	// climb above already handles that.
 	if (
@@ -2238,6 +2247,8 @@ async function run_command_and_diagnose(args: {
 		!nextCwd.startsWith(`${bash_SHELLS_MOUNT}/`) &&
 		nextCwd !== bash_TOOL_OUTPUT_MOUNT &&
 		!nextCwd.startsWith(`${bash_TOOL_OUTPUT_MOUNT}/`) &&
+		nextCwd !== bash_SKILLS_MOUNT &&
+		!nextCwd.startsWith(`${bash_SKILLS_MOUNT}/`) &&
 		nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
 		!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
 		nextCwd !== bash_PLUGINS_MOUNT_ROOT &&

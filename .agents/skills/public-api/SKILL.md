@@ -251,11 +251,16 @@ A plugin run (`plr_`) or page (`plu_`) reads its Restore jobs with `files/jobs/g
 
 ## Client skill source and copies
 
-The portable client guide is `../press-api/SKILL.md`, with skill-local resources. This developer spec remains the implementation owner. That folder is a symlink into the public `packages/bonobo-senate-skills` submodule, so its text is published to everyone. Maintain it there first (commit and push the submodule, then the gitlink here), then install matching resources into the user's personal/home app `/.agents/skills/press-api`. On the user's PC, the skill folders link to this repo folder, so a pull updates them; do not copy it there. Keep private IDs, deployment settings, and credentials out of it. Read installed copies before replacing them. Save pending publication changes, then read every resource through saved-only Files reads. A pending-aware catalog is not proof of a saved install. Check metadata, links, all resources, and copy content; do not change the workspace-instructions flag to force discovery.
+The portable client guide is `../press-api/SKILL.md`, with skill-local resources. This developer spec remains the implementation owner. That folder is a symlink into the public `packages/bonobo-senate-skills` submodule, so its text is published to everyone. Keep private IDs, deployment settings, and credentials out of it.
 
-`metadata.version` in its `SKILL.md` tells whether a copy is current. Raise it with every change; the CLI `help` prints it, and the skill test checks that both match. The app copy was last installed at 1.6.5 (skills repo commit `1643090`) on 2026-11-13. All 10 resources matched the pushed source through saved-only byte reads; seven changed from the prior 1.1.5 copy. Install a pushed commit, not the submodule working tree, because another agent may have unpushed edits there. On 2026-11-01, at 1.1.1, the app agent in personal/home listed it in its skill catalog with the exact description and read its `SKILL.md` with Bash.
+Where each copy comes from:
 
-TODO: find out how to keep the app copy in personal/home updated automatically, so nobody has to install it again by hand after each change. Today an agent writes every file with a temporary key and reads it back.
+- The app agent: the built-in skill `/skills/press-api` (see "Built-in skills" in `../ai-chat-skills/SKILL.md`). It is bundled from the submodule into `server/ai-chat-builtin-skills.ts`, so it ships in the same deploy as the API it describes. Do not install a copy into Files.
+- A computer: one of the installs in the skills repo README (Claude Code or Codex plugin marketplace, `gh skill`, the `skills` CLI, or plain git). On the user's PC, the skill folders link to this repo folder, so a pull updates them; do not copy it there.
+
+To change the skill, commit and push the submodule first. Then, in one app commit, move the gitlink, run `generate:builtin-skills`, and include the generated file with the API change it describes. Generate from a pushed submodule commit, not from a working tree with someone else's unpushed edits. The app lint fails while the generated file is stale.
+
+`metadata.version` in its `SKILL.md` tells whether a copy on a computer is current. Raise it with every change; the CLI `help` prints it, and the skill test checks that both match.
 
 `scripts/public-api-skill.test.ts` checks portable resources, parser metadata, exact `/api/v1` route classification, and the transcript reconstruction recipe. Run it in the scripts Vitest project. The API tests live in `convex/public_api_ai_chat.test.ts`. The client guide distinguishes saved-only public Files reads from pending-aware Bash and skill discovery. It classifies browser/system auth separately; `/api/v1/runs/stream` is not a public-key route.
 

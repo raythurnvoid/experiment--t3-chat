@@ -12,6 +12,7 @@ import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_nodes_db_create_private_node_by_path } from "./files_nodes.ts";
 import { files_private_storage_db_reserve } from "./files_private_storage.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
+import { ai_chat_builtin_skills_FILES } from "../server/ai-chat-builtin-skills.ts";
 
 const model = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async (importOriginal) => ({
@@ -1307,6 +1308,63 @@ describe("/api/chat workspace instructions", () => {
 				{ toolCallId: "read-plugin-skill", messages: [] },
 			);
 			expect(output).toMatchObject({ output: expect.stringContaining("PLUGIN_SKILL_BODY_282") });
+		});
+	});
+
+	test("lists the built-in skills first and serves them read-only under /skills", async () => {
+		const { t, asUser, membership, threadId } = await setup();
+		await test_create_saved_text_file(t, {
+			membershipId: membership.membershipId,
+			path: "/.agents/skills/press-api/SKILL.md",
+			textContent: "---\nname: press-api\ndescription: WORKSPACE_PRESS_283\n---\n",
+		});
+
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ id: "builtin-skill-message", role: "user", parts: [{ type: "text", text: "Upload a folder." }] }],
+				parentId: null,
+				mode: "ask",
+				model: "gpt-6-luna",
+				trigger: "submit-message",
+				threadId,
+				membershipId: membership.membershipId,
+				browserIntent: { policyRevision: 0 },
+				pluginPage: null,
+			}),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+
+		const call = model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
+		const system = String(call.system);
+		const builtin = system.indexOf('{"source":"builtin","path":"/skills/press-api/SKILL.md","name":"press-api"');
+		expect(builtin, system).toBeGreaterThan(-1);
+		expect(system.indexOf("WORKSPACE_PRESS_283")).toBeGreaterThan(builtin);
+		if (!call.tools?.bash?.execute) throw new Error("Expected Bash");
+
+		await reopen_route_runs(t);
+		await t.action(async () => {
+			const read = await call.tools!.bash.execute!(
+				{ command: "cat /skills/press-api/SKILL.md" },
+				{ toolCallId: "read-builtin-skill", messages: [] },
+			);
+			expect(read).toMatchObject({
+				output: expect.stringContaining(ai_chat_builtin_skills_FILES["/press-api/SKILL.md"].slice(-200)),
+			});
+
+			const paged = await call.tools!.bash.execute!(
+				{ command: "sed -n '1p' /skills/press-api/references/files.md" },
+				{ toolCallId: "page-builtin-skill", messages: [] },
+			);
+			expect(paged).toMatchObject({ output: expect.stringContaining("# Files") });
+
+			const written = await call.tools!.bash.execute!(
+				{ command: "echo x > /skills/press-api/SKILL.md" },
+				{ toolCallId: "write-builtin-skill", messages: [] },
+			);
+			expect(written).toMatchObject({ output: expect.stringContaining("EROFS: read-only file system") });
 		});
 	});
 

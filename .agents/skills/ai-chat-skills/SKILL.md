@@ -15,7 +15,7 @@ description: Spec for workspace AGENTS.md and ordinary Agent Skills in app chat.
 
 # Scope and feature gate
 
-This feature reads files in the current app workspace and the acting user's own personal/home workspace. The backend resolves both from the captured source chat. It cannot select a third workspace or another user's home. It does not read the host repository or host skill folders.
+This feature reads files in the current app workspace and the acting user's own personal/home workspace. The backend resolves both from the captured source chat. It cannot select a third workspace or another user's home. It does not read the host repository or host skill folders at run time. Built-in skills are copied into the app bundle at build time instead (see "Built-in skills").
 
 When current is personal/home, discover and read that root once. Both tool selectors still name that same root. Catalog entries, rule bodies, folder scopes, and dedupe keys keep the workspace identity. Equal paths and equal skill names in two different workspaces stay distinct.
 
@@ -25,7 +25,7 @@ When current is personal/home, discover and read that root once. Both tool selec
 
 File names use the normal shared file policy. A new bare `readme` or `README` becomes `README.md`. `agents.md` and `skill.md` become `AGENTS.md` and `SKILL.md`; `.agents` and `.system` keep that spelling. Existing literal targets retain their identity. Do not rename files while reading them.
 
-The portable public API client guide has its maintained source at `../press-api/SKILL.md`, a symlink into the `packages/bonobo-senate-skills` submodule. The user's PC links to the repo folder, while the user's own personal/home `/.agents/skills/press-api` copy is a separate install (see "Client skill source and copies" in `../public-api/SKILL.md`, including the TODO on keeping it updated). Keep all resource links inside that skill folder and copy every resource. The app does not load the repo or PC copy. Read existing installed contents before replacing them. Finish any supported Save flow and read saved content back before calling the app copy installed; discovery can see an owner's drafts. Then check its catalog entry and ordinary resource reads without changing the feature flag. Public Files APIs read saved content only, while Bash and this discovery keep their pending-aware behavior.
+The portable public API client guide has its maintained source at `../press-api/SKILL.md`, a symlink into the `packages/bonobo-senate-skills` submodule. The app serves it as the built-in skill `/skills/press-api`, so nobody installs a copy into Files (see "Client skill source and copies" in `../public-api/SKILL.md`). Keep all resource links inside that skill folder. Public Files APIs read saved content only, while Bash and this discovery keep their pending-aware behavior.
 
 # Ordinary file behavior
 
@@ -53,6 +53,17 @@ The [Agent Skills specification](https://agentskills.io/specification) permits l
 The parser returns only `name` and `description`. Each workspace catalog entry adds `source: "workspace"`, `workspace: "current" | "personal"`, and the full Bash path under `/home/cloud-usr/w/<organization>/<workspace>/`. Invalid readable entries get that same workspace/path and a short repair warning. Do not include skill bodies, optional metadata, runtime labels, or resource inventories in the catalog. The full serialized entries, including workspace and path labels, share one 32 KiB metadata limit.
 
 Read the frontmatter through the ordinary bounded prefix mode. If chunks cannot serve it, use the normal bounded content action. No new skill reader is needed. Readable sources that cannot be read receive a warning. Deleted or restricted sources are omitted. Catalog limits always produce a clear incomplete warning.
+
+# Built-in skills
+
+A built-in skill describes the platform itself, so it ships with the app and always matches the deployed API. Today that is `press-api`.
+
+- Source: the skill folders named in `packages/app/scripts/generate-builtin-skills.ts`, read from the `packages/bonobo-senate-skills` submodule. The script writes every file of each folder into `packages/app/server/ai-chat-builtin-skills.ts`. Run `generate:builtin-skills` after moving the submodule; the app lint (`check:builtin-skills`) fails while the file is stale.
+- Bash serves the files from memory at the read-only `/skills/<name>/...` folder, for every chat and background job, like `/tool-output`. Writes fail with `EROFS`. `sed -n` and `awk` read it directly.
+- Catalog entry: `{ source: "builtin", path: "/skills/<name>/SKILL.md", name, description }`, parsed from the bundled `SKILL.md` on each turn. Built-in entries come first, so workspace skills cannot push them out of the 32 KiB budget. A bad bundled frontmatter becomes a warning entry, like a workspace skill.
+- They need no access check: the text is public, and every member and guest gets the same copy. They appear only while the workspace instructions flag is on, like the rest of the catalog.
+- A workspace or plugin skill with the same name is a different skill. The prompt tells the agent to say which one it uses.
+- Why not a copy in Files: a copy goes stale after every API change and needs an install per workspace. Claude organization skills work the same way: the product pushes them, users do not copy them.
 
 # Plugin skills
 
@@ -103,7 +114,7 @@ The tool layer also bounds serialized inputs and outputs across the request. It 
 - [Discovery tests](../../../packages/app/convex/ai_chat_context.test.ts): both trusted roots, same-home dedupe, third-workspace and other-home exclusion, source creator/lifetime checks, exact paths, pending visibility, and shared scan/catalog limits.
 - [Context tests](../../../packages/app/server/ai-chat-context.test.ts): qualified roots and metadata-only catalogs, duplicate names, ancestor scope, workspace/path/text dedupe, shared parallel byte budgets, output refusal, access loss during reads, and safe read errors.
 - [Parser tests](../../../packages/app/server/ai-chat-skills.test.ts): valid metadata, malformed YAML, aliases, app name rules, and UTF-8 frontmatter limits.
-- [Gate tests](../../../packages/app/convex/ai_chat_context_gate.test.ts) and [route tests](../../../packages/app/convex/ai_chat_context_route.test.ts): optional feature flag, actual stream setup, and plugin skills (enabled and accepted only, read through `/.plugins`).
+- [Gate tests](../../../packages/app/convex/ai_chat_context_gate.test.ts) and [route tests](../../../packages/app/convex/ai_chat_context_route.test.ts): optional feature flag, actual stream setup, plugin skills (enabled and accepted only, read through `/.plugins`), and built-in skills (first in the catalog, read and refused writes through `/skills`).
 - Tool and Bash tests cover complete reads, continuation, actual app path records, successful writes with guidance warnings, and unknown completed tool history.
 - Use the [Playwriter harness](../app-playwriter-harness/SKILL.md) for live auto-use, pending file edits, ancestor-only guidance, history reload, and removal of the picker. Keep QA fixtures in the personal scratch folder unless they are maintained harness fixtures.
 - Run focused tests first, then the required app lint and full test pass for this shared surface. Report live checks separately from mocked tests.
