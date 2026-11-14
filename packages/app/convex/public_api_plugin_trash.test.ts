@@ -1332,7 +1332,7 @@ describe("files/restore for a plugin run", () => {
 			body: {
 				jobIds: [expect.any(String)],
 				isDone: true,
-				refused: [{ nodeId: childFile, path: null, message: "Permission denied" }],
+				refused: [{ nodeId: childFile, path: null, message: "Permission denied", errorCode: "permission_denied" }],
 			},
 		});
 		expect((await read_node(f, rootFile)).archiveOperationId, "the root file comes back in place").toBeNull();
@@ -1504,7 +1504,13 @@ describe("files/restore for a plugin run", () => {
 			body: {
 				jobIds: [],
 				isDone: true,
-				refused: [{ path: "/later.md", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash }],
+				refused: [
+					{
+						path: "/later.md",
+						message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash,
+						errorCode: "not_found",
+					},
+				],
 			},
 		});
 		const item = await file(f, "root", "/later.md");
@@ -1570,8 +1576,13 @@ describe("files/restore for a plugin run", () => {
 			jobIds: [],
 			isDone: true,
 			refused: [
-				{ nodeId: changed, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.changed },
-				{ nodeId: secret, path: null, message: "Permission denied" },
+				{
+					nodeId: changed,
+					path: null,
+					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.changed,
+					errorCode: "conflict",
+				},
+				{ nodeId: secret, path: null, message: "Permission denied", errorCode: "permission_denied" },
 			],
 		});
 		expect(JSON.stringify(byNodes.body)).not.toMatch(/\/chosen|\/secret/u);
@@ -1582,11 +1593,16 @@ describe("files/restore for a plugin run", () => {
 			jobIds: [expect.any(String)],
 			isDone: true,
 			refused: [
-				{ path: "/chosen/missing.md", message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash },
+				{
+					path: "/chosen/missing.md",
+					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash,
+					errorCode: "not_found",
+				},
 				{
 					nodeId: blocked,
 					path: "/chosen/ro/blocked.md",
 					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only,
+					errorCode: "conflict",
 				},
 			],
 		});
@@ -1599,8 +1615,13 @@ describe("files/restore for a plugin run", () => {
 			jobIds: first.body.jobIds,
 			isDone: true,
 			refused: [
-				{ path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash },
-				{ nodeId: blocked, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only },
+				{ path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash, errorCode: "not_found" },
+				{
+					nodeId: blocked,
+					path: null,
+					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only,
+					errorCode: "conflict",
+				},
 			],
 		});
 		expect(JSON.stringify(retry.body)).not.toMatch(/\/chosen/u);
@@ -1640,8 +1661,13 @@ describe("files/restore for a plugin run", () => {
 				isDone: true,
 				// Access refusals come first. "Busy" comes from the job start, which runs after them.
 				refused: [
-					{ nodeId: other, path: null, message: "Permission denied" },
-					{ nodeId: child._id, path: null, message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy },
+					{ nodeId: other, path: null, message: "Permission denied", errorCode: "permission_denied" },
+					{
+						nodeId: child._id,
+						path: null,
+						message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy,
+						errorCode: "conflict",
+					},
 				],
 			},
 		});
@@ -1835,7 +1861,7 @@ describe("files/restore for a plugin run", () => {
 			] as const) {
 				expect(await post(f, later.runToken, "jobs/get", { jobId: foreignJobId }), `${name}: not found`).toEqual({
 					status: 404,
-					body: { message: "Job not found" },
+					body: { message: "Job not found", errorCode: "not_found" },
 				});
 			}
 			expect(
@@ -1874,7 +1900,11 @@ describe("files/restore for a plugin run", () => {
 					// The Activity's own message names the plugin. A plugin gets the fixed message of the code.
 					errorMessage: files_archive_runs_PLUGIN_RESTORE_MESSAGES.stopped,
 					refused: [
-						{ path: expect.stringMatching(/^\/big\//u), message: expect.stringContaining("still in the Trash") },
+						{
+							path: expect.stringMatching(/^\/big\//u),
+							message: expect.stringContaining("still in the Trash"),
+							errorCode: "conflict",
+						},
 					],
 				}),
 			});
@@ -1923,7 +1953,7 @@ describe("files/restore for a plugin run", () => {
 				Array(50).fill({ path: null, newPath: null }),
 			);
 			expect(pages[0]!.refused, "locked rows keep their place with null paths").toEqual(
-				Array(50).fill({ path: null, message: expect.any(String) }),
+				Array(50).fill({ path: null, message: expect.any(String), errorCode: "conflict" }),
 			);
 			const named = pages.flatMap((page) => [...page.refused!, ...page.renamed!].flatMap((row) => row.path ?? []));
 			expect(named.sort(), "every readable outcome comes once").toEqual(
@@ -2042,7 +2072,7 @@ describe("files/restore for a plugin run", () => {
 
 			expect(await post(f, p.token, "jobs/get", { jobId }), "guests have no Trash").toEqual({
 				status: 403,
-				body: { message: "Permission denied" },
+				body: { message: "Permission denied", errorCode: "permission_denied" },
 			});
 		});
 

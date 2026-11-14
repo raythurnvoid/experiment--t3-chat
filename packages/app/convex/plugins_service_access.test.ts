@@ -507,7 +507,7 @@ describe("set_plugin_service_registration", () => {
 			body: "{}",
 		});
 		expect(grant.status).toBe(400);
-		expect(await grant.json()).toEqual({ message: "At least one scope is required" });
+		expect(await grant.json()).toEqual({ message: "At least one scope is required", errorCode: "invalid_input" });
 		expect(await t.run((ctx) => ctx.db.query("plugin_service_grants").collect())).toEqual([]);
 	});
 });
@@ -775,7 +775,7 @@ describe("get_events", () => {
 			body: JSON.stringify({ installationId: fixture.installationId, cursor: null, startRevision: null }),
 		});
 		expect(snapshot.status).toBe(410);
-		expect((await snapshot.json()).code).toBe("revoked");
+		expect((await snapshot.json()).errorCode).toBe("revoked");
 		expect((await lease({ t, fixture }))._nay?.message).toBe("Unauthorized");
 	});
 
@@ -881,7 +881,7 @@ describe("get_events", () => {
 			body: JSON.stringify({ installationId: fixture.installationId, cursor: null, startRevision: null }),
 		});
 		expect(snapshot.status).toBe(409);
-		expect((await snapshot.json()).code).toBe("unavailable");
+		expect((await snapshot.json()).errorCode).toBe("unavailable");
 		expect((await lease({ t, fixture }))._nay?.message).toBe("Unauthorized");
 	});
 
@@ -1007,7 +1007,7 @@ describe("get_events", () => {
 			body: JSON.stringify({ installationId: fixture.installationId, afterRevision: 0, limit: 100 }),
 		});
 		expect(response.status).toBe(410);
-		expect((await response.json()).code).toBe("snapshot_required");
+		expect((await response.json()).errorCode).toBe("snapshot_required");
 	});
 
 	test("creates a missing retention doc at the head, so an old cursor takes one new snapshot", async () => {

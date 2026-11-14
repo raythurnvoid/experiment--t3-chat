@@ -624,7 +624,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			body: JSON.stringify({ operation: "exchange", requestId: "connect" }),
 		});
 		expect(expired.status).toBe(400);
-		expect(await expired.json()).toEqual({ message: "Reconnect Files sync" });
+		expect(await expired.json()).toEqual({ message: "Reconnect Files sync", errorCode: "invalid_input" });
 
 		const duplicate = await t.fetch(EXCHANGE_PATH, {
 			method: "POST",
@@ -686,7 +686,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken, secret: null });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -699,7 +699,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		// never set the secret would accept exactly this header from anyone.
 		const response = await exchange({ t, pageToken, secret: "" });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -710,7 +710,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken, secret: `${EXCHANGE_SECRET}x` });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -731,7 +731,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			body: JSON.stringify({}),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -752,7 +752,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 			body: JSON.stringify({}),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -765,7 +765,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		// is the one thing that keeps a leaked exchange secret from being enough on its own.
 		const response = await exchange({ t, pageToken: grantToken });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
@@ -778,7 +778,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -825,7 +825,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -842,7 +842,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -853,7 +853,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 
 		const response = await exchange({ t, pageToken });
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -890,7 +890,7 @@ describe("/api/v1/plugins/service-grants/exchange", () => {
 		// The old secret dies with the rotation; the new one works at once.
 		const withOld = await exchange({ t, pageToken: await seed_page_token({ t, fixture }) });
 		expect(withOld.status).toBe(401);
-		expect(await withOld.json()).toEqual({ message: "Unauthorized" });
+		expect(await withOld.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		const withNew = await exchange({ t, pageToken: await seed_page_token({ t, fixture }), secret: newSecret });
 		expect(withNew.status).toBe(200);
 
@@ -963,7 +963,7 @@ describe("/api/v1/plugins/service-grants/renew", () => {
 			body: JSON.stringify({}),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -1098,7 +1098,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture, { installationId: String(other.installationId) }),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant is for another installation" });
+		expect(await response.json()).toEqual({ message: "This grant is for another installation", errorCode: "conflict" });
 	});
 
 	test("refuses when the service believes it holds the sealed processing grant", async () => {
@@ -1115,7 +1115,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture, { phase: "processing" }),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant is in another phase" });
+		expect(await response.json()).toEqual({ message: "This grant is in another phase", errorCode: "conflict" });
 	});
 
 	test("refuses when the service expects a destination the grant does not have", async () => {
@@ -1129,7 +1129,10 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture, { destinationPathPrefix: "/Meetings" }),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant writes to another destination" });
+		expect(await response.json()).toEqual({
+			message: "This grant writes to another destination",
+			errorCode: "conflict",
+		});
 	});
 
 	test("refuses when the installation took back a capability the service still relies on", async () => {
@@ -1150,7 +1153,10 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant no longer has the scopes it needs" });
+		expect(await response.json()).toEqual({
+			message: "This grant no longer has the scopes it needs",
+			errorCode: "conflict",
+		});
 
 		// Reading alone is still allowed, so a service that stops claiming the write keeps working.
 		const readOnly = await t.fetch(VERIFY_LIVE_PATH, {
@@ -1181,7 +1187,10 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant's member can no longer use the scopes it needs" });
+		expect(await response.json()).toEqual({
+			message: "This grant's member can no longer use the scopes it needs",
+			errorCode: "conflict",
+		});
 
 		// Only the claimed scopes are judged. The same grant claiming the read alone is still live, and
 		// the reported permissions say which half went away.
@@ -1237,7 +1246,10 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			}),
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This grant's member can no longer use the scopes it needs" });
+		expect(await response.json()).toEqual({
+			message: "This grant's member can no longer use the scopes it needs",
+			errorCode: "conflict",
+		});
 	});
 
 	test("refuses a grant whose installation was disabled", async () => {
@@ -1254,7 +1266,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 	});
 
 	test("refuses a caller with no exchange secret", async () => {
@@ -1268,7 +1280,7 @@ describe("/api/v1/plugins/service-grants/verify-live", () => {
 			body: verify_live_body(fixture),
 		});
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await response.json()).toEqual({ message: "Unauthorized", errorCode: "unauthenticated" });
 	});
 });
 
@@ -1325,7 +1337,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 
 		const again = await seal({ t, bearer: processingToken });
 		expect(again.status).toBe(403);
-		expect(await again.json()).toEqual({ message: "Permission denied" });
+		expect(await again.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_grants(t)).toHaveLength(2);
 	});
 
@@ -1359,7 +1371,10 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		// containment test for EVERY path in the workspace — which is the opposite of sealed.
 		const response = await seal({ t, bearer: interactive, destinationPathPrefix: "/" });
 		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "destinationPathPrefix must be a normalized absolute path" });
+		expect(await response.json()).toEqual({
+			message: "destinationPathPrefix must be a normalized absolute path",
+			errorCode: "invalid_input",
+		});
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
@@ -1400,7 +1415,10 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		// folder (for example /Meetings -> /meetings) before it seals.
 		const response = await seal({ t, bearer: interactive, destinationPathPrefix: "/Meetings" });
 		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "destinationPathPrefix contains an invalid folder name" });
+		expect(await response.json()).toEqual({
+			message: "destinationPathPrefix contains an invalid folder name",
+			errorCode: "invalid_input",
+		});
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
@@ -1416,7 +1434,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 
 		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 
@@ -1433,7 +1451,7 @@ describe("/api/v1/plugins/service-grants/seal-processing", () => {
 		// of after everyone left and the files cannot land.
 		const response = await seal({ t, bearer: interactive });
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_grants(t)).toHaveLength(1);
 	});
 

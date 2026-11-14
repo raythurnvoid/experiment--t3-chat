@@ -1,5 +1,5 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -28,7 +28,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_stat } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_stat({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -60,7 +60,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_mkdir } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_mkdir({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -92,7 +92,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_transfer } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_transfer({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -124,7 +124,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_transfer } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_transfer({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -156,7 +156,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_delete } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_delete({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -188,7 +188,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_restore } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_restore({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -220,7 +220,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_trash_list } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_trash_list({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -252,7 +252,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_trash_areas } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_trash_areas({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -284,7 +284,7 @@ export function public_api_files_organize_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_files_organize_http_jobs_get } = await import("./public_api_files_organize.ts");
 								const result = await public_api_files_organize_http_jobs_get({ ctx, request, path });
 								return Response.json(result.body, result);

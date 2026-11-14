@@ -196,10 +196,10 @@ export async function http_type_check() {
 	// so the union keeps that member and narrows to its body.
 	if (invoked.status === 500) {
 		const message: string | undefined = invoked.body?.message;
-		const code: "response_too_large" | undefined = invoked.body?.code;
+		const errorCode: "internal_error" | "response_too_large" | undefined = invoked.body?.errorCode;
 		const runId: string | undefined = invoked.body?.runId;
 		void message;
-		void code;
+		void errorCode;
 		void runId;
 	}
 
@@ -231,8 +231,8 @@ export async function trash_type_check() {
 		}
 		void [cursor, isDone];
 	}
-	if (trash.status === 400 && trash.body !== null && "errorCode" in trash.body) {
-		const errorCode: "invalid_cursor" | undefined = trash.body.errorCode;
+	if (trash.status === 400 && trash.body !== null) {
+		const errorCode: "invalid_input" | "invalid_cursor" = trash.body.errorCode;
 		void errorCode;
 	}
 	const areas = await client.fetchJson("/api/v1/files/trash/areas", { cursor: null, limit: 2 });
@@ -272,7 +272,7 @@ export async function restore_type_check() {
 		void [refusedCursor, newPath];
 	}
 	if (job.status === 400 && job.body !== null) {
-		const errorCode: "invalid_cursor" | undefined = job.body.errorCode;
+		const errorCode: "invalid_input" | "invalid_cursor" = job.body.errorCode;
 		void errorCode;
 	}
 }

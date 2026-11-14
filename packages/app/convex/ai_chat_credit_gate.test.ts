@@ -341,8 +341,8 @@ describe("/api/chat credit gate", () => {
 					}),
 				});
 			const refused = await postTitle(other._yay!.threadId);
-			expect.soft(refused.status).toBe(400);
-			expect.soft(await refused.json()).toEqual({ message: "Not found" });
+			expect.soft(refused.status).toBe(404);
+			expect.soft(await refused.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 			const after = await t.run(async (ctx) => ({
 				thread: await ctx.db.get("ai_chat_threads", other._yay!.threadId),
 				messages: await ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
@@ -353,7 +353,7 @@ describe("/api/chat credit gate", () => {
 			await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "ai_chat_http", key: caller.userId });
 			const ownResponse = await postTitle(own._yay!.threadId);
 			expect(ownResponse.status).toBe(402);
-			expect(await ownResponse.json()).toEqual({ message: "Insufficient funds" });
+			expect(await ownResponse.json()).toEqual({ message: "Insufficient funds", errorCode: "insufficient_funds" });
 		},
 	);
 

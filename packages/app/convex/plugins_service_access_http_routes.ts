@@ -1,5 +1,5 @@
 // Keep routing static; load JWT and membership code only for these requests.
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -24,7 +24,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_service_access_http_lease } = await import("./plugins_service_access_http.ts");
 								const result = await plugins_service_access_http_lease(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
@@ -56,7 +56,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_service_access_http_snapshot } = await import("./plugins_service_access_http.ts");
 								const result = await plugins_service_access_http_snapshot(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
@@ -88,7 +88,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_service_access_http_events } = await import("./plugins_service_access_http.ts");
 								const result = await plugins_service_access_http_events(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
@@ -120,7 +120,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_service_access_http_signing_key } = await import("./plugins_service_access_http.ts");
 								const result = await plugins_service_access_http_signing_key(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });

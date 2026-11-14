@@ -787,7 +787,7 @@ describe("service upload authorization", () => {
 
 		const response = await call({ t, path: CREATE_TARGET_PATH, bearer: token, body: target_body() });
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
@@ -1007,7 +1007,10 @@ describe("service upload authorization", () => {
 		for (const path of ["/elsewhere/recording.mp4", "/meetingsevil/recording.mp4", "/meetings"]) {
 			const response = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body({ path }) });
 			expect(response.status, path).toBe(403);
-			expect(await response.json(), path).toEqual({ message: "Path is outside this grant's destination" });
+			expect(await response.json(), path).toEqual({
+				message: "Path is outside this grant's destination",
+				errorCode: "permission_denied",
+			});
 		}
 		expect(await read_targets(t)).toHaveLength(0);
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
@@ -1068,7 +1071,7 @@ describe("service upload authorization", () => {
 		] as const) {
 			const response = await call({ t, path, bearer: otherGrant, body });
 			expect(response.status, path).toBe(404);
-			expect(await response.json(), path).toEqual({ message: "Not found" });
+			expect(await response.json(), path).toEqual({ message: "Not found", errorCode: "not_found" });
 		}
 	});
 
@@ -1088,7 +1091,7 @@ describe("service upload authorization", () => {
 		] as const) {
 			const response = await call({ t, path, bearer: sealed, body });
 			expect(response.status, path).toBe(404);
-			expect(await response.json(), path).toEqual({ message: "Not found" });
+			expect(await response.json(), path).toEqual({ message: "Not found", errorCode: "not_found" });
 		}
 	});
 });
@@ -1103,7 +1106,7 @@ describe("service upload plan gate", () => {
 
 		const refused = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL, errorCode: "plan_required" });
 
 		// A refusing mutation still commits whatever it wrote before returning, so the gate has to run
 		// before the quota doc is seeded and before any file exists.
@@ -1133,7 +1136,7 @@ describe("service upload plan gate", () => {
 
 		const refused = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL, errorCode: "plan_required" });
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
@@ -1158,7 +1161,7 @@ describe("service upload plan gate", () => {
 
 		const refused = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL, errorCode: "plan_required" });
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
@@ -1213,7 +1216,7 @@ describe("service upload plan gate", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL, errorCode: "plan_required" });
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
@@ -1260,7 +1263,7 @@ describe("service upload plan gate", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL });
+		expect(await refused.json()).toEqual({ message: PLAN_REFUSAL, errorCode: "plan_required" });
 	});
 });
 
@@ -1300,7 +1303,10 @@ describe("service upload quota", () => {
 				body: { idempotencyKey: body.idempotencyKey, targetKey: body.targetKey },
 			});
 			expect(finalized.status).toBe(409);
-			expect(await finalized.json()).toEqual({ message: "The stored file is larger than declared" });
+			expect(await finalized.json()).toEqual({
+				message: "The stored file is larger than declared",
+				errorCode: "oversized_upload",
+			});
 		}
 		expect(
 			(
@@ -1369,7 +1375,10 @@ describe("service upload quota", () => {
 		expect(refused.status).toBe(403);
 		// Council's `convex-api.ts` matches this exact text by equality to tell the storage ceiling
 		// apart from other 403s and stop retrying, so a reword here would break its fail-fast.
-		expect(await refused.json()).toEqual({ message: "This workspace has reached its storage limit" });
+		expect(await refused.json()).toEqual({
+			message: "This workspace has reached its storage limit",
+			errorCode: "storage_full",
+		});
 		expect(await read_targets(t)).toHaveLength(1);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling);
 	});
@@ -1553,7 +1562,7 @@ describe("service upload targets", () => {
 			}),
 		});
 		expect(overCap.status).toBe(400);
-		expect(await overCap.json()).toEqual({ message: "File too large" });
+		expect(await overCap.json()).toEqual({ message: "File too large", errorCode: "invalid_input" });
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
@@ -1578,7 +1587,10 @@ describe("service upload targets", () => {
 		});
 		const response = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(response.status, "a service upload into a moved folder").toBe(409);
-		expect(await response.json()).toEqual({ message: "This item is being moved. Try again when the Move ends." });
+		expect(await response.json()).toEqual({
+			message: "This item is being moved. Try again when the Move ends.",
+			errorCode: "move_busy",
+		});
 		expect(await read_targets(t)).toHaveLength(0);
 		expect(await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect())).toHaveLength(0);
 	});
@@ -1655,7 +1667,7 @@ describe("service upload targets", () => {
 		expect(tooDeep.status, "one new folder too many").toBe(400);
 		expect(await tooDeep.json()).toEqual({
 			message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
-			code: "too_many_folders",
+			errorCode: "too_many_folders",
 		});
 		expect(await read_targets(t)).toHaveLength(0);
 		expect(
@@ -1738,7 +1750,10 @@ describe("service upload targets", () => {
 			}),
 		});
 		expect(tooLong.status, "a new path over the limit").toBe(400);
-		expect(await tooLong.json()).toEqual({ message: "Paths can have at most 1,024 characters." });
+		expect(await tooLong.json()).toEqual({
+			message: "Paths can have at most 1,024 characters.",
+			errorCode: "invalid_input",
+		});
 		expect(await read_targets(t), "a refused path adds no target").toHaveLength(2);
 	});
 
@@ -1810,7 +1825,7 @@ describe("service upload targets", () => {
 			return { status: response.status, body: await response.json() };
 		};
 		const known = await guess("known");
-		expect(known).toEqual({ status: 403, body: { message: "Permission denied" } });
+		expect(known).toEqual({ status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } });
 		expect(await guess("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(known);
 		expect(await read_targets(t)).toHaveLength(0);
 	});
@@ -1828,6 +1843,7 @@ describe("service upload targets", () => {
 		expect(response.status).toBe(400);
 		expect(await response.json(), "a path over the stored path cap").toEqual({
 			message: "Paths can have at most 1,024 characters.",
+			errorCode: "invalid_input",
 		});
 	});
 
@@ -1846,7 +1862,10 @@ describe("service upload targets", () => {
 			body: target_body({ nonCollaborative: true }),
 		});
 		expect(binary.status).toBe(400);
-		expect(await binary.json()).toEqual({ message: "Only editable text files can be non-collaborative" });
+		expect(await binary.json()).toEqual({
+			message: "Only editable text files can be non-collaborative",
+			errorCode: "invalid_input",
+		});
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
@@ -2305,7 +2324,10 @@ describe("service upload targets", () => {
 			}),
 		});
 		expect(refused.status).toBe(400);
-		expect(await refused.json()).toEqual({ message: "An upload run holds at most 16 targets" });
+		expect(await refused.json()).toEqual({
+			message: "An upload run holds at most 16 targets",
+			errorCode: "invalid_input",
+		});
 		expect(await read_targets(t)).toHaveLength(16);
 		expect(await read_quota(t, fixture)).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toHaveLength(16);
@@ -3318,7 +3340,10 @@ describe("service upload delete", () => {
 		// released API state while the ordinary Files restore door still owns the archived node.
 		const createDuringDelete = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(createDuringDelete.status).toBe(409);
-		expect(await createDuringDelete.json()).toEqual({ message: "This target was already released" });
+		expect(await createDuringDelete.json()).toEqual({
+			message: "This target was already released",
+			errorCode: "conflict",
+		});
 		const remintDuringDelete = await call({
 			t,
 			path: REMINT_PATH,
@@ -3329,7 +3354,10 @@ describe("service upload delete", () => {
 			},
 		});
 		expect(remintDuringDelete.status).toBe(409);
-		expect(await remintDuringDelete.json()).toEqual({ message: "This target was already released" });
+		expect(await remintDuringDelete.json()).toEqual({
+			message: "This target was already released",
+			errorCode: "conflict",
+		});
 		const finalizeDuringDelete = await call({
 			t,
 			path: FINALIZE_PATH,
@@ -3460,7 +3488,7 @@ describe("service upload delete", () => {
 			body: { idempotencyKey: "delete-meeting-1", targetKey: "recording" },
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", target.nodeId))?.archiveOperationId)).toBeNull();
 
 		// Put the service writer back so the service can pass the file's own lock.
@@ -3568,6 +3596,7 @@ describe("service upload delete", () => {
 		expect(refused.status).toBe(400);
 		expect(await refused.json()).toEqual({
 			message: "A destination holds at most 16 live targets under one target key",
+			errorCode: "invalid_input",
 		});
 		expect((await read_targets(t)).length).toBe(16);
 		expect(await read_quota(t, fixture)).toBeNull();
@@ -3756,7 +3785,7 @@ describe("service upload delete", () => {
 			body: { idempotencyKey: "delete-1", targetKey: "recording" },
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
@@ -3813,7 +3842,7 @@ describe("service upload delete", () => {
 			},
 		});
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This item is read-only." });
+		expect(await response.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 	});
@@ -3860,7 +3889,7 @@ describe("service upload delete", () => {
 		] as const) {
 			const refused = await call({ t, path, bearer: memberGrant, body });
 			expect(refused.status, path).toBe(403);
-			expect(await refused.json(), path).toEqual({ message: "Permission denied" });
+			expect(await refused.json(), path).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		}
 
 		const response = await call({
@@ -3873,7 +3902,7 @@ describe("service upload delete", () => {
 			},
 		});
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).not.toBeNull();
 		expect((await read_targets(t))[0]!.state).toBe("pending");
@@ -3934,7 +3963,7 @@ describe("service upload delete", () => {
 		] as const) {
 			const refused = await call({ t, path, bearer: sealed, body });
 			expect(refused.status, path).toBe(404);
-			expect(await refused.json(), path).toEqual({ message: "Not found" });
+			expect(await refused.json(), path).toEqual({ message: "Not found", errorCode: "not_found" });
 		}
 
 		const response = await call({
@@ -3944,7 +3973,7 @@ describe("service upload delete", () => {
 			body: { idempotencyKey: "delete-1", targetKey: "recording" },
 		});
 		expect(response.status).toBe(404);
-		expect(await response.json()).toEqual({ message: "Not found" });
+		expect(await response.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			path: "/private/meeting-1/recording.mp4",
 		});
@@ -3960,7 +3989,7 @@ describe("service upload delete", () => {
 		).toMatchObject({ _yay: { runId: expect.any(String), activityId: expect.any(String) } });
 		const replayAfterMoveBack = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(replayAfterMoveBack.status).toBe(404);
-		expect(await replayAfterMoveBack.json()).toEqual({ message: "Not found" });
+		expect(await replayAfterMoveBack.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 	});
 
 	test("a moved-out target stays hidden after the member discards its placeholder", async () => {
@@ -4014,7 +4043,7 @@ describe("service upload delete", () => {
 		] as const) {
 			const refused = await call({ t, path, bearer: sealed, body });
 			expect(refused.status, path).toBe(404);
-			expect(await refused.json(), path).toEqual({ message: "Not found" });
+			expect(await refused.json(), path).toEqual({ message: "Not found", errorCode: "not_found" });
 		}
 	});
 
@@ -4093,7 +4122,7 @@ describe("service upload delete", () => {
 			},
 		});
 		expect(replayAfterRestore.status).toBe(404);
-		expect(await replayAfterRestore.json()).toEqual({ message: "Not found" });
+		expect(await replayAfterRestore.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 	});
 
 	test("reconciles moved-out targets before enforcing the live-group cap", async () => {
@@ -4201,7 +4230,7 @@ describe("service upload delete", () => {
 			body: { idempotencyKey: "delete-1", targetKey: "recording" },
 		});
 		expect(response.status).toBe(404);
-		expect(await response.json()).toEqual({ message: "Not found" });
+		expect(await response.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		expect(await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 	});
@@ -4218,7 +4247,7 @@ describe("service upload delete", () => {
 			body: { idempotencyKey: "delete-1", targetKey: "recording" },
 		});
 		expect(response.status).toBe(404);
-		expect(await response.json()).toEqual({ message: "Not found" });
+		expect(await response.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 	});
 });
 
@@ -4325,7 +4354,10 @@ describe("service upload archive", () => {
 		}));
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This upload target is no longer available" });
+		expect(await response.json()).toEqual({
+			message: "This upload target is no longer available",
+			errorCode: "conflict",
+		});
 		expect(
 			await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
@@ -4449,7 +4481,7 @@ describe("service upload archive", () => {
 		).toEqual({ _yay: null });
 		const refused = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(
 			(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).every(
 				(node) => node.archiveOperationId === null,
@@ -4835,10 +4867,10 @@ describe("service upload archive", () => {
 			},
 		});
 		expect(remint.status).toBe(404);
-		expect(await remint.json()).toEqual({ message: "Not found" });
+		expect(await remint.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		const createReplay = await call({ t, path: CREATE_TARGET_PATH, bearer: sealed, body: target_body() });
 		expect(createReplay.status).toBe(404);
-		expect(await createReplay.json()).toEqual({ message: "Not found" });
+		expect(await createReplay.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		const finalize = await call({
 			t,
 			path: FINALIZE_PATH,
@@ -4849,7 +4881,7 @@ describe("service upload archive", () => {
 			},
 		});
 		expect(finalize.status).toBe(404);
-		expect(await finalize.json()).toEqual({ message: "Not found" });
+		expect(await finalize.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		const deleteReplay = await call({
 			t,
 			path: DELETE_PATH,
@@ -4860,7 +4892,7 @@ describe("service upload archive", () => {
 			},
 		});
 		expect(deleteReplay.status).toBe(404);
-		expect(await deleteReplay.json()).toEqual({ message: "Not found" });
+		expect(await deleteReplay.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 	});
 
 	test("service-archived destinations do not consume the live target cap", async () => {
@@ -4916,7 +4948,7 @@ describe("service upload archive", () => {
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This destination folder changed" });
+		expect(await response.json()).toEqual({ message: "This destination folder changed", errorCode: "conflict" });
 		const destination = await t.run(async (ctx) => ctx.db.get("files_nodes", target.destinationNodeId!));
 		expect(destination).toMatchObject({ path: "/meetings/renamed-meeting", archiveOperationId: null });
 	});
@@ -4960,7 +4992,7 @@ describe("service upload archive", () => {
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This destination folder changed" });
+		expect(await response.json()).toEqual({ message: "This destination folder changed", errorCode: "conflict" });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.destinationNodeId!))).toMatchObject({
 			path: "/meetings/renamed-after-cancel",
 			archiveOperationId: null,
@@ -5310,7 +5342,7 @@ describe("service upload archive", () => {
 		});
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
@@ -5330,7 +5362,7 @@ describe("service upload archive", () => {
 
 		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: crypto.randomUUID() } });
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "This item is read-only." });
+		expect(await response.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
 		// All or nothing: the lock keeps the folder above it active too.
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());

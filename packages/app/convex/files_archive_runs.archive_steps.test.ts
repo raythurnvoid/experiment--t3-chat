@@ -358,7 +358,7 @@ describe("archive_nodes", () => {
 		// Another key of the same person cannot read it.
 		expect(await post("/api/v1/files/jobs/get", await create_key(), { jobId: deleted.jobId })).toEqual({
 			status: 404,
-			body: { message: "Job not found" },
+			body: { message: "Job not found", errorCode: "not_found" },
 		});
 
 		// Revoke stamps `revokedAt`. The key mutations allow only two changes in a row, so stamp it here.

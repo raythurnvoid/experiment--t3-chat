@@ -1,5 +1,5 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -21,7 +21,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = import("./plugins_service.ts").plugins_service_http_recover_Body;
 
-						const handler = httpAction(async (ctx, request) => {
+						const handler = public_api_http_action(async (ctx, request) => {
 							const { plugins_service_http_recover } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_recover(ctx, request);
 							return Response.json(result.body, result);
@@ -51,7 +51,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_exchange_Body;
 
-						const handler = httpAction(async (ctx, request) => {
+						const handler = public_api_http_action(async (ctx, request) => {
 							const { plugins_service_http_exchange } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_exchange(ctx, request);
 							return Response.json(result.body, result);
@@ -80,7 +80,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_renew_Body;
 
-						const handler = httpAction(async (ctx, request) => {
+						const handler = public_api_http_action(async (ctx, request) => {
 							const { plugins_service_http_renew } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_renew(ctx, request);
 							return Response.json(result.body, result);
@@ -111,7 +111,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_seal_processing_Body;
 
-						const handler = httpAction(async (ctx, request) => {
+						const handler = public_api_http_action(async (ctx, request) => {
 							const { plugins_service_http_seal_processing } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_seal_processing(ctx, request);
 							return Response.json(result.body, result);
@@ -140,7 +140,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_verify_live_Body;
 
-						const handler = httpAction(async (ctx, request) => {
+						const handler = public_api_http_action(async (ctx, request) => {
 							const { plugins_service_http_verify_live } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_verify_live(ctx, request);
 							return Response.json(result.body, result);

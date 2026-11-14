@@ -400,9 +400,10 @@ describe("files/restore", () => {
 						path: "/twice/same.md",
 						message:
 							"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+						errorCode: "conflict",
 					},
-					{ path: "/active", message: "Not in the Trash" },
-					{ path: "/missing.md", message: "Not found" },
+					{ path: "/active", message: "Not in the Trash", errorCode: "not_found" },
+					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
 				],
 			},
 		});
@@ -437,7 +438,11 @@ describe("files/restore", () => {
 			await post(f, "/api/v1/files/restore", memberKey.credential, { paths: ["/hidden.md"], requestId: "locked" }),
 		).toEqual({
 			status: 200,
-			body: { jobIds: [], isDone: true, refused: [{ path: "/hidden.md", message: "Permission denied" }] },
+			body: {
+				jobIds: [],
+				isDone: true,
+				refused: [{ path: "/hidden.md", message: "Permission denied", errorCode: "permission_denied" }],
+			},
 		});
 
 		// Control: the owner passes every check, so the owner's key sees both items.
@@ -451,6 +456,7 @@ describe("files/restore", () => {
 						path: "/hidden.md",
 						message:
 							"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+						errorCode: "conflict",
 					},
 				],
 			},
@@ -491,12 +497,18 @@ describe("files/restore", () => {
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, force: false })).toEqual(first);
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, force: true })).toEqual({
 			status: 409,
-			body: { message: "This requestId was already used for another request. Send a new requestId." },
+			body: {
+				message: "This requestId was already used for another request. Send a new requestId.",
+				errorCode: "request_id_reused",
+			},
 		});
 		expect((await read_node(f, tree.topId)).archiveOperationId).not.toBeNull();
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { ...body, onConflict: "skip" })).toEqual({
 			status: 409,
-			body: { message: "This requestId was already used for another request. Send a new requestId." },
+			body: {
+				message: "This requestId was already used for another request. Send a new requestId.",
+				errorCode: "request_id_reused",
+			},
 		});
 
 		const jobId = (first.body.jobIds as string[])[0];
@@ -560,6 +572,7 @@ describe("files/restore", () => {
 						path: "/clash.md",
 						message:
 							'"clash.md" clashes with an item in the folder it comes back to, and Keep both found no name that fits. Rename or move that item, then restore again.',
+						errorCode: "conflict",
 					},
 				],
 			},
@@ -947,7 +960,10 @@ describe("files/restore", () => {
 
 		expect(await post(f, "/api/v1/files/restore", memberKey.credential, { paths, requestId: "too-many" })).toEqual({
 			status: 400,
-			body: { message: "Restore at most 100 items at once. Split the list into several calls." },
+			body: {
+				message: "Restore at most 100 items at once. Split the list into several calls.",
+				errorCode: "invalid_input",
+			},
 		});
 
 		let databaseQueries = 0;
@@ -997,8 +1013,9 @@ describe("files/restore", () => {
 						nodeId: secondId,
 						path: "/same.md",
 						message: "This Trash item changed. List the Trash and pick it again.",
+						errorCode: "conflict",
 					},
-					{ nodeId: "missing", path: null, message: "Not found" },
+					{ nodeId: "missing", path: null, message: "Not found", errorCode: "not_found" },
 				],
 			},
 		});
@@ -1012,10 +1029,13 @@ describe("files/restore", () => {
 		const nodes = [{ nodeId: secondId, archiveOperationId: secondDelete }];
 		expect(
 			await post(f, "/api/v1/files/restore", ownerKey.credential, { nodes: [...nodes, ...nodes], requestId: "twice" }),
-		).toEqual({ status: 400, body: { message: "Duplicate node in batch", nodeId: secondId } });
+		).toEqual({
+			status: 400,
+			body: { message: "Duplicate node in batch", errorCode: "invalid_input", nodeId: secondId },
+		});
 		expect(
 			await post(f, "/api/v1/files/restore", ownerKey.credential, { paths: ["/same.md"], nodes, requestId: "both" }),
-		).toEqual({ status: 400, body: { message: "Send either paths or nodes." } });
+		).toEqual({ status: 400, body: { message: "Send either paths or nodes.", errorCode: "invalid_input" } });
 	});
 
 	test("a locked node answers Permission denied whether its Trash stamp changed or not", async () => {
@@ -1154,7 +1174,7 @@ describe("files/restore", () => {
 			body: {
 				dryRun: true,
 				complete: true,
-				refused: [{ path: "/gone.md", message: "Not found" }],
+				refused: [{ path: "/gone.md", message: "Not found", errorCode: "not_found" }],
 				jobs: [
 					expect.objectContaining({
 						kind: "restore",
@@ -1172,10 +1192,10 @@ describe("files/restore", () => {
 				dryRun: true,
 				requestId: "preview",
 			}),
-		).toEqual({ status: 400, body: { message: "A dry run takes no requestId." } });
+		).toEqual({ status: 400, body: { message: "A dry run takes no requestId.", errorCode: "invalid_input" } });
 		expect(await post(f, "/api/v1/files/restore", ownerKey.credential, { paths: ["/clash.md"] })).toEqual({
 			status: 400,
-			body: { message: "requestId is required." },
+			body: { message: "requestId is required.", errorCode: "invalid_input" },
 		});
 	});
 });
@@ -1300,7 +1320,10 @@ describe("files/trash/list", () => {
 		);
 		expect(await post(f, "/api/v1/files/trash/list", ownerKey.credential, { areaNodeId: fileRootId })).toEqual({
 			status: 400,
-			body: { message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace." },
+			body: {
+				message: "areaNodeId must name a restricted folder. Use null for the rest of the workspace.",
+				errorCode: "invalid_input",
+			},
 		});
 	});
 
@@ -1387,7 +1410,7 @@ describe("files/trash/list", () => {
 		for (const body of [{}, { areaNodeId: null }]) {
 			expect(await post(f, "/api/v1/files/trash/list", accountKey.credential, body)).toEqual({
 				status: 403,
-				body: { message: "Permission denied" },
+				body: { message: "Permission denied", errorCode: "permission_denied" },
 			});
 		}
 		const pages = [];
@@ -1414,7 +1437,7 @@ describe("files/trash/list", () => {
 		);
 		expect(await post(f, "/api/v1/files/trash/list", accountKey.credential, { folderNodeId: otherId })).toEqual({
 			status: 403,
-			body: { message: "Permission denied" },
+			body: { message: "Permission denied", errorCode: "permission_denied" },
 		});
 	});
 
@@ -1443,7 +1466,7 @@ describe("files/trash/list", () => {
 		});
 		expect(await post(f, "/api/v1/files/trash/list", memberKey.credential, { areaNodeId: teamId })).toEqual({
 			status: 403,
-			body: { message: "Permission denied" },
+			body: { message: "Permission denied", errorCode: "permission_denied" },
 		});
 	});
 
@@ -1603,13 +1626,13 @@ describe("files/trash/areas", () => {
 		for (const body of [{}, { limit: 1 }]) {
 			expect(await post(f, "/api/v1/files/trash/areas", memberKey.credential, body)).toEqual({
 				status: 403,
-				body: { message: "Permission denied" },
+				body: { message: "Permission denied", errorCode: "permission_denied" },
 			});
 		}
 		// Also for the Trash of a folder shared with them.
 		expect(await post(f, "/api/v1/files/trash/list", memberKey.credential, { folderNodeId: mineId })).toEqual({
 			status: 403,
-			body: { message: "Permission denied" },
+			body: { message: "Permission denied", errorCode: "permission_denied" },
 		});
 	});
 });

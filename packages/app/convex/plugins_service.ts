@@ -278,26 +278,26 @@ export async function plugins_service_db_can_write_destination(
  */
 function grant_failure(message: string) {
 	if (message === "Unauthorized") {
-		return { status: 401, body: { message } } as const;
+		return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
 	}
 	// What rotation returns for every liveness failure. The route resolved the same grant a moment
 	// earlier, so this only happens when the world changed in between — the installation uninstalled
 	// or upgraded, or the actor removed, between the query and the mutation.
 	if (message === "Unauthenticated") {
-		return { status: 401, body: { message } } as const;
+		return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
 	}
 	if (message === "Permission denied") {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 	if (message === "Not found") {
-		return { status: 404, body: { message } } as const;
+		return { status: 404, body: { message, errorCode: "not_found" } } as const;
 	}
 	// The only refusal that is not about the caller: two 32-byte random tokens would have to collide.
 	if (message === "Failed to mint a unique grant token") {
-		return { status: 500, body: { message } } as const;
+		return { status: 500, body: { message, errorCode: "internal_error" } } as const;
 	}
 
-	return { status: 400, body: { message } } as const;
+	return { status: 400, body: { message, errorCode: "invalid_input" } } as const;
 }
 
 // #endregion shared
@@ -322,9 +322,9 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 	});
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
-			return { status: 401, body: { message: auth._nay.message } } as const;
+			return { status: 401, body: { message: auth._nay.message, errorCode: "unauthenticated" } } as const;
 		}
-		return { status: 400, body: { message: auth._nay.message } } as const;
+		return { status: 400, body: { message: auth._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	// Only a UI token starts a grant, and a page and a file view both carry one. A grant that could
@@ -333,14 +333,14 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 	// has already refused every other format; this narrows the union.
 	const principal = auth._yay.principal;
 	if (principal.kind !== "plugin_ui") {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const now = Date.now();
 	// `resolve_principal` proves the session exists and its installation is still live, but it does
 	// not judge the clock. Every caller applies that verdict itself.
 	if (principal.sessionExpiresAt <= now) {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const missing = missing_service_capabilities(auth._yay);
@@ -349,7 +349,7 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 			installationId: principal.installationId,
 			missing,
 		});
-		return { status: 403, body: { message: "Permission denied" } } as const;
+		return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 	}
 
 	// No file-write scope is asked for here even when the registration holds one. It only exists
@@ -422,19 +422,19 @@ export async function plugins_service_http_renew(ctx: ActionCtx, request: Reques
 	});
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
-			return { status: 401, body: { message: auth._nay.message } } as const;
+			return { status: 401, body: { message: auth._nay.message, errorCode: "unauthenticated" } } as const;
 		}
-		return { status: 400, body: { message: auth._nay.message } } as const;
+		return { status: 400, body: { message: auth._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = auth._yay.principal;
 	if (principal.kind !== "plugin_service") {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const now = Date.now();
 	if (principal.expiresAt <= now) {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	// The raw token goes to the mutation, never the grant id: looking the doc up by the hash of what
@@ -498,23 +498,23 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 	});
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
-			return { status: 401, body: { message: auth._nay.message } } as const;
+			return { status: 401, body: { message: auth._nay.message, errorCode: "unauthenticated" } } as const;
 		}
-		return { status: 400, body: { message: auth._nay.message } } as const;
+		return { status: 400, body: { message: auth._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = auth._yay.principal;
 	if (principal.kind !== "plugin_service") {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const now = Date.now();
 	if (principal.expiresAt <= now) {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	if (principal.phase !== "interactive") {
-		return { status: 403, body: { message: "Permission denied" } } as const;
+		return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 	}
 
 	// The prefix must already be the canonical absolute form, because the upload routes and
@@ -527,7 +527,10 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 		destinationPathPrefix === "/" ||
 		server_path_normalize(destinationPathPrefix) !== destinationPathPrefix
 	) {
-		return { status: 400, body: { message: "destinationPathPrefix must be a normalized absolute path" } } as const;
+		return {
+			status: 400,
+			body: { message: "destinationPathPrefix must be a normalized absolute path", errorCode: "invalid_input" },
+		} as const;
 	}
 	// Every segment must already be a canonical folder name, the same rule the upload routes apply
 	// to target paths. A prefix like `/Meetings` would seal a destination no upload can ever land
@@ -535,7 +538,10 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 	for (const segment of path_extract_segments_from(destinationPathPrefix)) {
 		const normalizedSegment = files_normalize_name("folder", segment);
 		if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
-			return { status: 400, body: { message: "destinationPathPrefix contains an invalid folder name" } } as const;
+			return {
+				status: 400,
+				body: { message: "destinationPathPrefix contains an invalid folder name", errorCode: "invalid_input" },
+			} as const;
 		}
 	}
 
@@ -548,7 +554,7 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 			installationId: principal.installationId,
 			missing,
 		});
-		return { status: 403, body: { message: "Permission denied" } } as const;
+		return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 	}
 
 	const minted: public_api_create_plugin_service_grant_Result = await ctx.runMutation(
@@ -614,7 +620,12 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 		name: "public_api_auth",
 		key: `${rate_limiter_http_client_key(request)}:service-grant-recovery`,
 	});
-	if (limited) return { status: 429, body: { message: limited.message, retryAfterMs: limited.retryAfterMs } } as const;
+	if (limited) {
+		return {
+			status: 429,
+			body: { message: limited.message, errorCode: "rate_limited", retryAfterMs: limited.retryAfterMs },
+		} as const;
+	}
 
 	const presented = get_bearer_token(request);
 	const secret = get_service_secret(request);
@@ -623,14 +634,17 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 		!secret ||
 		(!public_api_PLUGIN_SERVICE_TOKEN_REGEX.test(presented) && !public_api_PLUGIN_UI_TOKEN_REGEX.test(presented))
 	) {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const body = await server_request_json_parse_and_validate(request, recover_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (body._nay) return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 
 	if ((body._yay.operation === "seal") !== (body._yay.destinationPathPrefix !== undefined)) {
-		return { status: 400, body: { message: "Only seal recovery needs a destination" } } as const;
+		return {
+			status: 400,
+			body: { message: "Only seal recovery needs a destination", errorCode: "invalid_input" },
+		} as const;
 	}
 
 	const result = await ctx.runMutation(internal.plugins_service_grant_requests.recover, {
@@ -644,7 +658,8 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 		serviceSecretHash: await crypto_sha256_hex(secret),
 	});
 	if (result._nay) return grant_failure(result._nay.message);
-	if (!result._yay) return { status: 404, body: { message: "No saved grant response" } } as const;
+	if (!result._yay)
+		return { status: 404, body: { message: "No saved grant response", errorCode: "not_found" } } as const;
 
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
@@ -738,38 +753,46 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 	});
 	if (auth._nay) {
 		if (auth._nay.message === "Unauthorized") {
-			return { status: 401, body: { message: auth._nay.message } } as const;
+			return { status: 401, body: { message: auth._nay.message, errorCode: "unauthenticated" } } as const;
 		}
-		return { status: 400, body: { message: auth._nay.message } } as const;
+		return { status: 400, body: { message: auth._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = auth._yay.principal;
 	if (principal.kind !== "plugin_service") {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const now = Date.now();
 	if (principal.expiresAt <= now) {
-		return { status: 401, body: { message: "Unauthorized" } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
 	}
 
 	const expected = auth._yay.body;
+	// Every claim that no longer matches answers 409 `conflict`. The service stops in each case, and the
+	// message says which claim changed.
 	if (expected.installationId !== String(principal.installationId)) {
-		return { status: 409, body: { message: "This grant is for another installation" } } as const;
+		return { status: 409, body: { message: "This grant is for another installation", errorCode: "conflict" } } as const;
 	}
 	if (expected.phase !== principal.phase) {
-		return { status: 409, body: { message: "This grant is in another phase" } } as const;
+		return { status: 409, body: { message: "This grant is in another phase", errorCode: "conflict" } } as const;
 	}
 	// Compared exactly. The mint stored a normalized path, so a service that sends `/Meetings/` for a
 	// grant that says `/Meetings` is refused. `seal-processing` above validates a real prefix and
 	// stores it, so a processing grant always carries one. The service must send back the value it
 	// was given, never one it rebuilt from a meeting title.
 	if (expected.destinationPathPrefix !== principal.pathPrefix) {
-		return { status: 409, body: { message: "This grant writes to another destination" } } as const;
+		return {
+			status: 409,
+			body: { message: "This grant writes to another destination", errorCode: "conflict" },
+		} as const;
 	}
 	const liveScopes: readonly string[] = principal.scopes;
 	if (expected.scopes.some((scope) => !liveScopes.includes(scope))) {
-		return { status: 409, body: { message: "This grant no longer has the scopes it needs" } } as const;
+		return {
+			status: 409,
+			body: { message: "This grant no longer has the scopes it needs", errorCode: "conflict" },
+		} as const;
 	}
 	const filesAllowed =
 		!expected.scopes.includes("files:write") ||
@@ -785,7 +808,7 @@ export async function plugins_service_http_verify_live(ctx: ActionCtx, request: 
 	) {
 		return {
 			status: 409,
-			body: { message: "This grant's member can no longer use the scopes it needs" },
+			body: { message: "This grant's member can no longer use the scopes it needs", errorCode: "conflict" },
 		} as const;
 	}
 

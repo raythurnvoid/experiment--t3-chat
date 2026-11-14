@@ -204,12 +204,12 @@ export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx
 			return {
 				_nay: {
 					status: 429,
-					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+					body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
 				},
 			} as const;
 		}
 
-		return { _nay: { status: 401, body: { message: "Unauthenticated" } } } as const;
+		return { _nay: { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } } as const;
 	};
 
 	if (!token || !is_plausible_bearer_token(token)) {
@@ -227,7 +227,7 @@ export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx
 	// short-lived grant would learn nothing it does not already carry.
 	const principal = resolved._yay;
 	if (principal.kind !== "user_api_key") {
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+		return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 	}
 
 	const now = Date.now();
@@ -239,7 +239,11 @@ export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx
 		return {
 			_nay: {
 				status: 429,
-				body: { message: postAuthRateLimit.message, retryAfterMs: postAuthRateLimit.retryAfterMs },
+				body: {
+					message: postAuthRateLimit.message,
+					errorCode: "rate_limited",
+					retryAfterMs: postAuthRateLimit.retryAfterMs,
+				},
 			},
 		} as const;
 	}
@@ -259,25 +263,6 @@ export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx
 
 	await mark_credential_used_best_effort(ctx, { credentialId: principal.credentialId, now });
 	return { _yay: { principal, allowedScopes } } as const;
-}
-
-/**
- * Add the stable `errorCode` to a refusal from `public_api_authorize_request`.
- * That function answers only 401, 403, or 429.
- */
-export function public_api_with_auth_error_code<Refusal extends { status: number; body: object }>(refusal: Refusal) {
-	return {
-		...refusal,
-		body: {
-			...refusal.body,
-			errorCode:
-				refusal.status === 401
-					? ("unauthenticated" as const)
-					: refusal.status === 429
-						? ("rate_limited" as const)
-						: ("permission_denied" as const),
-		},
-	};
 }
 
 /**
@@ -331,12 +316,12 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			return {
 				_nay: {
 					status: 429,
-					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+					body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
 				},
 			} as const;
 		}
 
-		return { _nay: { status: 401, body: { message: "Unauthenticated" } } } as const;
+		return { _nay: { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } } as const;
 	}
 
 	const resolved = await public_api_resolve_live_principal(ctx, {
@@ -353,17 +338,19 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			return {
 				_nay: {
 					status: 429,
-					body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+					body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
 				},
 			} as const;
 		}
 
-		return {
-			_nay: {
-				status: resolved._nay.message === "Permission denied" ? 403 : 401,
-				body: { message: resolved._nay.message },
-			},
-		} as const;
+		// Return one object per status, so the route types tie each errorCode to its own status.
+		if (resolved._nay.message === "Permission denied") {
+			return {
+				_nay: { status: 403, body: { message: resolved._nay.message, errorCode: "permission_denied" } },
+			} as const;
+		}
+
+		return { _nay: { status: 401, body: { message: resolved._nay.message, errorCode: "unauthenticated" } } } as const;
 	}
 
 	const principal = resolved._yay;
@@ -386,7 +373,11 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 		return {
 			_nay: {
 				status: 429,
-				body: { message: postAuthRateLimit.message, retryAfterMs: postAuthRateLimit.retryAfterMs },
+				body: {
+					message: postAuthRateLimit.message,
+					errorCode: "rate_limited",
+					retryAfterMs: postAuthRateLimit.retryAfterMs,
+				},
 			},
 		} as const;
 	}
@@ -395,7 +386,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 	let pluginCallId: Id<"plugins_event_run_calls"> | null = null;
 	if (principal.kind === "plugin_run") {
 		if (requiredScope === "files:read-only")
-			return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+			return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 		const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
 			internal.plugins_runtime.consume_run_api_call,
 			{
@@ -406,17 +397,16 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			},
 		);
 		if (consumed._nay) {
-			return {
-				_nay: {
-					status:
-						consumed._nay.message === "Plugin API call limit exceeded"
-							? 429
-							: consumed._nay.message === "Permission denied" || consumed._nay.name === "permission_denied"
-								? 403
-								: 401,
-					body: { message: consumed._nay.message },
-				},
-			} as const;
+			if (consumed._nay.message === "Plugin API call limit exceeded") {
+				return { _nay: { status: 429, body: { message: consumed._nay.message, errorCode: "rate_limited" } } } as const;
+			}
+			if (consumed._nay.message === "Permission denied" || consumed._nay.name === "permission_denied") {
+				return {
+					_nay: { status: 403, body: { message: consumed._nay.message, errorCode: "permission_denied" } },
+				} as const;
+			}
+
+			return { _nay: { status: 401, body: { message: consumed._nay.message, errorCode: "unauthenticated" } } } as const;
 		}
 		pluginCallId = consumed._yay.callId;
 	}
@@ -438,7 +428,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			errorCode: "permission_denied",
 			errorMessage: "Permission denied",
 		});
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+		return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 	}
 
 	if (!principalScopes.includes(requiredScope)) {
@@ -455,7 +445,7 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			errorCode: "permission_denied",
 			errorMessage: "Permission denied",
 		});
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+		return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 	}
 
 	await mark_credential_used_best_effort(ctx, {

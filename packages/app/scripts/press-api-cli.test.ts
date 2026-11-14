@@ -549,4 +549,51 @@ describe("upload", () => {
 			rmSync(folder, { recursive: true, force: true });
 		}
 	});
+
+	test("a batch refused with too_many_folders is sent again in halves", async () => {
+		const folder = make_fixture_folder();
+		const api = await start_api((request, response) => {
+			if (request.route === "/api/v1/files/upload-urls") {
+				const files = request.body.files as Array<{ path: string }>;
+				if (files.length > 1) {
+					response.writeHead(400, { "content-type": "application/json" });
+					response.end(
+						JSON.stringify({
+							message: "This path creates too many new folders (limit 32).",
+							errorCode: "too_many_folders",
+							path: files[0]?.path,
+						}),
+					);
+					return;
+				}
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end(
+					JSON.stringify({
+						files: files.map((file) => ({
+							path: file.path,
+							nodeId: "n",
+							uploadUrl: `${api.origin}/put/0`,
+							headers: {},
+						})),
+					}),
+				);
+				return;
+			}
+			response.writeHead(200);
+			response.end();
+		});
+		try {
+			mkdirSync(path.join(folder, "up"));
+			writeFileSync(path.join(folder, "up", "a.txt"), "1");
+			writeFileSync(path.join(folder, "up", "b.txt"), "2");
+
+			const result = await run_cli(api.origin, ["upload", path.join(folder, "up"), "--to", "/inbox"]);
+			expect(result.code, result.stderr).toBe(0);
+			const report = JSON.parse(result.stdout.toString("utf8")) as { uploaded: Array<{ path: string }> };
+			expect(report.uploaded.map((item) => item.path).sort()).toEqual(["/inbox/up/a.txt", "/inbox/up/b.txt"]);
+		} finally {
+			await api.close();
+			rmSync(folder, { recursive: true, force: true });
+		}
+	});
 });

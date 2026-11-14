@@ -561,16 +561,19 @@ type writer_inspect_Result =
 
 function writer_failure(error: { message: string; name?: string }) {
 	if (error.message === "Unauthenticated" || error.message === "Unauthorized")
-		return { status: 401, body: { message: "Unauthenticated" } } as const;
-	if (error.message === "Permission denied") return { status: 403, body: { message: error.message } } as const;
-	if (
-		error.name === "stale_write" ||
-		error.name === "read_only" ||
-		error.name === "move_busy" ||
-		error.name === "path_busy"
-	)
-		return { status: 409, body: { message: error.message } } as const;
-	return { status: 400, body: { message: error.message } } as const;
+		return { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } as const;
+	if (error.message === "Permission denied")
+		return { status: 403, body: { message: error.message, errorCode: "permission_denied" } } as const;
+	if (error.name === "stale_write")
+		return { status: 409, body: { message: error.message, errorCode: "stale_write" } } as const;
+	if (error.name === "read_only")
+		return { status: 409, body: { message: error.message, errorCode: "read_only" } } as const;
+	if (error.name === "move_busy")
+		return { status: 409, body: { message: error.message, errorCode: "move_busy" } } as const;
+	// `deleting` means a purge is deleting this item. Answer like any other job that holds the path.
+	if (error.name === "path_busy" || error.name === "deleting")
+		return { status: 409, body: { message: error.message, errorCode: "path_busy" } } as const;
+	return { status: 400, body: { message: error.message, errorCode: "invalid_input" } } as const;
 }
 
 async function read_writer_proof(args: {
@@ -662,8 +665,12 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 	const pluginCallId = auth._yay.pluginCallId;
 
 	// Settles the consumed plugin call and builds the error body in one step; the
-	// caller supplies the matching literal status so the response union stays narrow.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	// caller supplies the matching literal status and code so the response union stays narrow.
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -671,7 +678,7 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, ensure_folder_body_validator);
@@ -755,6 +762,12 @@ export async function public_api_plugin_files_http_ensure_folder(args: {
 				body: await fail({ status: 400, message: result._nay.message, errorCode: "invalid_input" }),
 			} as const;
 		}
+		if (result._nay.name === "read_only") {
+			return {
+				status: 409,
+				body: await fail({ status: 409, message: result._nay.message, errorCode: "read_only" }),
+			} as const;
+		}
 
 		return {
 			status: 409,
@@ -825,7 +838,11 @@ export async function public_api_plugin_files_http_archive(args: {
 	const principal = auth._yay.principal;
 	const pluginCallId = auth._yay.pluginCallId;
 
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -833,7 +850,7 @@ export async function public_api_plugin_files_http_archive(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, plugin_archive_body_validator);
@@ -919,6 +936,10 @@ export async function public_api_plugin_files_http_archive(args: {
 		path: requestedPath,
 	})) as archive_plugin_path_Result;
 	if (result._nay) {
+		// The inferred type lists only some refusal names. The archive also passes on `read_only` and
+		// `move_busy` from the per-item checks, so read the name as a plain string.
+		const refusalName: string | undefined = result._nay.name;
+
 		if (result._nay.message === "Unauthenticated") {
 			return {
 				status: 401,
@@ -930,6 +951,18 @@ export async function public_api_plugin_files_http_archive(args: {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: result._nay.message, errorCode: "permission_denied" }),
+			} as const;
+		}
+		if (refusalName === "read_only") {
+			return {
+				status: 409,
+				body: await fail({ status: 409, message: result._nay.message, errorCode: "read_only" }),
+			} as const;
+		}
+		if (refusalName === "move_busy") {
+			return {
+				status: 409,
+				body: await fail({ status: 409, message: result._nay.message, errorCode: "move_busy" }),
 			} as const;
 		}
 
@@ -997,7 +1030,11 @@ export async function public_api_plugin_files_http_set_access(args: {
 	const principal = auth._yay.principal;
 	const pluginCallId = auth._yay.pluginCallId;
 
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -1005,7 +1042,7 @@ export async function public_api_plugin_files_http_set_access(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, plugin_access_body_validator);
@@ -1148,9 +1185,12 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 	if (auth._nay) return auth._nay;
 
 	const body = await server_request_json_parse_and_validate(request, inspect_writer_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (body._nay) return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	if (!body._yay.path.startsWith("/") || server_path_normalize(body._yay.path) !== body._yay.path)
-		return { status: 400, body: { message: "Path must be a normalized absolute path." } } as const;
+		return {
+			status: 400,
+			body: { message: "Path must be a normalized absolute path.", errorCode: "invalid_input" },
+		} as const;
 
 	const proof = await read_writer_proof({ ctx, request, ids: { writerId: body._yay.writerId } });
 	if (proof._nay) return writer_failure(proof._nay);
@@ -1166,7 +1206,10 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 
 	const { writer, node } = inspected._yay;
 	if (node && (node.kind !== "file" || !node.contentType || !files_editable_text_shape_of(node.contentType)))
-		return { status: 409, body: { message: "The target is not an editable text file." } } as const;
+		return {
+			status: 409,
+			body: { message: "The target is not an editable text file.", errorCode: "conflict" },
+		} as const;
 
 	let content: string | null = null;
 	if (node) {
@@ -1180,7 +1223,11 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 				...scope,
 				nodeId: node._id,
 			});
-			if (!state) return { status: 409, body: { message: "The file changed during the read." } } as const;
+			if (!state)
+				return {
+					status: 409,
+					body: { message: "The file changed during the read.", errorCode: "file_changed" },
+				} as const;
 			const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state });
 			if (reconstructed._nay) return writer_failure(reconstructed._nay);
 			content = reconstructed._yay.text;
@@ -1192,14 +1239,24 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 				committedOnly: true,
 				mode: { kind: "full", maxBytes: body._yay.maxBytes },
 			});
-			if (!read) return { status: 409, body: { message: "The file changed during the read." } } as const;
+			if (!read)
+				return {
+					status: 409,
+					body: { message: "The file changed during the read.", errorCode: "file_changed" },
+				} as const;
 			if (read.moreLines)
-				return { status: 409, body: { message: "File content exceeds the requested read limit." } } as const;
+				return {
+					status: 409,
+					body: { message: "File content exceeds the requested read limit.", errorCode: "content_too_large" },
+				} as const;
 			content = read.content;
 		}
 	}
 	if (content !== null && files_get_utf8_byte_size(content) > body._yay.maxBytes)
-		return { status: 409, body: { message: "File content exceeds the requested read limit." } } as const;
+		return {
+			status: 409,
+			body: { message: "File content exceeds the requested read limit.", errorCode: "content_too_large" },
+		} as const;
 
 	const confirmed = (await ctx.runQuery(internal.plugins_external_files.inspect, args)) as writer_inspect_Result;
 	if (confirmed._nay) return writer_failure(confirmed._nay);
@@ -1208,7 +1265,10 @@ export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx
 		confirmed._yay.contentRevision !== inspected._yay.contentRevision ||
 		confirmed._yay.writer.generation !== writer.generation
 	)
-		return { status: 409, body: { message: "The file changed during the read." } } as const;
+		return {
+			status: 409,
+			body: { message: "The file changed during the read.", errorCode: "file_changed" },
+		} as const;
 
 	return {
 		status: 200,
@@ -1246,7 +1306,7 @@ export async function public_api_plugin_files_http_advance_writer(ctx: ActionCtx
 	if (auth._nay) return auth._nay;
 
 	const body = await server_request_json_parse_and_validate(request, advance_writer_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (body._nay) return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 
 	const proof = await read_writer_proof({ ctx, request, ids: { writerId: body._yay.writerId } });
 	if (proof._nay) return writer_failure(proof._nay);

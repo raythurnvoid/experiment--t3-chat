@@ -1,5 +1,5 @@
 // Keep public writer routes small; load Files code only when a request arrives.
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -22,7 +22,7 @@ export function public_api_plugin_writers_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_plugin_files_http_inspect_writer } = await import("./public_api_plugin_files.ts");
 								const result = await public_api_plugin_files_http_inspect_writer(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
@@ -54,7 +54,7 @@ export function public_api_plugin_writers_http_routes(router: { route: HttpRoute
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_plugin_files_http_advance_writer } = await import("./public_api_plugin_files.ts");
 								const result = await public_api_plugin_files_http_advance_writer(ctx, request);
 								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });

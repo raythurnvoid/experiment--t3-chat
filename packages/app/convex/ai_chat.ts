@@ -4035,7 +4035,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 		if (requestParseResult._nay) {
 			return {
 				status: 400,
-				body: { message: requestParseResult._nay.message },
+				body: { message: requestParseResult._nay.message, errorCode: "invalid_input" },
 			} as const;
 		}
 
@@ -4046,59 +4046,12 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 				status: 400,
 				body: {
 					message: "Invalid stream ID",
+					errorCode: "invalid_input",
 				},
 			} as const;
 		}
 
-		const membership = await ctx.runQuery(api.organizations.get_membership, {
-			membershipId: body.membershipId,
-		});
-
-		if (!membership) {
-			return {
-				status: 403,
-				body: {
-					message: "Unauthorized",
-				},
-			} as const;
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "ai_chat_http",
-			key: membership.userId,
-		});
-		if (rateLimit) {
-			return {
-				status: 429,
-				body: {
-					message: rateLimit.message,
-					retryAfterMs: rateLimit.retryAfterMs,
-				},
-			} as const;
-		}
-
-		// This route only runs the thread titler above. It writes a thread title and never touches a
-		// file, so the active membership above is enough.
-		const messages = body.messages || [];
-		const thread_id = body.thread_id;
-		const thread = await ctx.runQuery(api.ai_chat.thread_get, {
-			membershipId: membership._id,
-			threadId: thread_id,
-		});
-		if (!thread) {
-			return { status: 400, body: { message: "Not found" } } as const;
-		}
-
-		// Extract conversation text from messages for title generation
-		const conversation_text = messages
-			.map((msg: any) =>
-				[`${msg.role}:`, Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content]
-					.filter(Boolean)
-					.join(" "),
-			)
-			.filter(Boolean)
-			.join("\n");
-
+		// Check the user first. Without a login, `get_membership` below throws, and the catch would answer 500.
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
 			if (!userAuth) {
 				return null;
@@ -4113,15 +4066,69 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 				status: 401,
 				body: {
 					message: "Unauthenticated",
+					errorCode: "unauthenticated",
 				},
 			} as const;
 		}
+
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
+			membershipId: body.membershipId,
+		});
+
+		if (!membership) {
+			return {
+				status: 403,
+				body: {
+					message: "Unauthorized",
+					errorCode: "permission_denied",
+				},
+			} as const;
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "ai_chat_http",
+			key: membership.userId,
+		});
+		if (rateLimit) {
+			return {
+				status: 429,
+				body: {
+					message: rateLimit.message,
+					errorCode: "rate_limited",
+					retryAfterMs: rateLimit.retryAfterMs,
+				},
+			} as const;
+		}
+
+		// This route only runs the thread titler above. It writes a thread title and never touches a
+		// file, so the active membership above is enough.
+		const messages = body.messages || [];
+		const thread_id = body.thread_id;
+		const thread = await ctx.runQuery(api.ai_chat.thread_get, {
+			membershipId: membership._id,
+			threadId: thread_id,
+		});
+		if (!thread) {
+			return { status: 404, body: { message: "Not found", errorCode: "not_found" } } as const;
+		}
+
+		// Extract conversation text from messages for title generation
+		const conversation_text = messages
+			.map((msg: any) =>
+				[`${msg.role}:`, Array.isArray(msg.content) ? msg.content.map((part: any) => part.text).join(" ") : msg.content]
+					.filter(Boolean)
+					.join(" "),
+			)
+			.filter(Boolean)
+			.join("\n");
 
 		const workspaces = await ctx.runMutation(internal.ai_chat_workspaces.capture, {
 			userId: user._id,
 			membershipId: membership._id,
 		});
-		if (workspaces._nay) return { status: 403, body: { message: workspaces._nay.message } } as const;
+		if (workspaces._nay) {
+			return { status: 403, body: { message: workspaces._nay.message, errorCode: "permission_denied" } } as const;
+		}
 		const source = {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -4140,7 +4147,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 		if (!creditCheck.hasCredits) {
 			return {
 				status: 402,
-				body: { message: "Insufficient funds" },
+				body: { message: "Insufficient funds", errorCode: "insufficient_funds" },
 			} as const;
 		}
 		const billedUser = creditCheck.billedUser;
@@ -4234,15 +4241,13 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 			body: stream,
 		} as const;
 	} catch (error) {
-		const errorMessage = "Title generation error";
-		console.error(errorMessage);
+		// Keep the error text in the server log only. It can hold provider or internal details.
+		// Do not log the whole error: provider errors also carry the request and response bodies.
+		console.error("Title generation error", { message: error instanceof Error ? error.message : String(error) });
 
 		return {
 			status: 500,
-			body: {
-				message: errorMessage,
-				cause: error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
-			},
+			body: { message: "Title generation error", errorCode: "internal_error" },
 		} as const;
 	}
 }

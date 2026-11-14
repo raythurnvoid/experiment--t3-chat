@@ -35,9 +35,9 @@ const REFUSAL_PLAN_REQUIRED: public_api_service_uploads_RefusalName = "plan_requ
 const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "outside_destination";
 
 /**
- * Turn one refusal from the storage module into a status. Storage ceilings, the plan gate, and the
- * destination fence answer 403 like the other permission refusals; replays that no longer match
- * answer 409.
+ * Turn one refusal from the storage module into a status and an `errorCode`. Storage ceilings, the
+ * plan gate, and the destination fence answer 403 like the other permission refusals; replays that no
+ * longer match answer 409.
  *
  * `read_only` is what `files_node_require_writable` tags a locked ancestor with.
  */
@@ -45,37 +45,45 @@ function upload_failure(failure: { name?: string; message: string }) {
 	const message = failure.message;
 
 	if (failure.name === REFUSAL_CONFLICT) {
-		return { status: 409, body: { message } } as const;
+		return { status: 409, body: { message, errorCode: "conflict" } } as const;
 	}
 	if (failure.name === ("oversized_upload" satisfies public_api_service_uploads_RefusalName)) {
-		return { status: 409, body: { message } } as const;
+		return { status: 409, body: { message, errorCode: "oversized_upload" } } as const;
 	}
 	if (failure.name === REFUSAL_STORAGE_FULL) {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "storage_full" } } as const;
 	}
 	if (failure.name === REFUSAL_PLAN_REQUIRED) {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "plan_required" } } as const;
 	}
+	// The message names the destination, so the generic permission code is enough.
 	if (failure.name === REFUSAL_OUTSIDE_DESTINATION) {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
-	if (failure.name === "read_only" || failure.name === "move_busy" || failure.name === "path_busy") {
-		return { status: 409, body: { message } } as const;
+	if (failure.name === "read_only") {
+		return { status: 409, body: { message, errorCode: "read_only" } } as const;
+	}
+	if (failure.name === "move_busy") {
+		return { status: 409, body: { message, errorCode: "move_busy" } } as const;
+	}
+	// `deleting` means a purge is deleting this item. Answer like any other job that holds the path.
+	if (failure.name === "path_busy" || failure.name === "deleting") {
+		return { status: 409, body: { message, errorCode: "path_busy" } } as const;
 	}
 	if (failure.name === "too_many_folders") {
-		return { status: 400, body: { message, code: failure.name } } as const;
+		return { status: 400, body: { message, errorCode: "too_many_folders" } } as const;
 	}
 	if (message === "Unauthenticated") {
-		return { status: 401, body: { message } } as const;
+		return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
 	}
 	if (message === "Permission denied") {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 	if (message === "Not found") {
-		return { status: 404, body: { message } } as const;
+		return { status: 404, body: { message, errorCode: "not_found" } } as const;
 	}
 
-	return { status: 400, body: { message } } as const;
+	return { status: 400, body: { message, errorCode: "invalid_input" } } as const;
 }
 
 /**
@@ -102,7 +110,7 @@ async function authorize_service_upload_request(args: { ctx: ActionCtx; request:
 
 	const principal = auth._yay.principal;
 	if (principal.phase !== "processing" || principal.pathPrefix == null) {
-		return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+		return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 	}
 
 	return {
@@ -151,7 +159,7 @@ export async function public_api_service_uploads_http_create_target(args: {
 
 	const body = await server_request_json_parse_and_validate(request, create_target_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	const pathLength = files_check_request_path_length(body._yay.path);
 	if (pathLength._nay) {
@@ -210,7 +218,7 @@ export async function public_api_service_uploads_http_remint(args: {
 
 	const body = await server_request_json_parse_and_validate(request, remint_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const reminted: public_api_service_uploads_remint_upload_target_Result = await ctx.runMutation(
@@ -259,7 +267,7 @@ export async function public_api_service_uploads_http_finalize(args: {
 
 	const body = await server_request_json_parse_and_validate(request, finalize_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const finalized: public_api_service_uploads_finalize_upload_target_Result = await ctx.runMutation(
@@ -309,7 +317,7 @@ export async function public_api_service_uploads_http_delete(args: {
 
 	const body = await server_request_json_parse_and_validate(request, delete_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const deleted: public_api_service_uploads_delete_upload_target_Result = await ctx.runMutation(
@@ -365,7 +373,7 @@ export async function public_api_service_uploads_http_archive_destination(args: 
 
 	const body = await server_request_json_parse_and_validate(request, archive_destination_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const archived: public_api_service_uploads_archive_destination_Result = await ctx.runMutation(

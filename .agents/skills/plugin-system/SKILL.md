@@ -410,7 +410,7 @@ and deadline are required: 35 seconds for invoke, 180 seconds for event. Wire de
 order live in `packages/plugin-runner/README.md`. Keep the old stored output counters and metrics;
 new `runnerOutputBytes` counts raw bytes consumed, and new `runnerOutputTruncated` is false.
 
-Host 500 with `code: "response_too_large"` is a deterministic response failure, but earlier writes
+Host 500 with `errorCode: "response_too_large"` is a deterministic response failure, but earlier writes
 may be saved. The former store-based Chitchat client kept its pending entry and request ID for
 manual Retry on that error. Native Chitchat no longer uses this invoke path. Invoke clients must
 reuse the same request ID after plugin 5xx and uncertain transport results.

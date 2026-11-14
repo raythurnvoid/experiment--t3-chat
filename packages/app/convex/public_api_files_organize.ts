@@ -170,26 +170,40 @@ export async function public_api_files_organize_http_stat(args: {
 
 	const body = await server_request_json_parse_and_validate(request, stat_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	// Count the paths here, not in the schema, so the answer names the limit.
 	if (body._yay.paths.length > STAT_MAX_PATHS) {
 		return {
 			status: 400,
-			body: { message: `Check at most ${STAT_MAX_PATHS} paths at once. Split the list into several calls.` },
+			body: {
+				message: `Check at most ${STAT_MAX_PATHS} paths at once. Split the list into several calls.`,
+				errorCode: "invalid_input",
+			},
 		} as const;
 	}
 
 	const paths: string[] = [];
 	for (const rawPath of body._yay.paths) {
 		if (!rawPath.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must be absolute.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		const length = files_check_request_path_length(rawPath);
-		if (length._nay) return { status: 400, body: { message: length._nay.message, path: rawPath } } as const;
+		if (length._nay) {
+			return {
+				status: 400,
+				body: { message: length._nay.message, errorCode: "invalid_input", path: rawPath },
+			} as const;
+		}
 		const normalized = server_path_normalize(rawPath);
 		if (normalized === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must not be the workspace root.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		paths.push(normalized);
 	}
@@ -247,10 +261,17 @@ export async function public_api_files_organize_http_stat(args: {
 
 const MKDIR_MAX_PATHS = 20;
 
-const mkdir_failure_validator = z.object({
-	path: z.string(),
-	status: z.union([z.literal(400), z.literal(401), z.literal(403), z.literal(409)]),
-});
+// One object per status, so the HTTP action can tie each code to its status.
+const mkdir_failure_validator = z.discriminatedUnion("status", [
+	z.object({ path: z.string(), status: z.literal(400), errorCode: z.enum(["invalid_input", "too_many_folders"]) }),
+	z.object({ path: z.string(), status: z.literal(401), errorCode: z.literal("unauthenticated") }),
+	z.object({ path: z.string(), status: z.literal(403), errorCode: z.literal("permission_denied") }),
+	z.object({
+		path: z.string(),
+		status: z.literal(409),
+		errorCode: z.enum(["file_exists", "read_only", "move_busy", "path_busy", "conflict"]),
+	}),
+]);
 
 /**
  * Create folders like `mkdir -p`, all or nothing. Each path is checked as the key in this
@@ -269,8 +290,10 @@ export const create_folders = internalMutation({
 	returns: v.array(v.object({ path: v.string(), nodeId: v.id("files_nodes"), created: v.boolean() })),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const fail = (failArgs: z.infer<typeof mkdir_failure_validator> & { message: string }) =>
-			convex_error({ message: failArgs.message, data: { path: failArgs.path, status: failArgs.status } });
+		const fail = (failArgs: z.infer<typeof mkdir_failure_validator> & { message: string }) => {
+			const { message, ...data } = failArgs;
+			return convex_error({ message, data });
+		};
 
 		// The key and its scopes are the same for every path. Each path's write check is the create below,
 		// so the principal check skips it.
@@ -285,11 +308,11 @@ export const create_folders = internalMutation({
 			now,
 		});
 		if (revalidated._nay) {
-			throw fail({
-				path: args.paths[0],
-				message: revalidated._nay.message,
-				status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
-			});
+			const { message } = revalidated._nay;
+			if (message === "Unauthenticated") {
+				throw fail({ path: args.paths[0], message, status: 401, errorCode: "unauthenticated" });
+			}
+			throw fail({ path: args.paths[0], message, status: 403, errorCode: "permission_denied" });
 		}
 		const { writeContext } = revalidated._yay;
 
@@ -306,13 +329,18 @@ export const create_folders = internalMutation({
 			});
 			// A path inside a locked folder answers the same, whether the name exists there or not.
 			if (access.status === "locked" && !access.node) {
-				throw fail({ path, message: "Permission denied", status: 403 });
+				throw fail({ path, message: "Permission denied", status: 403, errorCode: "permission_denied" });
 			}
 			// An existing folder is fine, like `mkdir -p`. A locked one in a readable folder already shows
 			// there as a locked row, so it is fine too.
 			if (access.status !== "missing") {
 				if (access.node!.kind === "file") {
-					throw fail({ path, message: "A file already exists at this path. Pick another path.", status: 409 });
+					throw fail({
+						path,
+						message: "A file already exists at this path. Pick another path.",
+						status: 409,
+						errorCode: "file_exists",
+					});
 				}
 				created.push({ path, nodeId: access.node!._id, created: false });
 				continue;
@@ -325,6 +353,7 @@ export const create_folders = internalMutation({
 					path,
 					message: "A file is in the way on this path. Rename or move it, or pick another path.",
 					status: 409,
+					errorCode: "conflict",
 				});
 			}
 
@@ -343,17 +372,25 @@ export const create_folders = internalMutation({
 				now,
 			});
 			if (nodeId._nay) {
-				const { name } = nodeId._nay;
-				throw fail({
-					path,
-					message: nodeId._nay.message,
-					status:
-						nodeId._nay.message === "Permission denied" || name === "read_only"
-							? 403
-							: name === "name_too_long" || name === "path_too_long" || name === "too_many_folders"
-								? 400
-								: 409,
-				});
+				const { name, message } = nodeId._nay;
+				if (message === "Permission denied") {
+					throw fail({ path, message, status: 403, errorCode: "permission_denied" });
+				}
+				// A Read-only target answers 409, like `files/write`.
+				if (name === "read_only" || name === "move_busy" || name === "path_busy") {
+					throw fail({ path, message, status: 409, errorCode: name });
+				}
+				// A purge is deleting this item. Answer like any other job that holds the path.
+				if (name === "deleting") {
+					throw fail({ path, message, status: 409, errorCode: "path_busy" });
+				}
+				if (name === "too_many_folders") {
+					throw fail({ path, message, status: 400, errorCode: "too_many_folders" });
+				}
+				if (name === "name_too_long" || name === "path_too_long") {
+					throw fail({ path, message, status: 400, errorCode: "invalid_input" });
+				}
+				throw fail({ path, message, status: 409, errorCode: "conflict" });
 			}
 			created.push({ path, nodeId: nodeId._yay, created: true });
 		}
@@ -397,13 +434,16 @@ export async function public_api_files_organize_http_mkdir(args: {
 
 	const body = await server_request_json_parse_and_validate(request, mkdir_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	// Count the paths here, not in the schema, so the answer names the limit.
 	if (body._yay.paths.length > MKDIR_MAX_PATHS) {
 		return {
 			status: 400,
-			body: { message: `Make at most ${MKDIR_MAX_PATHS} folders at once. Split the list into several calls.` },
+			body: {
+				message: `Make at most ${MKDIR_MAX_PATHS} folders at once. Split the list into several calls.`,
+				errorCode: "invalid_input",
+			},
 		} as const;
 	}
 
@@ -411,10 +451,16 @@ export async function public_api_files_organize_http_mkdir(args: {
 	for (const rawPath of body._yay.paths) {
 		const validated = public_api_validate_canonical_folder_path(rawPath);
 		if (validated._nay) {
-			return { status: 400, body: { message: validated._nay.message, path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: validated._nay.message, errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		if (paths.includes(validated._yay)) {
-			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Duplicate path in batch", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		paths.push(validated._yay);
 	}
@@ -427,7 +473,10 @@ export async function public_api_files_organize_http_mkdir(args: {
 		count: paths.length,
 	});
 	if (rateLimit) {
-		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+		return {
+			status: 429,
+			body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
+		} as const;
 	}
 
 	let items: create_folders_Result;
@@ -446,21 +495,49 @@ export async function public_api_files_organize_http_mkdir(args: {
 				? z.object({ message: z.string(), data: mkdir_failure_validator }).safeParse(error.data)
 				: null;
 		if (!failure?.success) throw error;
-		return {
-			status: failure.data.data.status,
-			body: { message: failure.data.message, path: failure.data.data.path },
-		} as const;
+		const { message, data } = failure.data;
+		// Branch per status and read the code inside the branch. Then the route types tie each code to
+		// its own status.
+		if (data.status === 400) {
+			return { status: 400, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		if (data.status === 401) {
+			return { status: 401, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		if (data.status === 403) {
+			return { status: 403, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		return { status: 409, body: { message, errorCode: data.errorCode, path: data.path } } as const;
 	}
 	return { status: 200, body: { items }, headers: { "Cache-Control": "no-store" } } as const;
 }
 
+/**
+ * The code of one item of a `refused` list (delete, move, copy, restore, jobs/get). The lists keep only
+ * a message, also in the saved request that a retry answers from. So the code comes from the message,
+ * and the same message always gets the same code.
+ *
+ * Only the fixed messages get their own code. The other refusals (read-only items, busy items, job
+ * errors) have messages that name items, so they get "conflict".
+ */
+function get_refused_error_code(message: string) {
+	if (message === "Permission denied") return "permission_denied" as const;
+	// A plugin gets "Not in the Trash" for a missing item too, so both mean the Trash item is not there.
+	if (message === "Not found" || message === files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash) {
+		return "not_found" as const;
+	}
+	return "conflict" as const;
+}
+
 const DELETE_MAX_PATHS = 200;
 
-const delete_failure_validator = z.object({
-	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
-	/** Set on 429. */
-	retryAfterMs: z.number().optional(),
-});
+// One object per status, so the HTTP action can tie each code to its status.
+const delete_failure_validator = z.discriminatedUnion("status", [
+	z.object({ status: z.literal(401), errorCode: z.literal("unauthenticated") }),
+	z.object({ status: z.literal(403), errorCode: z.literal("permission_denied") }),
+	z.object({ status: z.literal(409), errorCode: z.literal("request_id_reused") }),
+	z.object({ status: z.literal(429), errorCode: z.literal("rate_limited"), retryAfterMs: z.number() }),
+]);
 
 /**
  * Archive the named paths with the app's archive job, like `rm` with several files. A path that is
@@ -486,14 +563,10 @@ export const delete_paths = internalMutation({
 		refused: v.array(v.object({ path: v.string(), message: v.string() })),
 	}),
 	handler: async (ctx, args) => {
-		const fail = (failArgs: z.infer<typeof delete_failure_validator> & { message: string }) =>
-			convex_error({
-				message: failArgs.message,
-				data: {
-					status: failArgs.status,
-					...(failArgs.retryAfterMs !== undefined ? { retryAfterMs: failArgs.retryAfterMs } : {}),
-				},
-			});
+		const fail = (failArgs: z.infer<typeof delete_failure_validator> & { message: string }) => {
+			const { message, ...data } = failArgs;
+			return convex_error({ message, data });
+		};
 
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
@@ -506,10 +579,11 @@ export const delete_paths = internalMutation({
 			now: Date.now(),
 		});
 		if (revalidated._nay) {
-			throw fail({
-				message: revalidated._nay.message,
-				status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
-			});
+			const { message } = revalidated._nay;
+			if (message === "Unauthenticated") {
+				throw fail({ message, status: 401, errorCode: "unauthenticated" });
+			}
+			throw fail({ message, status: 403, errorCode: "permission_denied" });
 		}
 		const { subject } = revalidated._yay.writeContext;
 
@@ -524,7 +598,7 @@ export const delete_paths = internalMutation({
 			)
 			.first();
 		if (!membership) {
-			throw fail({ message: "Unauthenticated", status: 401 });
+			throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 		}
 
 		// Look for an earlier run first: after a finished delete, the paths are "Not found". The key's id
@@ -546,6 +620,7 @@ export const delete_paths = internalMutation({
 				throw fail({
 					message: "This requestId was already used for another request. Send a new requestId.",
 					status: 409,
+					errorCode: "request_id_reused",
 				});
 			}
 			const jobId = previous.apiRequest.activityIds[0]!;
@@ -562,7 +637,12 @@ export const delete_paths = internalMutation({
 		// The same bucket as Archive in the app, so a key cannot archive faster than its person.
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
 		if (rateLimit) {
-			throw fail({ message: rateLimit.message, status: 429, retryAfterMs: rateLimit.retryAfterMs });
+			throw fail({
+				message: rateLimit.message,
+				status: 429,
+				errorCode: "rate_limited",
+				retryAfterMs: rateLimit.retryAfterMs,
+			});
 		}
 
 		// Resolve each path as the key. Locked answers "Permission denied", never "Not found".
@@ -672,33 +752,48 @@ export async function public_api_files_organize_http_delete(args: {
 		delete_body_validator.partial({ requestId: true }),
 	);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	if (body._yay.requestId === undefined) {
 		return {
 			status: 400,
-			body: { message: "requestId is required. Send a unique ID and reuse it when retrying the same delete." },
+			body: {
+				message: "requestId is required. Send a unique ID and reuse it when retrying the same delete.",
+				errorCode: "invalid_input",
+			},
 		} as const;
 	}
 	// Count the paths here, not in the schema, so the answer names the limit.
 	if (body._yay.paths.length > DELETE_MAX_PATHS) {
 		return {
 			status: 400,
-			body: { message: `Delete at most ${DELETE_MAX_PATHS} paths at once. Split the list into several calls.` },
+			body: {
+				message: `Delete at most ${DELETE_MAX_PATHS} paths at once. Split the list into several calls.`,
+				errorCode: "invalid_input",
+			},
 		} as const;
 	}
 
 	const paths: string[] = [];
 	for (const rawPath of body._yay.paths) {
 		if (!rawPath.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must be absolute.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		const normalized = server_path_normalize(rawPath);
 		if (normalized === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must not be the workspace root.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		if (paths.includes(normalized)) {
-			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Duplicate path in batch", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		paths.push(normalized);
 	}
@@ -709,7 +804,10 @@ export async function public_api_files_organize_http_delete(args: {
 		key: `${principal.kind}:${principal.principalKey}`,
 	});
 	if (rateLimit) {
-		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+		return {
+			status: 429,
+			body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
+		} as const;
 	}
 
 	let result: delete_paths_Result;
@@ -729,10 +827,29 @@ export async function public_api_files_organize_http_delete(args: {
 				? z.object({ message: z.string(), data: delete_failure_validator }).safeParse(error.data)
 				: null;
 		if (!failure?.success) throw error;
-		const { status, retryAfterMs } = failure.data.data;
-		return { status, body: { message: failure.data.message, retryAfterMs } } as const;
+		const { message, data } = failure.data;
+		if (data.status === 401) {
+			return { status: 401, body: { message, errorCode: data.errorCode } } as const;
+		}
+		if (data.status === 403) {
+			return { status: 403, body: { message, errorCode: data.errorCode } } as const;
+		}
+		if (data.status === 409) {
+			return { status: 409, body: { message, errorCode: data.errorCode } } as const;
+		}
+		return {
+			status: 429,
+			body: { message, errorCode: data.errorCode, retryAfterMs: data.retryAfterMs },
+		} as const;
 	}
-	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+	return {
+		status: 200,
+		body: {
+			...result,
+			refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
 }
 
 const TRASH_LIST_MAX_ITEMS = 100;
@@ -1075,7 +1192,11 @@ export async function public_api_files_organize_http_trash_list(args: {
 	const userId = public_api_visibility_user_id(principal);
 
 	// A run fails if a claimed call stays open. Close it before every refusal.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -1083,7 +1204,7 @@ export async function public_api_files_organize_http_trash_list(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	if (principal.kind !== "user_api_key") {
@@ -1165,18 +1286,15 @@ export async function public_api_files_organize_http_trash_list(args: {
 		folderNodeId,
 		sources,
 	]);
-	// Like `files/list`, only this error has a code: clients restart with `cursor: null` on it.
+	// Clients restart with `cursor: null` on this code, like on `files/list`.
 	const invalid_cursor = async () =>
 		({
 			status: 400,
-			body: {
-				...(await fail({
-					status: 400,
-					message: "This Trash cursor changed. Start a new page.",
-					errorCode: "invalid_cursor",
-				})),
-				errorCode: "invalid_cursor" as const,
-			},
+			body: await fail({
+				status: 400,
+				message: "This Trash cursor changed. Start a new page.",
+				errorCode: "invalid_cursor",
+			}),
 		}) as const;
 	// A folder pages by key. An area pages its Trash entries with their Convex cursor.
 	let upperKey: TrashKey | null = null;
@@ -1644,7 +1762,11 @@ export async function public_api_files_organize_http_trash_areas(args: {
 	const userId = public_api_visibility_user_id(principal);
 
 	// A run fails if a claimed call stays open. Close it before every refusal.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -1652,7 +1774,7 @@ export async function public_api_files_organize_http_trash_areas(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	if (principal.kind !== "user_api_key") {
@@ -1732,18 +1854,15 @@ export async function public_api_files_organize_http_trash_areas(args: {
 	if (view.migrationDirection === "to_normal") sources.reverse();
 
 	const scope = JSON.stringify([principal.principalKey, principal.subject, membership, sources]);
-	// Like `files/trash/list`, only this error has a code: clients restart with `cursor: null` on it.
+	// Clients restart with `cursor: null` on this code, like on `files/trash/list`.
 	const invalid_cursor = async () =>
 		({
 			status: 400,
-			body: {
-				...(await fail({
-					status: 400,
-					message: "This Trash cursor changed. Start a new page.",
-					errorCode: "invalid_cursor",
-				})),
-				errorCode: "invalid_cursor" as const,
-			},
+			body: await fail({
+				status: 400,
+				message: "This Trash cursor changed. Start a new page.",
+				errorCode: "invalid_cursor",
+			}),
 		}) as const;
 	if (principal.subject.kind === "plugin_pair") {
 		const pluginScope = JSON.stringify([path, principal.organizationId, principal.workspaceId, scope]);
@@ -1920,23 +2039,13 @@ export async function public_api_files_organize_http_trash_areas(args: {
  */
 const RESTORE_MAX_ITEMS = 100;
 
-const restore_failure_validator = z.object({
-	status: z.union([z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
-	/** Set on 429. */
-	retryAfterMs: z.number().optional(),
-});
-
-/**
- * The error code that a plugin's call keeps for each refusal status of `files/restore` and `files/jobs/get`.
- */
-const ERROR_CODE_BY_STATUS = {
-	400: "invalid_input",
-	401: "unauthenticated",
-	403: "permission_denied",
-	404: "not_found",
-	409: "conflict",
-	429: "rate_limited",
-} as const;
+// One object per status, so the HTTP action can tie each code to its status.
+const restore_failure_validator = z.discriminatedUnion("status", [
+	z.object({ status: z.literal(401), errorCode: z.literal("unauthenticated") }),
+	z.object({ status: z.literal(403), errorCode: z.literal("permission_denied") }),
+	z.object({ status: z.literal(409), errorCode: z.literal("request_id_reused") }),
+	z.object({ status: z.literal(429), errorCode: z.literal("rate_limited"), retryAfterMs: z.number() }),
+]);
 
 const restore_principal_validator = v.union(
 	v.object({ kind: v.literal("user_api_key"), credentialId: v.id("api_credentials") }),
@@ -2020,14 +2129,10 @@ export const restore_items = internalMutation({
 		),
 	}),
 	handler: async (ctx, args) => {
-		const fail = (failArgs: z.infer<typeof restore_failure_validator> & { message: string }) =>
-			convex_error({
-				message: failArgs.message,
-				data: {
-					status: failArgs.status,
-					...(failArgs.retryAfterMs !== undefined ? { retryAfterMs: failArgs.retryAfterMs } : {}),
-				},
-			});
+		const fail = (failArgs: z.infer<typeof restore_failure_validator> & { message: string }) => {
+			const { message, ...data } = failArgs;
+			return convex_error({ message, data });
+		};
 		const now = Date.now();
 		const credentialId = args.principal.kind === "user_api_key" ? args.principal.credentialId : null;
 
@@ -2044,7 +2149,7 @@ export const restore_items = internalMutation({
 			// The HTTP action checked them before, but the run can end or the token can change since.
 			const pluginRun = await ctx.db.get("plugins_event_runs", principal.runId);
 			if (!pluginRun || pluginRun.apiTokenHash !== principal.tokenHash) {
-				throw fail({ message: "Unauthenticated", status: 401 });
+				throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 			}
 			const live = await public_api_db_revalidate_live_plugin_run(ctx, {
 				organizationId: args.organizationId,
@@ -2054,7 +2159,11 @@ export const restore_items = internalMutation({
 				requiredScope: "files:restore",
 			});
 			if (live._nay) {
-				throw fail({ message: live._nay.message, status: live._nay.message === "Unauthenticated" ? 401 : 403 });
+				const { message } = live._nay;
+				if (message === "Unauthenticated") {
+					throw fail({ message, status: 401, errorCode: "unauthenticated" });
+				}
+				throw fail({ message, status: 403, errorCode: "permission_denied" });
 			}
 			const { installation, subject } = live._yay;
 			const call = await ctx.db.get("plugins_event_run_calls", principal.callId);
@@ -2070,7 +2179,7 @@ export const restore_items = internalMutation({
 				call.pluginVersionId !== pluginRun.pluginVersionId ||
 				pluginRun.actorUserId !== args.userId
 			) {
-				throw fail({ message: "Unauthenticated", status: 401 });
+				throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 			}
 			// An upload run's authority ends with the file that started it. Check the source before new work.
 			// A job that was accepted never checks it again, so losing the source later does not stop it.
@@ -2082,7 +2191,7 @@ export const restore_items = internalMutation({
 					source.organizationId !== args.organizationId ||
 					source.workspaceId !== args.workspaceId
 				) {
-					throw fail({ message: "Unauthenticated", status: 401 });
+					throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 				}
 			}
 			// The live check above validated the run's pair by its exact ids and membership lifetime. Both
@@ -2091,7 +2200,7 @@ export const restore_items = internalMutation({
 				!pluginRun.acceptedCapabilities.includes("workspace.files.restore") ||
 				!installation.acceptedCapabilities.includes("workspace.files.restore")
 			) {
-				throw fail({ message: "Permission denied", status: 403 });
+				throw fail({ message: "Permission denied", status: 403, errorCode: "permission_denied" });
 			}
 			writeContext = {
 				subject,
@@ -2124,10 +2233,11 @@ export const restore_items = internalMutation({
 				now,
 			});
 			if (revalidated._nay) {
-				throw fail({
-					message: revalidated._nay.message,
-					status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
-				});
+				const { message } = revalidated._nay;
+				if (message === "Unauthenticated") {
+					throw fail({ message, status: 401, errorCode: "unauthenticated" });
+				}
+				throw fail({ message, status: 403, errorCode: "permission_denied" });
 			}
 			// A key bound to a service account acts as the account here and at every step of the job, like
 			// `delete`. The person still owns the job, its Activity, and its rate buckets.
@@ -2146,7 +2256,7 @@ export const restore_items = internalMutation({
 			)
 			.first();
 		if (!membership) {
-			throw fail({ message: "Unauthenticated", status: 401 });
+			throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 		}
 		// Guests have no Trash, like on the plugin Trash doors. Check it once, not for each item.
 		if (
@@ -2159,7 +2269,7 @@ export const restore_items = internalMutation({
 				})
 			)._nay
 		) {
-			throw fail({ message: "Permission denied", status: 403 });
+			throw fail({ message: "Permission denied", status: 403, errorCode: "permission_denied" });
 		}
 
 		// Look for an earlier run first: after a finished restore, the items are no longer archived. The
@@ -2197,6 +2307,7 @@ export const restore_items = internalMutation({
 				throw fail({
 					message: "This requestId was already used for another request. Send a new requestId.",
 					status: 409,
+					errorCode: "request_id_reused",
 				});
 			}
 			// At most one job per path or node, so at most 100 reads.
@@ -2217,13 +2328,18 @@ export const restore_items = internalMutation({
 		// A forced plugin restore needs Read-only management on the run and the installation. Only new work
 		// checks it, so an old forced request still answers its retry after an upgrade took the capability.
 		if (pluginRestore && args.force === true && !pluginRestore.canForce) {
-			throw fail({ message: "Permission denied", status: 403 });
+			throw fail({ message: "Permission denied", status: 403, errorCode: "permission_denied" });
 		}
 
 		// The same bucket as Restore in the app, so a key cannot restore faster than its person.
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
 		if (rateLimit) {
-			throw fail({ message: rateLimit.message, status: 429, retryAfterMs: rateLimit.retryAfterMs });
+			throw fail({
+				message: rateLimit.message,
+				status: 429,
+				errorCode: "rate_limited",
+				retryAfterMs: rateLimit.retryAfterMs,
+			});
 		}
 
 		// Resolve each path or node to its archived item, as the key. Locked answers "Permission denied",
@@ -2533,49 +2649,64 @@ export async function public_api_files_organize_http_restore(args: {
 		// `files:write` passes it too. Check the one scope each caller kind needs.
 		const scopes: readonly public_api_Scope[] = principal.scopes;
 		if (!scopes.includes(principal.kind === "plugin_run" ? "files:restore" : "files:write")) {
-			return { status: 403, body: { message: "Permission denied" } } as const;
+			return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 		}
 
 		const body = await server_request_json_parse_and_validate(request, restore_body_validator);
 		if (body._nay) {
-			return { status: 400, body: { message: body._nay.message } } as const;
+			return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		}
 		const dryRun = body._yay.dryRun === true;
 		if ((body._yay.paths === undefined) === (body._yay.nodes === undefined)) {
-			return { status: 400, body: { message: "Send either paths or nodes." } } as const;
+			return { status: 400, body: { message: "Send either paths or nodes.", errorCode: "invalid_input" } } as const;
 		}
 		// A dry run saves nothing, so there is nothing to retry.
 		if (dryRun && body._yay.requestId !== undefined) {
-			return { status: 400, body: { message: "A dry run takes no requestId." } } as const;
+			return { status: 400, body: { message: "A dry run takes no requestId.", errorCode: "invalid_input" } } as const;
 		}
 		if (!dryRun && body._yay.requestId === undefined) {
-			return { status: 400, body: { message: "requestId is required." } } as const;
+			return { status: 400, body: { message: "requestId is required.", errorCode: "invalid_input" } } as const;
 		}
 		// Count the items here, not in the schema, so the answer names the limit.
 		if ((body._yay.paths ?? body._yay.nodes ?? []).length > RESTORE_MAX_ITEMS) {
 			return {
 				status: 400,
-				body: { message: `Restore at most ${RESTORE_MAX_ITEMS} items at once. Split the list into several calls.` },
+				body: {
+					message: `Restore at most ${RESTORE_MAX_ITEMS} items at once. Split the list into several calls.`,
+					errorCode: "invalid_input",
+				},
 			} as const;
 		}
 		const nodes = body._yay.nodes ?? [];
 		for (const [index, node] of nodes.entries()) {
 			if (nodes.findIndex((other) => other.nodeId === node.nodeId) !== index) {
-				return { status: 400, body: { message: "Duplicate node in batch", nodeId: node.nodeId } } as const;
+				return {
+					status: 400,
+					body: { message: "Duplicate node in batch", errorCode: "invalid_input", nodeId: node.nodeId },
+				} as const;
 			}
 		}
 
 		const paths: string[] = [];
 		for (const rawPath of body._yay.paths ?? []) {
 			if (!rawPath.startsWith("/")) {
-				return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+				return {
+					status: 400,
+					body: { message: "Path must be absolute.", errorCode: "invalid_input", path: rawPath },
+				} as const;
 			}
 			const normalized = server_path_normalize(rawPath);
 			if (normalized === "/") {
-				return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+				return {
+					status: 400,
+					body: { message: "Path must not be the workspace root.", errorCode: "invalid_input", path: rawPath },
+				} as const;
 			}
 			if (paths.includes(normalized)) {
-				return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+				return {
+					status: 400,
+					body: { message: "Duplicate path in batch", errorCode: "invalid_input", path: rawPath },
+				} as const;
 			}
 			paths.push(normalized);
 		}
@@ -2586,7 +2717,10 @@ export async function public_api_files_organize_http_restore(args: {
 			key: `${principal.kind}:${principal.principalKey}`,
 		});
 		if (rateLimit) {
-			return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+			return {
+				status: 429,
+				body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
+			} as const;
 		}
 
 		if (principal.kind === "plugin_run" && !pluginCallId) {
@@ -2637,8 +2771,11 @@ export async function public_api_files_organize_http_restore(args: {
 						dryRun: true as const,
 						// False when a job did not end in the first step: its later results are unknown.
 						complete: preview.isDone,
-						refused: preview.refused,
-						jobs: preview.jobs,
+						refused: preview.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+						jobs: preview.jobs.map((job) => ({
+							...job,
+							refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+						})),
 					},
 					headers: { "Cache-Control": "no-store" },
 				} as const;
@@ -2648,10 +2785,29 @@ export async function public_api_files_organize_http_restore(args: {
 					? z.object({ message: z.string(), data: restore_failure_validator }).safeParse(error.data)
 					: null;
 			if (!failure?.success) throw error;
-			const { status, retryAfterMs } = failure.data.data;
-			return { status, body: { message: failure.data.message, retryAfterMs } } as const;
+			const { message, data } = failure.data;
+			if (data.status === 401) {
+				return { status: 401, body: { message, errorCode: data.errorCode } } as const;
+			}
+			if (data.status === 403) {
+				return { status: 403, body: { message, errorCode: data.errorCode } } as const;
+			}
+			if (data.status === 409) {
+				return { status: 409, body: { message, errorCode: data.errorCode } } as const;
+			}
+			return {
+				status: 429,
+				body: { message, errorCode: data.errorCode, retryAfterMs: data.retryAfterMs },
+			} as const;
 		}
-		return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+		return {
+			status: 200,
+			body: {
+				...result,
+				refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+			},
+			headers: { "Cache-Control": "no-store" },
+		} as const;
 	})().catch(async (error: unknown) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
@@ -2674,7 +2830,7 @@ export async function public_api_files_organize_http_restore(args: {
 			callId: pluginCallId,
 			status: "failed",
 			responseStatus: response.status,
-			errorCode: ERROR_CODE_BY_STATUS[response.status],
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 	}
@@ -2684,10 +2840,18 @@ export async function public_api_files_organize_http_restore(args: {
 // One selection page of the transfer job, so the whole selection is sent and sealed in one request.
 const TRANSFER_MAX_PATHS = files_TRANSFER_SELECTION_PAGE_SIZE;
 
-const transfer_failure_validator = z.object({
-	status: z.union([z.literal(400), z.literal(401), z.literal(403), z.literal(409), z.literal(429)]),
-	path: z.string().optional(),
-});
+// One object per status, so the HTTP action can tie each code to its status.
+const transfer_failure_validator = z.discriminatedUnion("status", [
+	z.object({ path: z.string().optional(), status: z.literal(400), errorCode: z.literal("invalid_input") }),
+	z.object({ path: z.string().optional(), status: z.literal(401), errorCode: z.literal("unauthenticated") }),
+	z.object({ path: z.string().optional(), status: z.literal(403), errorCode: z.literal("permission_denied") }),
+	z.object({
+		path: z.string().optional(),
+		status: z.literal(409),
+		errorCode: z.enum(["request_id_reused", "transfer_busy", "read_only", "conflict"]),
+	}),
+	z.object({ path: z.string().optional(), status: z.literal(429), errorCode: z.literal("rate_limited") }),
+]);
 
 /**
  * Move or copy the named paths with the app's transfer job, like `mv` and `cp`. A `from` path that is
@@ -2717,11 +2881,10 @@ export const transfer_paths = internalMutation({
 		refused: v.array(v.object({ path: v.string(), message: v.string() })),
 	}),
 	handler: async (ctx, args) => {
-		const fail = (failArgs: z.infer<typeof transfer_failure_validator> & { message: string }) =>
-			convex_error({
-				message: failArgs.message,
-				data: { status: failArgs.status, ...(failArgs.path !== undefined ? { path: failArgs.path } : {}) },
-			});
+		const fail = (failArgs: z.infer<typeof transfer_failure_validator> & { message: string }) => {
+			const { message, ...data } = failArgs;
+			return convex_error({ message, data });
+		};
 
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
@@ -2734,10 +2897,11 @@ export const transfer_paths = internalMutation({
 			now: Date.now(),
 		});
 		if (revalidated._nay) {
-			throw fail({
-				message: revalidated._nay.message,
-				status: revalidated._nay.message === "Unauthenticated" ? 401 : 403,
-			});
+			const { message } = revalidated._nay;
+			if (message === "Unauthenticated") {
+				throw fail({ message, status: 401, errorCode: "unauthenticated" });
+			}
+			throw fail({ message, status: 403, errorCode: "permission_denied" });
 		}
 		const { subject } = revalidated._yay.writeContext;
 
@@ -2752,7 +2916,7 @@ export const transfer_paths = internalMutation({
 			)
 			.first();
 		if (!membership) {
-			throw fail({ message: "Unauthenticated", status: 401 });
+			throw fail({ message: "Unauthenticated", status: 401, errorCode: "unauthenticated" });
 		}
 
 		// Look for an earlier run first: after a finished Move, the `from` paths no longer exist. The key's
@@ -2772,6 +2936,7 @@ export const transfer_paths = internalMutation({
 				throw fail({
 					message: "This requestId was already used for another request. Send a new requestId.",
 					status: 409,
+					errorCode: "request_id_reused",
 				});
 			}
 			const activity = await files_transfer_status_db_require_activity(ctx, previous._id);
@@ -2818,7 +2983,7 @@ export const transfer_paths = internalMutation({
 		const toPath = toMustBeFolder ? args.to.slice(0, -1) : args.to;
 		const destination = await get_folder_access(toPath);
 		if (destination.status === "locked") {
-			throw fail({ message: "Permission denied", status: 403, path: args.to });
+			throw fail({ message: "Permission denied", status: 403, errorCode: "permission_denied", path: args.to });
 		}
 
 		let targetPath = toPath;
@@ -2833,11 +2998,17 @@ export const transfer_paths = internalMutation({
 				throw fail({
 					message: "To move or copy several paths, `to` must be an existing folder.",
 					status: 400,
+					errorCode: "invalid_input",
 					path: args.to,
 				});
 			}
 			if (toMustBeFolder) {
-				throw fail({ message: '`to` ends with "/", so it must be an existing folder.', status: 409, path: args.to });
+				throw fail({
+					message: '`to` ends with "/", so it must be an existing folder.',
+					status: 409,
+					errorCode: "conflict",
+					path: args.to,
+				});
 			}
 
 			const segments = path_extract_segments_from(toPath);
@@ -2845,13 +3016,14 @@ export const transfer_paths = internalMutation({
 			targetPath = `/${segments.slice(0, -1).join("/")}`;
 			const parent = await get_folder_access(targetPath);
 			if (parent.status === "locked") {
-				throw fail({ message: "Permission denied", status: 403, path: args.to });
+				throw fail({ message: "Permission denied", status: 403, errorCode: "permission_denied", path: args.to });
 			}
 			// Unlike the agent's `cp`, a copy here does not make missing folders. See `files_transfer_db_start_for_api`.
 			if (parent.status === "missing") {
 				throw fail({
 					message: "The folder above `to` does not exist. Make it with files/mkdir, then try again.",
 					status: 409,
+					errorCode: "conflict",
 					path: args.to,
 				});
 			}
@@ -2859,6 +3031,7 @@ export const transfer_paths = internalMutation({
 				throw fail({
 					message: "A file is in the way on this path. Rename or move it, or pick another path.",
 					status: 409,
+					errorCode: "conflict",
 					path: args.to,
 				});
 			}
@@ -2870,7 +3043,7 @@ export const transfer_paths = internalMutation({
 				const source = (await ctx.db.get("files_nodes", sources[0]!.id))!;
 				const invalidNameMessage = public_api_get_invalid_name_message(source.kind, targetName);
 				if (invalidNameMessage) {
-					throw fail({ message: invalidNameMessage, status: 400, path: args.to });
+					throw fail({ message: invalidNameMessage, status: 400, errorCode: "invalid_input", path: args.to });
 				}
 			}
 		}
@@ -2893,21 +3066,29 @@ export const transfer_paths = internalMutation({
 		});
 		if (started._nay) {
 			const { name, message } = started._nay;
-			throw fail({
-				// Do not name the other job: this key may not read it.
-				message:
-					name === "busy"
-						? "A transfer is already running in this workspace. Wait for it to finish, then try again."
-						: message,
-				status:
-					name === "busy" || name === "request_changed"
-						? 409
-						: message === rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE
-							? 429
-							: message === "Permission denied" || name === "read_only"
-								? 403
-								: 400,
-			});
+			if (name === "busy") {
+				throw fail({
+					// Do not name the other job: this key may not read it.
+					message: "A transfer is already running in this workspace. Wait for it to finish, then try again.",
+					status: 409,
+					errorCode: "transfer_busy",
+				});
+			}
+			// The job saw the request id with another body after the check above.
+			if (name === "request_changed") {
+				throw fail({ message, status: 409, errorCode: "request_id_reused" });
+			}
+			if (message === rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE) {
+				throw fail({ message, status: 429, errorCode: "rate_limited" });
+			}
+			if (message === "Permission denied") {
+				throw fail({ message, status: 403, errorCode: "permission_denied" });
+			}
+			// A Read-only target answers 409, like `files/write`.
+			if (name === "read_only") {
+				throw fail({ message, status: 409, errorCode: "read_only" });
+			}
+			throw fail({ message, status: 400, errorCode: "invalid_input" });
 		}
 
 		return { jobId: started._yay.activityId, isDone: false, refused };
@@ -2959,13 +3140,16 @@ export async function public_api_files_organize_http_transfer(args: {
 	if (kind === "copy" && !(principalScopes.includes("files:read") && principalScopes.includes("files:download"))) {
 		return {
 			status: 403,
-			body: { message: "Copy needs an API key with the files:read and files:download scopes." },
+			body: {
+				message: "Copy needs an API key with the files:read and files:download scopes.",
+				errorCode: "permission_denied",
+			},
 		} as const;
 	}
 
 	const body = await server_request_json_parse_and_validate(request, transfer_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	// Count the paths here, not in the schema, so the answer names the limit.
 	if (body._yay.from.length > TRANSFER_MAX_PATHS) {
@@ -2973,6 +3157,7 @@ export async function public_api_files_organize_http_transfer(args: {
 			status: 400,
 			body: {
 				message: `${kind === "move" ? "Move" : "Copy"} at most ${TRANSFER_MAX_PATHS} paths at once. Split the list into several calls.`,
+				errorCode: "invalid_input",
 			},
 		} as const;
 	}
@@ -2981,21 +3166,33 @@ export async function public_api_files_organize_http_transfer(args: {
 	const fromPaths = new Set<string>();
 	for (const rawPath of body._yay.from) {
 		if (!rawPath.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must be absolute.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		const normalized = server_path_normalize(rawPath);
 		if (normalized === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root.", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must not be the workspace root.", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		if (fromPaths.has(normalized)) {
-			return { status: 400, body: { message: "Duplicate path in batch", path: rawPath } } as const;
+			return {
+				status: 400,
+				body: { message: "Duplicate path in batch", errorCode: "invalid_input", path: rawPath },
+			} as const;
 		}
 		fromPaths.add(normalized);
 		// Keep a trailing "/": like in `mv`, it says the path must be a folder.
 		from.push(rawPath.endsWith("/") ? `${normalized}/` : normalized);
 	}
 	if (!body._yay.to.startsWith("/")) {
-		return { status: 400, body: { message: "Path must be absolute.", path: body._yay.to } } as const;
+		return {
+			status: 400,
+			body: { message: "Path must be absolute.", errorCode: "invalid_input", path: body._yay.to },
+		} as const;
 	}
 
 	// One token per call. The transfer job also charges the person's tree-write bucket.
@@ -3004,7 +3201,10 @@ export async function public_api_files_organize_http_transfer(args: {
 		key: `${principal.kind}:${principal.principalKey}`,
 	});
 	if (rateLimit) {
-		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+		return {
+			status: 429,
+			body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
+		} as const;
 	}
 
 	let result: transfer_paths_Result;
@@ -3029,10 +3229,31 @@ export async function public_api_files_organize_http_transfer(args: {
 				? z.object({ message: z.string(), data: transfer_failure_validator }).safeParse(error.data)
 				: null;
 		if (!failure?.success) throw error;
-		const { status, path: failedPath } = failure.data.data;
-		return { status, body: { message: failure.data.message, path: failedPath } } as const;
+		const { message, data } = failure.data;
+		// Branch per status and read the code inside the branch. Then the route types tie each code to
+		// its own status.
+		if (data.status === 400) {
+			return { status: 400, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		if (data.status === 401) {
+			return { status: 401, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		if (data.status === 403) {
+			return { status: 403, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		if (data.status === 409) {
+			return { status: 409, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		}
+		return { status: 429, body: { message, errorCode: data.errorCode, path: data.path } } as const;
 	}
-	return { status: 200, body: result, headers: { "Cache-Control": "no-store" } } as const;
+	return {
+		status: 200,
+		body: {
+			...result,
+			refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
 }
 
 // Refused items of a move or copy job, or renamed and skipped items of a restore, per `jobs/get` page.
@@ -3571,12 +3792,11 @@ type get_plugin_restore_job_Result =
 const jobs_get_body_validator = z
 	.object({
 		jobId: z.string().max(64),
-		/** `refusedCursor` from the last page, to read more refused or renamed items. */
-		cursor: z
-			.string()
-			.regex(/^(failed|denied|items):-?\d{1,9}$/u)
-			.nullable()
-			.optional(),
+		/**
+		 * `refusedCursor` from the last page, to read more refused or renamed items. The HTTP action checks
+		 * its shape, so a bad cursor answers `invalid_cursor` like on the other routes.
+		 */
+		cursor: z.string().max(32).nullable().optional(),
 	})
 	.strict();
 
@@ -3619,11 +3839,11 @@ export async function public_api_files_organize_http_jobs_get(args: {
 		// returns, and an unexpected error closes it before it goes on.
 		const response = await (async (/* iife */) => {
 			if (principal.subject.kind !== "plugin_pair") {
-				return { status: 403, body: { message: "Permission denied" } } as const;
+				return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 			}
 			const body = await server_request_json_parse_and_validate(request, plugin_jobs_get_body_validator);
 			if (body._nay) {
-				return { status: 400, body: { message: body._nay.message } } as const;
+				return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 			}
 
 			// The cursor works only for this job, installation and pair. It does not pin the run or page, so a
@@ -3633,10 +3853,10 @@ export async function public_api_files_organize_http_jobs_get(args: {
 			if (body._yay.cursor != null) {
 				const opened = await crypto_open_cursor({ purpose: "files_jobs_get", scope, cursor: body._yay.cursor });
 				if (!validate(v.object({ cursor: v.string() }), opened)) {
-					// Like `files/trash/list`, only this error has a code: clients restart with `cursor: null` on it.
+					// Clients restart with `cursor: null` on this code, like on `files/trash/list`.
 					return {
 						status: 400,
-						body: { message: "This job cursor changed. Start a new page.", errorCode: "invalid_cursor" as const },
+						body: { message: "This job cursor changed. Start a new page.", errorCode: "invalid_cursor" },
 					} as const;
 				}
 				cursor = opened.cursor;
@@ -3656,20 +3876,21 @@ export async function public_api_files_organize_http_jobs_get(args: {
 				cursor,
 			})) as get_plugin_restore_job_Result;
 			if (result.status === "unauthenticated") {
-				return { status: 401, body: { message: "Unauthenticated" } } as const;
+				return { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } as const;
 			}
 			if (result.status === "permission_denied") {
-				return { status: 403, body: { message: "Permission denied" } } as const;
+				return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
 			}
 			// Finished jobs are deleted 7 days after they end, so an old id is not found either.
 			if (result.status !== "found") {
-				return { status: 404, body: { message: "Job not found" } } as const;
+				return { status: 404, body: { message: "Job not found", errorCode: "not_found" } } as const;
 			}
 			const { isDone, continueCursor, ...job } = result.job;
 			return {
 				status: 200,
 				body: {
 					...job,
+					refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
 					refusedCursor: isDone
 						? null
 						: await crypto_seal_cursor({ purpose: "files_jobs_get", scope, payload: { cursor: continueCursor } }),
@@ -3698,7 +3919,7 @@ export async function public_api_files_organize_http_jobs_get(args: {
 				callId: pluginCallId,
 				status: "failed",
 				responseStatus: response.status,
-				errorCode: "errorCode" in response.body ? response.body.errorCode : ERROR_CODE_BY_STATUS[response.status],
+				errorCode: response.body.errorCode,
 				errorMessage: response.body.message,
 			});
 		}
@@ -3707,7 +3928,14 @@ export async function public_api_files_organize_http_jobs_get(args: {
 
 	const body = await server_request_json_parse_and_validate(request, jobs_get_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
+	}
+	const cursor = body._yay.cursor ?? null;
+	if (cursor !== null && !/^(failed|denied|items):-?\d{1,9}$/u.test(cursor)) {
+		return {
+			status: 400,
+			body: { message: "This job cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+		} as const;
 	}
 
 	const job = (await ctx.runQuery(internal.public_api_files_organize.get_job, {
@@ -3715,11 +3943,18 @@ export async function public_api_files_organize_http_jobs_get(args: {
 		workspaceId: principal.workspaceId,
 		userId: principal.userId,
 		jobId: body._yay.jobId,
-		cursor: body._yay.cursor ?? null,
+		cursor,
 	})) as get_job_Result;
 	// Finished jobs are deleted 7 days after they end, so an old id is not found either.
 	if (!job) {
-		return { status: 404, body: { message: "Job not found" } } as const;
+		return { status: 404, body: { message: "Job not found", errorCode: "not_found" } } as const;
 	}
-	return { status: 200, body: job, headers: { "Cache-Control": "no-store" } } as const;
+	return {
+		status: 200,
+		body: {
+			...job,
+			refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
 }

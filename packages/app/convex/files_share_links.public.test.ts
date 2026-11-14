@@ -1020,6 +1020,7 @@ describe("public API", () => {
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({
 			message: "Wait until the access change of this item or a folder above finishes",
+			errorCode: "not_ready",
 		});
 		expect((await read_node(f, big.nodeId))?.isPublic).toBeUndefined();
 	});
@@ -1094,7 +1095,7 @@ describe("public API", () => {
 
 		const refused = await set_with(f, runToken, imageId, true);
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect((await read_node(f, imageId))?.isPublic).toBeUndefined();
 	});
 });

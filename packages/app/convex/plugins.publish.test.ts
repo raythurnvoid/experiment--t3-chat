@@ -5861,7 +5861,7 @@ describe("plugins backend invoke runs", () => {
 			expect(runnerFetch).toHaveBeenCalledOnce();
 			if (outcome === "too large") {
 				expect(response.status).toBe(500);
-				expect(result).toMatchObject({ code: "response_too_large", runId: expect.any(String) });
+				expect(result).toMatchObject({ errorCode: "response_too_large", runId: expect.any(String) });
 			} else {
 				expect(response.status).toBe(200);
 				expect(result).toEqual({ runId: expect.any(String), pluginStatus: outcome, output });
@@ -5972,7 +5972,11 @@ describe("plugins backend invoke runs", () => {
 
 			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(response.status).toBe(500);
-			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+			expect(await response.json()).toEqual({
+				message: "Plugin backend failed",
+				runId: expect.any(String),
+				errorCode: "internal_error",
+			});
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 			expect((await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).status).toBe(
 				"failed",
@@ -6043,7 +6047,7 @@ describe("plugins backend invoke runs", () => {
 			over = true;
 			const refused = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(refused.status).toBe(500);
-			expect(await refused.json()).toMatchObject({ code: "response_too_large" });
+			expect(await refused.json()).toMatchObject({ errorCode: "response_too_large" });
 			expect(canceled).toHaveBeenCalledOnce();
 		},
 	);
@@ -6149,7 +6153,11 @@ describe("plugins backend invoke runs", () => {
 
 		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
-		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+		expect(await response.json()).toEqual({
+			message: "Plugin backend failed",
+			runId: expect.any(String),
+			errorCode: "internal_error",
+		});
 		expect(
 			await t.run(async (ctx) =>
 				activities.activities_db_require_by_source_id(ctx, (await ctx.db.query("plugins_event_runs").first())!._id),
@@ -6228,7 +6236,11 @@ describe("plugins backend invoke runs", () => {
 		});
 		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
-		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+		expect(await response.json()).toEqual({
+			message: "Plugin backend failed",
+			runId: expect.any(String),
+			errorCode: "internal_error",
+		});
 	});
 
 	test("keeps the response-size refusal code through the HTTP route", async () => {
@@ -6260,8 +6272,8 @@ describe("plugins backend invoke runs", () => {
 		expect(response.status).toBe(500);
 		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 		expect(await response.json()).toEqual({
-			code: "response_too_large",
 			message: "Plugin backend response was too large",
+			errorCode: "response_too_large",
 			runId: String(run._id),
 		});
 		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
@@ -6312,7 +6324,11 @@ describe("plugins backend invoke runs", () => {
 
 			const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 			expect(response.status).toBe(500);
-			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+			expect(await response.json()).toEqual({
+				message: "Plugin backend failed",
+				runId: expect.any(String),
+				errorCode: "internal_error",
+			});
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 			const activity = await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id));
 			expect(activity.status).toBe(change === "expired" ? "timed_out" : "failed");
@@ -6449,6 +6465,7 @@ describe("plugins backend invoke runs", () => {
 		expect(response.status).toBe(413);
 		expect(await response.json()).toEqual({
 			message: "Invoke request is too large for this plugin configuration",
+			errorCode: "request_too_large",
 		});
 		expect(runnerCalls).toBe(0);
 
@@ -6537,7 +6554,11 @@ describe("plugins backend invoke runs", () => {
 		const response = await post_invoke({ t, token, rawBody: invoke_request_body({ endpoint: "echo" }) });
 		expect(response.status).toBe(500);
 		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
-		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: String(run._id) });
+		expect(await response.json()).toEqual({
+			message: "Plugin backend failed",
+			runId: String(run._id),
+			errorCode: "internal_error",
+		});
 		expect(await t.run((ctx) => activities.activities_db_require_by_source_id(ctx, run!._id))).toMatchObject({
 			status: kind === "timeout" ? "timed_out" : "failed",
 			errorMessage: expect.any(String),
@@ -6576,7 +6597,11 @@ describe("plugins backend invoke runs", () => {
 			status: "failed",
 			errorMessage: "Plugin threw before responding",
 		});
-		expect(responseBody).toEqual({ message: "Plugin backend failed", runId: String(run?._id) });
+		expect(responseBody).toEqual({
+			message: "Plugin backend failed",
+			runId: String(run?._id),
+			errorCode: "internal_error",
+		});
 	});
 	// #endregion invoke route transport
 });

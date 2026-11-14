@@ -160,7 +160,7 @@ test("invalid read-only targets are refused before mutation", async () => {
 				...(action === "set" ? { readOnly: true } : {}),
 			});
 			expect(response.status, JSON.stringify(target)).toBe(400);
-			expect(await response.json()).toEqual({ message });
+			expect(await response.json()).toEqual({ message, errorCode: "invalid_input" });
 		}
 		const rootId = await post(manager.credential, `/api/v1/files/read-only/${action}`, {
 			nodeId: "root",
@@ -204,7 +204,9 @@ test("overlong read-only paths are refused before policy lookup", async () => {
 					});
 		});
 		expect.soft(result.status, `${action}: overlong target is a request error`).toBe(400);
-		expect.soft(result.body).toEqual({ message: "Paths can have at most 1,024 characters." });
+		expect
+			.soft(result.body)
+			.toEqual({ message: "Paths can have at most 1,024 characters.", errorCode: "invalid_input" });
 	}
 	expect(policyCalls, "overlong paths make no policy call").toBe(0);
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.readOnly).toBe(false);
@@ -282,7 +284,7 @@ test("path policy uses the service account and refuses foreign IDs", async () =>
 			...flag,
 		});
 		expect(denied.status, "the sponsor's owner access does not count").toBe(403);
-		expect(await denied.json()).toEqual({ message: "Permission denied" });
+		expect(await denied.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	}
 	expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.readOnly).toBe(false);
 	const foreign = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other" }));
@@ -325,9 +327,9 @@ test("mkdir force requires its own live grant and never clears the parent flag",
 		await owner.mutation(api.files_nodes.read_only_set, { membershipId: db.membershipId, nodeId, readOnly: true }),
 	).toEqual({ _yay: null });
 	const before = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-	expect((await post(forcedWriter.credential, "/api/v1/files/mkdir", { paths: ["/reports/ordinary"] })).status).toBe(
-		403,
-	);
+	const refused = await post(forcedWriter.credential, "/api/v1/files/mkdir", { paths: ["/reports/ordinary"] });
+	expect(refused.status).toBe(409);
+	expect(await refused.json()).toMatchObject({ errorCode: "read_only" });
 	expect(
 		(await post(forcedWriter.credential, "/api/v1/files/mkdir", { paths: ["/reports/forced"], force: true })).status,
 	).toBe(200);
@@ -339,6 +341,26 @@ test("mkdir force requires its own live grant and never clears the parent flag",
 	expect(
 		(await post(forcedWriter.credential, "/api/v1/files/mkdir", { paths: ["/reports/revoked"], force: true })).status,
 	).toBe(403);
+});
+
+test("a move into a Read-only folder answers 409 read_only", async () => {
+	const { db, owner, nodeId, key, post } = await setup();
+	const writer = await key(["files:write"]);
+	expect((await post(writer.credential, "/api/v1/files/mkdir", { paths: ["/plain"] })).status).toBe(200);
+	expect(
+		await owner.mutation(api.files_nodes.read_only_set, { membershipId: db.membershipId, nodeId, readOnly: true }),
+	).toEqual({ _yay: null });
+
+	const refused = await post(writer.credential, "/api/v1/files/move", {
+		from: ["/plain"],
+		to: "/reports",
+		requestId: "move-into-read-only",
+	});
+	expect(refused.status).toBe(409);
+	expect(await refused.json()).toEqual({
+		message: "The destination folder is read-only. Unlock it, then try again.",
+		errorCode: "read_only",
+	});
 });
 
 test("a prepared forced write rechecks the key grant before publication", async () => {

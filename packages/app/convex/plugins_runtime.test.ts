@@ -1250,10 +1250,10 @@ describe("scheduled cancellation and retention", () => {
 		).toEqual({ _yay: null });
 		const staleRead = await f.t.fetch("/api/v1/plugin-data/read", request);
 		expect(staleRead.status, "revoked_member_token_cannot_read_kv").toBe(401);
-		expect(await staleRead.json()).toEqual({ message: "Unauthenticated" });
+		expect(await staleRead.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 		const staleFollowUp = await follow_up({ f, token, state: '{"late":true}' });
 		expect(staleFollowUp.status, "revoked_member_token_cannot_request_follow_up").toBe(401);
-		expect(await staleFollowUp.json()).toEqual({ message: "Unauthenticated" });
+		expect(await staleFollowUp.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 		const saved = await f.t.run(async (ctx) => ({
 			run: await ctx.db.get("plugins_event_runs", root._id),
 			grant: await ctx.db.get("access_control_permission_grants", member.grantId),
@@ -1781,24 +1781,24 @@ describe("follow-up HTTP schema", () => {
 			message?: undefined;
 			readonly errorCode?: undefined;
 		}>();
-		expectTypeOf<Route["response"][409]["body"]>().toEqualTypeOf<{
-			readonly message:
-				| "Unauthenticated"
-				| "Unauthorized"
-				| "Permission denied"
-				| "The scheduled user must grant access again"
-				| "The scheduled user is not an active workspace member"
-				| "Choose a scheduled user with their own permission grant"
-				| "This schedule is not available"
-				| "The scheduled assignment changed"
-				| "File access changed. Start a new plugin run."
-				| "Plugin run chain limit exceeded"
-				| "A follow-up is already requested"
-				| "Follow-up state must be at most 16 KiB"
-				| "Follow-up state must be valid JSON";
-			readonly errorCode: "follow_up_already_requested" | "chain_limit";
-			readonly ok?: undefined;
-		}>();
+		type FollowUpMessage =
+			| "Unauthenticated"
+			| "Unauthorized"
+			| "Permission denied"
+			| "The scheduled user must grant access again"
+			| "The scheduled user is not an active workspace member"
+			| "Choose a scheduled user with their own permission grant"
+			| "This schedule is not available"
+			| "The scheduled assignment changed"
+			| "File access changed. Start a new plugin run."
+			| "Plugin run chain limit exceeded"
+			| "A follow-up is already requested"
+			| "Follow-up state must be at most 16 KiB"
+			| "Follow-up state must be valid JSON";
+		expectTypeOf<Route["response"][409]["body"]>().toEqualTypeOf<
+			| { message: FollowUpMessage; errorCode: "follow_up_already_requested" }
+			| { message: FollowUpMessage; errorCode: "chain_limit" }
+		>();
 	});
 });
 

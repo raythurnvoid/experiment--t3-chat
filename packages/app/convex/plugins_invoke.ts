@@ -120,7 +120,7 @@ export async function plugins_invoke_http_invoke(args: {
 
 	const body = await parse_request_json({ request, schema: invoke_body_validator, maxBytes: INVOKE_REQUEST_MAX_BYTES });
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	// One member clicking through one plugin frame. Keyed by user and installation together, so
@@ -132,7 +132,7 @@ export async function plugins_invoke_http_invoke(args: {
 	if (rateLimit) {
 		return {
 			status: 429,
-			body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs },
+			body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
 		} as const;
 	}
 
@@ -156,17 +156,21 @@ export async function plugins_invoke_http_invoke(args: {
 		if (started._nay.name === "busy") {
 			return {
 				status: 409,
-				body: { message: started._nay.message, retryAfterMs: started._nay.data?.retryAfterMs ?? 0 },
+				body: {
+					message: started._nay.message,
+					errorCode: "invoke_busy",
+					retryAfterMs: started._nay.data?.retryAfterMs ?? 0,
+				},
 			} as const;
 		}
 
-		const status =
-			started._nay.message === "Permission denied"
-				? (403 as const)
-				: started._nay.message === "Not found" || started._nay.message === "Endpoint not found"
-					? (404 as const)
-					: (400 as const);
-		return { status, body: { message: started._nay.message } } as const;
+		if (started._nay.message === "Permission denied") {
+			return { status: 403, body: { message: started._nay.message, errorCode: "permission_denied" } } as const;
+		}
+		if (started._nay.message === "Not found" || started._nay.message === "Endpoint not found") {
+			return { status: 404, body: { message: started._nay.message, errorCode: "not_found" } } as const;
+		}
+		return { status: 400, body: { message: started._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const runId = started._yay.pluginRun._id;
@@ -178,7 +182,10 @@ export async function plugins_invoke_http_invoke(args: {
 			outcome: { kind: "failed", errorMessage: "Plugin backend is missing" },
 		});
 		// Use 500 to avoid the deployed edge replacing 502 JSON error bodies.
-		return { status: 500, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
+		return {
+			status: 500,
+			body: { message: "Plugin backend failed", errorCode: "internal_error", runId: String(runId) },
+		} as const;
 	}
 
 	let configuration: plugins_ConfigurationValue = null;
@@ -195,7 +202,7 @@ export async function plugins_invoke_http_invoke(args: {
 			});
 			return {
 				status: 500,
-				body: { message: "Plugin backend failed", runId: String(runId), code: undefined },
+				body: { message: "Plugin backend failed", errorCode: "internal_error", runId: String(runId) },
 			} as const;
 		}
 		configuration = parsed._yay.configuration;
@@ -241,7 +248,7 @@ export async function plugins_invoke_http_invoke(args: {
 				runId,
 				outcome: { kind: "failed", errorMessage: message },
 			});
-			return { status: 413, body: { message } } as const;
+			return { status: 413, body: { message, errorCode: "request_too_large" } } as const;
 		}
 
 		const runnerResult = runner._yay.runnerResult;
@@ -265,14 +272,19 @@ export async function plugins_invoke_http_invoke(args: {
 		})) as finish_event_run_Result;
 
 		if (runnerResult._nay || finished._nay || !finished._yay.canRelayResponse || runnerResult._yay.kind !== "invoke") {
-			const code = runnerResult._nay?.code === "response_too_large" ? ("response_too_large" as const) : undefined;
+			if (runnerResult._nay?.code === "response_too_large") {
+				return {
+					status: 500,
+					body: {
+						message: "Plugin backend response was too large",
+						errorCode: "response_too_large",
+						runId: String(runId),
+					},
+				} as const;
+			}
 			return {
 				status: 500,
-				body: {
-					message: code ? "Plugin backend response was too large" : "Plugin backend failed",
-					runId: String(runId),
-					code,
-				},
+				body: { message: "Plugin backend failed", errorCode: "internal_error", runId: String(runId) },
 			} as const;
 		}
 
@@ -296,6 +308,9 @@ export async function plugins_invoke_http_invoke(args: {
 				errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
 			},
 		});
-		return { status: 500, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
+		return {
+			status: 500,
+			body: { message: "Plugin backend failed", errorCode: "internal_error", runId: String(runId) },
+		} as const;
 	}
 }

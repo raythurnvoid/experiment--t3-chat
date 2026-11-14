@@ -48,17 +48,39 @@ const refusal_validator = v.object({
 		message: v.string(),
 		data: v.object({
 			status: v.union(v.literal(400), v.literal(401), v.literal(403), v.literal(404), v.literal(409)),
-			errorCode: v.optional(v.union(v.literal("invalid_cursor"), v.literal("transcript_changed"))),
+			errorCode: v.string(),
 		}),
 	}),
 });
 
-function refuse(
-	status: Infer<typeof refusal_validator>["_nay"]["data"]["status"],
-	message: string,
-	errorCode?: "invalid_cursor" | "transcript_changed",
+// Keep the literal status and code, so the route type ties each code to its status.
+function refuse<
+	const Status extends Infer<typeof refusal_validator>["_nay"]["data"]["status"],
+	const ErrorCode extends string,
+>(status: Status, message: string, errorCode: ErrorCode) {
+	return Result({ _nay: { message, data: { status, errorCode } } });
+}
+
+/**
+ * Turn a query refusal into a route answer.
+ *
+ * Map each refusal member to its own answer member. Without the cast, TypeScript merges them into one
+ * member, and every code would show under every status in the route type.
+ */
+function refusal_response<const Refusal extends { message: string; data: { status: number; errorCode: string } }>(
+	refusal: Refusal,
 ) {
-	return Result({ _nay: { message, data: { status, ...(errorCode ? { errorCode } : {}) } } });
+	return {
+		status: refusal.data.status,
+		headers: NO_STORE_HEADERS,
+		body: { message: refusal.message, errorCode: refusal.data.errorCode },
+	} as Refusal extends unknown
+		? {
+				readonly status: Refusal["data"]["status"];
+				readonly headers: typeof NO_STORE_HEADERS;
+				readonly body: { message: string; errorCode: Refusal["data"]["errorCode"] };
+			}
+		: never;
 }
 
 async function db_read_authority(
@@ -78,10 +100,10 @@ async function db_read_authority(
 		credential.organizationId !== authority.organizationId ||
 		credential.workspaceId !== authority.workspaceId
 	) {
-		return refuse(401, "Unauthenticated");
+		return refuse(401, "Unauthenticated", "unauthenticated");
 	}
 	if (credential.serviceAccountId !== null || !credential.scopes.includes("ai_chat:read")) {
-		return refuse(403, "Permission denied");
+		return refuse(403, "Permission denied", "permission_denied");
 	}
 	const user = await ctx.db.get("users", authority.userId);
 	const membership = await ctx.db
@@ -95,7 +117,7 @@ async function db_read_authority(
 		)
 		.first();
 	if (!user || user.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
-		return refuse(401, "Unauthenticated");
+		return refuse(401, "Unauthenticated", "unauthenticated");
 	}
 	const lifetime = await ctx.db
 		.query("organizations_membership_lifetimes")
@@ -111,18 +133,18 @@ async function db_read_authority(
 			(args.membership.membershipId !== pinnedMembership.membershipId ||
 				args.membership.membershipLifetime !== pinnedMembership.membershipLifetime))
 	) {
-		return refuse(401, "Unauthenticated");
+		return refuse(401, "Unauthenticated", "unauthenticated");
 	}
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: authority.userId },
 		membership,
 		permission: null,
 	});
-	if (authorized._nay) return refuse(401, "Unauthenticated");
+	if (authorized._nay) return refuse(401, "Unauthenticated", "unauthenticated");
 	const workspace = await ctx.db.get("organizations_workspaces", authority.workspaceId);
-	if (!workspace || workspace.pluginDataPurgeStartedAt !== undefined) return refuse(404, "Not found");
+	if (!workspace || workspace.pluginDataPurgeStartedAt !== undefined) return refuse(404, "Not found", "not_found");
 	const threadId = ctx.db.normalizeId("ai_chat_threads", args.threadId);
-	if (!threadId) return refuse(400, "Invalid thread ID");
+	if (!threadId) return refuse(400, "Invalid thread ID", "invalid_input");
 	const thread = await ctx.db.get("ai_chat_threads", threadId);
 	if (
 		!thread ||
@@ -132,7 +154,7 @@ async function db_read_authority(
 		thread.copyingAt !== undefined ||
 		thread.deletingAt !== undefined
 	) {
-		return refuse(404, "Not found");
+		return refuse(404, "Not found", "not_found");
 	}
 	return Result({ _yay: { thread, membership, pinnedMembership } });
 }
@@ -191,10 +213,10 @@ export const get_transcript_page = internalQuery({
 				args.endMessageId == null
 					? thread.newestNodeId
 					: ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.endMessageId);
-			if (args.endMessageId != null && !endMessageId) return refuse(400, "Invalid end message ID");
+			if (args.endMessageId != null && !endMessageId) return refuse(400, "Invalid end message ID", "invalid_input");
 			if (endMessageId) {
 				const end = await ctx.db.get("ai_chat_threads_messages_aisdk_5", endMessageId);
-				if (!end || end.threadId !== thread._id) return refuse(404, "Not found");
+				if (!end || end.threadId !== thread._id) return refuse(404, "Not found", "not_found");
 			}
 			return Result({
 				_yay: {
@@ -220,7 +242,7 @@ export const get_transcript_page = internalQuery({
 			node.organizationId !== thread.organizationId ||
 			node.workspaceId !== thread.workspaceId
 		) {
-			return refuse(404, "Not found");
+			return refuse(404, "Not found", "not_found");
 		}
 		if (position.kind === "step" && node.version !== position.expectedVersion) {
 			return refuse(409, "Transcript changed. Start again without a cursor.", "transcript_changed");
@@ -325,13 +347,14 @@ export const get_readable_output = internalQuery({
 		const readable = await db_read_authority(ctx, args);
 		if (readable._nay) return readable;
 		const objectId = ctx.db.normalizeId("ai_chat_output_objects", args.outputId);
-		if (!objectId) return refuse(400, "Invalid output ID");
+		if (!objectId) return refuse(400, "Invalid output ID", "invalid_input");
 		const owner = await ctx.db
 			.query("ai_chat_output_owners")
 			.withIndex("by_thread_object", (q) => q.eq("threadId", readable._yay.thread._id).eq("objectId", objectId))
 			.first();
 		const object = owner?.state === "committed" ? await ctx.db.get("ai_chat_output_objects", objectId) : null;
-		if (object?.state.kind !== "ready" || !object.r2Key || object.byteCount === null) return refuse(404, "Not found");
+		if (object?.state.kind !== "ready" || !object.r2Key || object.byteCount === null)
+			return refuse(404, "Not found", "not_found");
 		return Result({
 			_yay: { r2Key: object.r2Key, byteCount: object.byteCount, membership: readable._yay.pinnedMembership },
 		});
@@ -402,10 +425,20 @@ export async function public_api_ai_chat_http_transcript(args: {
 	if (auth._nay) return { ...auth._nay, headers: NO_STORE_HEADERS };
 	const { principal } = auth._yay;
 	if (principal.serviceAccountId !== null) {
-		return { status: 403, headers: NO_STORE_HEADERS, body: { message: "Permission denied" } } as const;
+		return {
+			status: 403,
+			headers: NO_STORE_HEADERS,
+			body: { message: "Permission denied", errorCode: "permission_denied" },
+		} as const;
 	}
 	const parsed = await parse_body(args.request, transcript_body_schema);
-	if (parsed._nay) return { status: 400, headers: NO_STORE_HEADERS, body: parsed._nay } as const;
+	if (parsed._nay) {
+		return {
+			status: 400,
+			headers: NO_STORE_HEADERS,
+			body: { message: parsed._nay.message, errorCode: "invalid_input" },
+		} as const;
+	}
 	const body = parsed._yay;
 	const authority = {
 		credentialId: principal.credentialId,
@@ -438,13 +471,7 @@ export async function public_api_ai_chat_http_transcript(args: {
 		endMessageId: body.endMessageId,
 		cursor,
 	})) as get_transcript_page_Result;
-	if (result._nay) {
-		return {
-			status: result._nay.data.status,
-			headers: NO_STORE_HEADERS,
-			body: { message: result._nay.message, errorCode: result._nay.data.errorCode },
-		} as const;
-	}
+	if (result._nay) return refusal_response(result._nay);
 	const next = result._yay.next
 		? await crypto_seal_cursor({ purpose: "ai_chat_transcript", scope, payload: result._yay.next })
 		: null;
@@ -480,10 +507,20 @@ export async function public_api_ai_chat_http_read_output(args: {
 	if (auth._nay) return { ...auth._nay, headers: NO_STORE_HEADERS };
 	const { principal } = auth._yay;
 	if (principal.serviceAccountId !== null) {
-		return { status: 403, headers: NO_STORE_HEADERS, body: { message: "Permission denied" } } as const;
+		return {
+			status: 403,
+			headers: NO_STORE_HEADERS,
+			body: { message: "Permission denied", errorCode: "permission_denied" },
+		} as const;
 	}
 	const parsed = await parse_body(args.request, output_body_schema);
-	if (parsed._nay) return { status: 400, headers: NO_STORE_HEADERS, body: parsed._nay } as const;
+	if (parsed._nay) {
+		return {
+			status: 400,
+			headers: NO_STORE_HEADERS,
+			body: { message: parsed._nay.message, errorCode: "invalid_input" },
+		} as const;
+	}
 	const { offset, limit = 65_536 } = parsed._yay;
 	const target = {
 		authority: {
@@ -499,19 +536,13 @@ export async function public_api_ai_chat_http_read_output(args: {
 		internal.public_api_ai_chat.get_readable_output,
 		target,
 	)) as get_readable_output_Result;
-	if (result._nay) {
-		return {
-			status: result._nay.data.status,
-			headers: NO_STORE_HEADERS,
-			body: { message: result._nay.message },
-		} as const;
-	}
+	if (result._nay) return refusal_response(result._nay);
 	const readable = result._yay;
 	if (offset > readable.byteCount) {
 		return {
 			status: 400,
 			headers: NO_STORE_HEADERS,
-			body: { message: "Offset is past the end of the output" },
+			body: { message: "Offset is past the end of the output", errorCode: "invalid_input" },
 		} as const;
 	}
 	if (offset === readable.byteCount) {
@@ -558,21 +589,24 @@ export async function public_api_ai_chat_http_read_output(args: {
 	} catch {
 		// Provider errors may contain a storage key or signed URL.
 		console.error("AI output read failed", { threadId: target.threadId, outputId: target.outputId });
-		return { status: 503, headers: NO_STORE_HEADERS, body: { message: "Stored output is unavailable" } } as const;
+		// Use 503, not 502. The deployed `convex.site` edge replaces 502 bodies, so the client would lose the errorCode.
+		return {
+			status: 503,
+			headers: NO_STORE_HEADERS,
+			body: { message: "Stored output is unavailable", errorCode: "storage_unavailable" },
+		} as const;
 	}
 	const checked = (await args.ctx.runQuery(internal.public_api_ai_chat.get_readable_output, {
 		...target,
 		membership: readable.membership,
 	})) as get_readable_output_Result;
-	if (checked._nay) {
-		return {
-			status: checked._nay.data.status,
-			headers: NO_STORE_HEADERS,
-			body: { message: checked._nay.message },
-		} as const;
-	}
+	if (checked._nay) return refusal_response(checked._nay);
 	if (checked._yay.r2Key !== readable.r2Key || checked._yay.byteCount !== readable.byteCount) {
-		return { status: 503, headers: NO_STORE_HEADERS, body: { message: "Stored output is unavailable" } } as const;
+		return {
+			status: 503,
+			headers: NO_STORE_HEADERS,
+			body: { message: "Stored output is unavailable", errorCode: "storage_unavailable" },
+		} as const;
 	}
 	let start = 0;
 	while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start += 1;

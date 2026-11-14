@@ -35,7 +35,7 @@ export async function plugins_follow_up_http(args: {
 			errorCode: "invalid_input",
 			errorMessage: body._nay.message,
 		});
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	const result = (await ctx.runMutation(internal.plugins_runtime.request_follow_up, {
 		runId: principal.runId,
@@ -45,24 +45,34 @@ export async function plugins_follow_up_http(args: {
 	})) as plugins_runtime_request_follow_up_Result;
 	if (result._nay) {
 		const message = result._nay.message;
-		const status =
-			message === "A follow-up is already requested" || message === "Plugin run chain limit exceeded"
-				? 409
-				: message.startsWith("Follow-up state")
-					? 400
-					: message === "Permission denied"
-						? 403
-						: 401;
-		const conflictCode = message === "A follow-up is already requested" ? "follow_up_already_requested" : "chain_limit";
-		await public_api_settle_plugin_call_best_effort(ctx, {
-			callId: pluginCallId,
-			status: "failed",
-			responseStatus: status,
-			errorCode: status === 400 ? "invalid_input" : status === 409 ? conflictCode : "permission_denied",
-			errorMessage: message,
-		});
-		if (status === 409) return { status, body: { message, errorCode: conflictCode } } as const;
-		return { status, body: { message } } as const;
+		// Settle the plugin call with the same status and code the body gets.
+		const fail = async <ErrorCode extends string>(failArgs: { status: number; errorCode: ErrorCode }) => {
+			await public_api_settle_plugin_call_best_effort(ctx, {
+				callId: pluginCallId,
+				status: "failed",
+				responseStatus: failArgs.status,
+				errorCode: failArgs.errorCode,
+				errorMessage: message,
+			});
+			return { message, errorCode: failArgs.errorCode };
+		};
+
+		if (message === "A follow-up is already requested") {
+			return {
+				status: 409,
+				body: await fail({ status: 409, errorCode: "follow_up_already_requested" }),
+			} as const;
+		}
+		if (message === "Plugin run chain limit exceeded") {
+			return { status: 409, body: await fail({ status: 409, errorCode: "chain_limit" }) } as const;
+		}
+		if (message.startsWith("Follow-up state")) {
+			return { status: 400, body: await fail({ status: 400, errorCode: "invalid_input" }) } as const;
+		}
+		if (message === "Permission denied") {
+			return { status: 403, body: await fail({ status: 403, errorCode: "permission_denied" }) } as const;
+		}
+		return { status: 401, body: await fail({ status: 401, errorCode: "unauthenticated" }) } as const;
 	}
 	return { status: 200, body: { ok: true } } as const;
 }

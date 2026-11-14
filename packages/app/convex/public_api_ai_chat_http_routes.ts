@@ -1,4 +1,4 @@
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -21,7 +21,7 @@ export function public_api_ai_chat_http_routes(router: { route: HttpRouter["rout
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_ai_chat_http_transcript } = await import("./public_api_ai_chat.ts");
 								const result = await public_api_ai_chat_http_transcript({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -53,7 +53,7 @@ export function public_api_ai_chat_http_routes(router: { route: HttpRouter["rout
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { public_api_ai_chat_http_read_output } = await import("./public_api_ai_chat.ts");
 								const result = await public_api_ai_chat_http_read_output({ ctx, request, path });
 								return Response.json(result.body, result);

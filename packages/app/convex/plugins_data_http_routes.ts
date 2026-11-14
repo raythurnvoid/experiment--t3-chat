@@ -1,5 +1,5 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { httpAction } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -29,7 +29,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_read } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_read({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -61,7 +61,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_list } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_list({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -93,7 +93,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_write } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_write({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -125,7 +125,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_write_batch } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_write_batch({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -157,7 +157,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_delete } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_delete({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -189,7 +189,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_write_versioned } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_write_versioned({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -221,7 +221,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_delete_versioned } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_delete_versioned({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -253,7 +253,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_reserve } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_reserve({ ctx, request, path });
 								return Response.json(result.body, result);
@@ -285,7 +285,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const { plugins_data_http_release_reservation } = await import("./plugins_data_http.ts");
 								const result = await plugins_data_http_release_reservation({ ctx, request, path });
 								return Response.json(result.body, result);

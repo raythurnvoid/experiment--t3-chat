@@ -303,7 +303,7 @@ describe("personal plugin scope", () => {
 			}),
 		});
 		expect(foreign.status).toBe(409);
-		expect(await foreign.json()).toEqual({ message: "This grant is for another installation" });
+		expect(await foreign.json()).toEqual({ message: "This grant is for another installation", errorCode: "conflict" });
 		for (const field of ["organizationId", "workspaceId", "installationId"] as const) {
 			for (const request of [
 				{
@@ -382,7 +382,9 @@ describe("personal plugin scope", () => {
 		const signed =
 			(await downloads.json()) as api_schemas_Main["/api/v1/files/download-urls"]["POST"]["response"][200]["body"];
 		expect(signed.items.map((item) => item.fileNodeId)).toEqual([f.teamFile.saved.nodeId]);
-		expect(signed.errors).toEqual([{ fileNodeId: f.homeFile.saved.nodeId, message: "Not found" }]);
+		expect(signed.errors).toEqual([
+			{ fileNodeId: f.homeFile.saved.nodeId, message: "Not found", errorCode: "not_found" },
+		]);
 	});
 
 	test("a team service cannot inspect or publish with home writer, parent or file IDs", async () => {
@@ -405,7 +407,7 @@ describe("personal plugin scope", () => {
 			body: JSON.stringify({ writerId: f.home.root.writer.writerId, path: PATH, maxBytes: 1024 }),
 		});
 		expect(foreign.status).toBe(403);
-		expect(await foreign.json()).toEqual({ message: "Permission denied" });
+		expect(await foreign.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		async function stored() {
 			return await f.t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),

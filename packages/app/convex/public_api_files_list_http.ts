@@ -1,4 +1,5 @@
-import { httpAction, type ActionCtx } from "./_generated/server.js";
+import type { ActionCtx } from "./_generated/server.js";
+import { public_api_http_action } from "./public_api_http_action.ts";
 import { internal } from "./_generated/api.js";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import { z } from "zod";
@@ -12,7 +13,6 @@ import {
 	public_api_resolve_live_principal,
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
-	public_api_with_auth_error_code,
 } from "./public_api_http_auth.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
@@ -66,7 +66,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								route: path,
 							});
 							if (auth._nay) {
-								return public_api_with_auth_error_code(auth._nay);
+								return auth._nay;
 							}
 							const principal = auth._yay.principal;
 							const pluginCallId = auth._yay.pluginCallId;
@@ -313,7 +313,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 						router.route({
 							path,
 							method,
-							handler: httpAction(async (ctx, request) => {
+							handler: public_api_http_action(async (ctx, request) => {
 								const result = await handler(ctx, request);
 								return Response.json(result.body, result);
 							}),

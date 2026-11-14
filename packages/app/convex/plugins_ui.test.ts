@@ -1436,7 +1436,7 @@ describe("plugin ui sessions", () => {
 		const body = await response.json();
 		expect(body.items.map((item: { fileNodeId: string }) => item.fileNodeId)).toEqual([first.nodeId, second.nodeId]);
 		expect(body.items[0].url).toContain("https://r2.test/object?key=");
-		expect(body.errors).toEqual([{ fileNodeId: "not-a-real-node-id", message: "Not found" }]);
+		expect(body.errors).toEqual([{ fileNodeId: "not-a-real-node-id", message: "Not found", errorCode: "not_found" }]);
 		expect(body.truncated).toBe(false);
 	});
 
@@ -1475,7 +1475,7 @@ describe("plugin ui sessions", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 
 	test("suppresses every batch url when its session expires during signing", async () => {
@@ -1501,7 +1501,7 @@ describe("plugin ui sessions", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 	});
 
 	test.each([
@@ -1549,7 +1549,7 @@ describe("plugin ui sessions", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 	});
 
 	test("truncates batch ids at twenty and charges the full route bucket", async () => {
@@ -1591,7 +1591,7 @@ describe("plugin ui sessions", () => {
 			body: JSON.stringify({ fileNodeIds: ["x".repeat(32_001)] }),
 		});
 		expect(oversizedBody.status).toBe(400);
-		expect(await oversizedBody.json()).toEqual({ message: "Request body is too large" });
+		expect(await oversizedBody.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
 
 		let streamCancelled = false;
 		const streamingBody = new ReadableStream<Uint8Array>({
@@ -1609,7 +1609,7 @@ describe("plugin ui sessions", () => {
 			duplex: "half",
 		} as RequestInit & { duplex: "half" });
 		expect(streamedBody.status).toBe(400);
-		expect(await streamedBody.json()).toEqual({ message: "Request body is too large" });
+		expect(await streamedBody.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
 		expect(streamCancelled).toBe(true);
 	});
 
@@ -1625,7 +1625,7 @@ describe("plugin ui sessions", () => {
 			body: JSON.stringify({ fileNodeIds: ["duplicate", "duplicate"] }),
 		});
 		expect(duplicate.status).toBe(400);
-		expect(await duplicate.json()).toEqual({ message: "fileNodeIds must be unique" });
+		expect(await duplicate.json()).toEqual({ message: "fileNodeIds must be unique", errorCode: "invalid_input" });
 		expect(getUrlSpy).not.toHaveBeenCalled();
 
 		const fullBatch = await t.fetch("/api/v1/files/download-urls", {
@@ -1672,7 +1672,7 @@ describe("plugin ui sessions", () => {
 		expect(response.status).toBe(200);
 		const body = await response.json();
 		expect(body.items.map((item: { fileNodeId: string }) => item.fileNodeId)).toEqual([local.nodeId]);
-		expect(body.errors).toEqual([{ fileNodeId: foreign.nodeId, message: "Not found" }]);
+		expect(body.errors).toEqual([{ fileNodeId: foreign.nodeId, message: "Not found", errorCode: "not_found" }]);
 		expect(JSON.stringify(body)).not.toContain("test/foreign.png");
 	});
 

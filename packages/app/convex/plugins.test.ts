@@ -1728,7 +1728,7 @@ describe("plugins Phase 0", () => {
 			body: JSON.stringify({ path: "/board-minutes.md" }),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// The file is still there. Archiving is how a delete looks in this product, so a passing
 		// status alone would not prove the member kept their work.
@@ -1844,7 +1844,7 @@ describe("plugins Phase 0", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 	});
 
 	test("enqueues multiple upload plugins without storing plugin work ids on the source asset", async () => {
@@ -2393,7 +2393,7 @@ describe("plugins Phase 0", () => {
 		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
-	test("refuses plugin output into a locked destination and records the conflict without content", async () => {
+	test("refuses plugin output into a locked destination and records the refusal without content", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin({ t, userId: membership.userId });
@@ -2512,7 +2512,7 @@ describe("plugins Phase 0", () => {
 		});
 		expect(locked._nay).toBeUndefined();
 
-		// A plugin cannot bypass the lock. It gets the same conflict as any other writer.
+		// A plugin cannot bypass the lock. It gets the same read_only refusal as any other writer.
 		const refused = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
@@ -2522,7 +2522,7 @@ describe("plugins Phase 0", () => {
 			body: JSON.stringify({ path: "/media/locked-note.md", content: "SECRET-PLUGIN-OUTPUT\n" }),
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run?.apiCallCount).toBe(2);
@@ -2541,7 +2541,7 @@ describe("plugins Phase 0", () => {
 			route: "/api/v1/files/write",
 			status: "failed",
 			responseStatus: 409,
-			errorCode: "conflict",
+			errorCode: "read_only",
 			errorMessage: "This item is read-only.",
 		});
 		// Telemetry records that the write was refused, never what it tried to write.
@@ -3585,7 +3585,7 @@ describe("plugins Phase 0", () => {
 		expect(calls[3]).toMatchObject({ responseStatus: 500, errorCode: "storage_failure" });
 	});
 
-	test("a destination locked between staging and publish settles the plugin call as a conflict", async () => {
+	test("a destination locked between staging and publish settles the plugin call as read_only", async () => {
 		const t = test_convex();
 		// Keep deletion jobs in the database so this test can check them.
 		vi.spyOn(r2_confirmed_object_delete, "delete_object").mockRejectedValue(
@@ -3643,12 +3643,12 @@ describe("plugins Phase 0", () => {
 		});
 		expect(published._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
 
-		// The read-only check marks the plugin call as a 409 conflict. Later cleanup must not replace
-		// this with an unpublished-write 500 error.
+		// The Read-only check marks the plugin call as a 409 read_only, like the route answer. Later
+		// cleanup must not replace this with an unpublished-write 500 error.
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
 		expect(call).toMatchObject({
 			status: "failed",
-			errorCode: "conflict",
+			errorCode: "read_only",
 			responseStatus: 409,
 			errorMessage: "This item is read-only.",
 		});
@@ -4822,7 +4822,10 @@ describe("plugins Phase 0", () => {
 
 		const duplicate = await start_activity({ title: "", timeoutMs: 60_000 });
 		expect(duplicate.status).toBe(409);
-		expect(await duplicate.json()).toEqual({ message: "An activity already exists for this run" });
+		expect(await duplicate.json()).toEqual({
+			message: "An activity already exists for this run",
+			errorCode: "conflict",
+		});
 		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toHaveLength(1);
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
@@ -8159,7 +8162,10 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(occupied.status).toBe(409);
-		expect(await occupied.json()).toEqual({ message: "This path is used by an item without this plugin's label" });
+		expect(await occupied.json()).toEqual({
+			message: "This path is used by an item without this plugin's label",
+			errorCode: "conflict",
+		});
 
 		// Every door call consumed and settled one plugin call.
 		const calls = await t.run((ctx) =>
@@ -8312,7 +8318,7 @@ describe("plugins metadata file doors", () => {
 			}
 		} else {
 			expect(created).toBeNull();
-			expect(await ensured.json()).toEqual({ message: "Permission denied" });
+			expect(await ensured.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		}
 		expect(
 			await t.run(async (ctx) => ({
@@ -9432,7 +9438,7 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(foreign.status).toBe(403);
-		expect(await foreign.json()).toEqual({ message: "Permission denied" });
+		expect(await foreign.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		const absent = await door_call({
 			t,
 			path: "/api/v1/files/plugin-access/set",
@@ -9443,7 +9449,7 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(absent.status).toBe(404);
-		expect(await absent.json()).toEqual({ message: "Not found" });
+		expect(await absent.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 
 		// Every door call above consumed and settled one plugin call, both refusals included.
 		const calls = await t.run((ctx) =>
@@ -9510,7 +9516,7 @@ describe("plugins metadata file doors", () => {
 			body: { paths: ["/loose.md"] },
 		});
 		expect(outside.status).toBe(403);
-		expect(await outside.json()).toEqual({ message: "Permission denied" });
+		expect(await outside.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await find_active_node({ t, fixture, path: "/loose.md" })).toBeNull();
 
 		// An unlabeled member file is refused the same way. The route answers an already-existing file by
@@ -9559,7 +9565,7 @@ describe("plugins metadata file doors", () => {
 			body: { paths: ["/board-minutes.md"] },
 		});
 		expect(existing.status).toBe(403);
-		expect(await existing.json()).toEqual({ message: "Permission denied" });
+		expect(await existing.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// A plugin that locked its own folder still creates inside it, the same way the write door
 		// lets it. Otherwise a machine-managed area could take writes but no touches.
@@ -9863,7 +9869,7 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
 		const archived = await door_call({
 			t,
@@ -10090,7 +10096,7 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(sourcelessRun.status).toBe(403);
-		expect(await sourcelessRun.json()).toEqual({ message: "Permission denied" });
+		expect(await sourcelessRun.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// An upload run with a source holds files:write for its sibling rule, so it reaches the
 		// door itself — and the door's own event gate refuses it.
@@ -10140,7 +10146,7 @@ describe("plugins metadata file doors", () => {
 			},
 		});
 		expect(uploadRun.status).toBe(401);
-		expect(await uploadRun.json()).toEqual({ message: "Unauthenticated" });
+		expect(await uploadRun.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 		await t.run((ctx) =>
 			ctx.db.patch("plugins_event_runs", run.runId, { event: "ui.invoke.requested", fileNodeId: undefined }),
 		);

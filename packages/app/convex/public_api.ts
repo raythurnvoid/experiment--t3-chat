@@ -134,7 +134,6 @@ import {
 	public_api_resolve_live_principal,
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
-	public_api_with_auth_error_code,
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
@@ -3270,21 +3269,27 @@ async function db_abandon_file_write_stage_conflict(
 		 */
 		putAssetIds: Array<Id<"files_r2_assets">>;
 		refusalMessage: string;
+		refusalName: string | undefined;
 		deletionReason: "read_only_stage" | "failed_create";
 	},
 ) {
 	const now = Date.now();
 
-	// Save the same conflict that the route returns. Do not save the refused file content.
+	// Save the same code and status that the route returns. Do not save the refused file content.
 	if (args.stage.callId) {
 		const call = await ctx.db.get("plugins_event_run_calls", args.stage.callId);
 		// Ignore a late or repeated finish. Only a started call can finish.
 		if (call && call.status === "started") {
+			const failure =
+				file_save_failure(args.refusalName) ??
+				(args.refusalMessage === "Permission denied"
+					? { status: 403, errorCode: "permission_denied" }
+					: { status: 409, errorCode: "conflict" });
 			await ctx.db.patch("plugins_event_run_calls", call._id, {
 				status: "failed",
-				errorCode: "conflict",
+				errorCode: failure.errorCode,
 				errorMessage: args.refusalMessage,
-				responseStatus: 409,
+				responseStatus: failure.status,
 				finishedAt: now,
 				elapsedMs: now - call.startedAt,
 				updatedAt: now,
@@ -3554,6 +3559,7 @@ export const publish_file_write = internalMutation({
 							? [stage.contentSnapshotAssetId]
 							: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 					refusalMessage: revalidated._nay.message,
+					refusalName: revalidated._nay.name,
 					deletionReason: "failed_create",
 				});
 			}
@@ -3574,6 +3580,7 @@ export const publish_file_write = internalMutation({
 						? [stage.contentSnapshotAssetId]
 						: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: "The file write options or content changed",
+				refusalName: "stale_write",
 				deletionReason: "failed_create",
 			});
 			return Result({ _nay: { name: "stale_write", message: "The file write options or content changed" } });
@@ -3591,6 +3598,7 @@ export const publish_file_write = internalMutation({
 						? [stage.contentSnapshotAssetId]
 						: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: "This write was already published",
+				refusalName: undefined,
 				deletionReason: "failed_create",
 			});
 			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId, revision: null } });
@@ -3633,6 +3641,7 @@ export const publish_file_write = internalMutation({
 				stage,
 				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: staleRefusal._nay.message,
+				refusalName: staleRefusal._nay.name,
 				deletionReason: "failed_create",
 			});
 			return staleRefusal;
@@ -3648,6 +3657,7 @@ export const publish_file_write = internalMutation({
 				stage,
 				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: writable._nay.message,
+				refusalName: writable._nay.name,
 				deletionReason: "read_only_stage",
 			});
 			return writable;
@@ -3711,6 +3721,7 @@ export const publish_file_write = internalMutation({
 				stage,
 				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: canCreate._nay.message,
+				refusalName: canCreate._nay.name,
 				deletionReason: "read_only_stage",
 			});
 			return canCreate;
@@ -3976,6 +3987,7 @@ export const publish_file_fill = internalMutation({
 					stage,
 					putAssetIds,
 					refusalMessage: revalidated._nay.message,
+					refusalName: revalidated._nay.name,
 					deletionReason: "failed_create",
 				});
 			}
@@ -3992,6 +4004,7 @@ export const publish_file_fill = internalMutation({
 				stage,
 				putAssetIds,
 				refusalMessage: "The file write options or content changed",
+				refusalName: "stale_write",
 				deletionReason: "failed_create",
 			});
 			return Result({ _nay: { name: "stale_write", message: "The file write options or content changed" } });
@@ -4002,6 +4015,7 @@ export const publish_file_fill = internalMutation({
 				stage,
 				putAssetIds,
 				refusalMessage: "This write was already published",
+				refusalName: undefined,
 				deletionReason: "failed_create",
 			});
 			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId, revision: null } });
@@ -4050,6 +4064,7 @@ export const publish_file_fill = internalMutation({
 				stage,
 				putAssetIds,
 				refusalMessage: writable._nay.message,
+				refusalName: writable._nay.name,
 				deletionReason: "read_only_stage",
 			});
 			return writable;
@@ -4302,6 +4317,7 @@ export const publish_file_touch = internalMutation({
 						stage,
 						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 						refusalMessage: staleRefusal._nay.message,
+						refusalName: staleRefusal._nay.name,
 						deletionReason: "failed_create",
 					});
 					return staleRefusal;
@@ -4319,6 +4335,7 @@ export const publish_file_touch = internalMutation({
 					stage,
 					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 					refusalMessage: writable._nay.message,
+					refusalName: writable._nay.name,
 					deletionReason: "read_only_stage",
 				});
 				return writable;
@@ -4371,6 +4388,7 @@ export const publish_file_touch = internalMutation({
 				stage,
 				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: staleRefusal._nay.message,
+				refusalName: staleRefusal._nay.name,
 				deletionReason: "failed_create",
 			});
 			return staleRefusal;
@@ -4401,6 +4419,7 @@ export const publish_file_touch = internalMutation({
 				stage,
 				putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
 				refusalMessage: writable._nay.message,
+				refusalName: writable._nay.name,
 				deletionReason: "read_only_stage",
 			});
 			return writable;
@@ -4554,6 +4573,7 @@ async function db_check_file_node_write_access(
 		writeContext,
 		target: { kind: "node", node: fileNode },
 	});
+	if (writable._nay?.name === "deleting") return Result({ _nay: { name: "deleting", message: writable._nay.message } });
 	if (writable._nay) return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	return Result({ _yay: fileNode });
 }
@@ -4574,11 +4594,12 @@ export const can_write_file_node = internalQuery({
 		force: v.optional(v.boolean()),
 		requestReadOnly: v.optional(v.boolean()),
 	},
-	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
+	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only"), v.literal("deleting")),
 	handler: async (ctx, args) => {
 		const access = await db_check_file_node_write_access(ctx, args);
 		if (!access._nay) return "ok";
-		return access._nay.name === "read_only" ? "read_only" : "permission_denied";
+		if (access._nay.name === "read_only" || access._nay.name === "deleting") return access._nay.name;
+		return "permission_denied";
 	},
 });
 
@@ -4610,6 +4631,7 @@ export const get_file_save_refusal = internalQuery({
 				v.literal("changed_during_write"),
 				v.literal("permission_denied"),
 				v.literal("read_only"),
+				v.literal("deleting"),
 				v.literal("file_needs_repair"),
 				v.literal("file_changed"),
 				v.literal("file_not_latest"),
@@ -5345,6 +5367,18 @@ function file_revision_failure(name: string | undefined) {
 }
 
 /**
+ * The answer for a refusal of the write policy or of the folder create step, or null for any other refusal.
+ */
+function file_save_failure(name: string | undefined) {
+	if (name === "read_only") return { status: 409 as const, errorCode: "read_only" as const };
+	if (name === "stale_write") return { status: 409 as const, errorCode: "stale_write" as const };
+	// A purge is deleting this item. Answer like any other job that holds the path.
+	if (name === "deleting") return { status: 409 as const, errorCode: "path_busy" as const };
+	if (name === "too_many_folders") return { status: 400 as const, errorCode: "too_many_folders" as const };
+	return null;
+}
+
+/**
  * The revision of a written file. Only a replayed writer-mode write has none, and its route answers
  * with the write receipt instead.
  */
@@ -5584,7 +5618,7 @@ async function write_one_text_file_attempt(
 			principalRef: args.principalRef,
 			force: args.force === true,
 			requestReadOnly: args.requestReadOnly,
-		})) as "ok" | "permission_denied" | "read_only";
+		})) as "ok" | "permission_denied" | "read_only" | "deleting";
 		if (canWriteNode !== "ok") return null;
 
 		return Result({
@@ -5628,14 +5662,25 @@ async function write_one_text_file_attempt(
 			});
 		}
 
-		const failure =
-			file_revision_failure(refusal.name) ??
-			(refusal.name === "unauthenticated"
-				? { status: 401 as const, errorCode: "unauthenticated" as const }
-				: refusal.name === "permission_denied"
-					? { status: 403 as const, errorCode: "permission_denied" as const }
-					: { status: 409 as const, errorCode: "conflict" as const });
-		return Result({ _nay: { name: "nay", message: refusal.message, data: failure } });
+		if (refusal.name === "unauthenticated") {
+			return Result({
+				_nay: { name: "nay", message: refusal.message, data: { status: 401, errorCode: "unauthenticated" } },
+			});
+		}
+		if (refusal.name === "permission_denied") {
+			return Result({
+				_nay: { name: "nay", message: refusal.message, data: { status: 403, errorCode: "permission_denied" } },
+			});
+		}
+		if (refusal.name === "read_only") {
+			return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: "read_only" } } });
+		}
+		// A purge is deleting this item. Answer like any other job that holds the path.
+		if (refusal.name === "deleting") {
+			return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: "path_busy" } } });
+		}
+		// Only the revision refusals are left: file_needs_repair, file_changed, file_not_latest.
+		return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: refusal.name } } });
 	};
 
 	// Decide create-vs-fill before staging. Writing over an existing editable text file
@@ -5801,11 +5846,21 @@ async function write_one_text_file_attempt(
 					},
 				});
 			}
-			// A locked target is a conflict, not a permission error. A permission error would stop the
-			// whole batch. A conflict stops only this item.
+			// A purge is deleting this item. Answer like any other job that holds the path.
+			if (prepared._nay.name === "deleting") {
+				return Result({
+					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
+				});
+			}
+			// A Read-only target is a 409, not a permission error. A permission error would stop the whole
+			// batch. A 409 stops only this item.
 			if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 				return Result({
-					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+					_nay: {
+						name: "nay",
+						message: prepared._nay.message,
+						data: { status: 409, errorCode: prepared._nay.name },
+					},
 				});
 			}
 			const revisionFailure = file_revision_failure(prepared._nay.name);
@@ -5878,6 +5933,7 @@ async function write_one_text_file_attempt(
 			const failure =
 				file_reference_failure(published._nay.name) ??
 				file_revision_failure(published._nay.name) ??
+				file_save_failure(published._nay.name) ??
 				(published._nay.message === "Unauthenticated"
 					? { status: 401 as const, errorCode: "unauthenticated" as const }
 					: published._nay.message === "Permission denied"
@@ -6032,11 +6088,21 @@ async function write_one_text_file_attempt(
 						},
 					});
 				}
-				// A locked target is a conflict, not a permission error. A permission error would stop the
-				// whole batch. A conflict stops only this item.
+				// A purge is deleting this item. Answer like any other job that holds the path.
+				if (prepared._nay.name === "deleting") {
+					return Result({
+						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
+					});
+				}
+				// A Read-only target is a 409, not a permission error. A permission error would stop the whole
+				// batch. A 409 stops only this item.
 				if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 					return Result({
-						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+						_nay: {
+							name: "nay",
+							message: prepared._nay.message,
+							data: { status: 409, errorCode: prepared._nay.name },
+						},
 					});
 				}
 				const revisionFailure = file_revision_failure(prepared._nay.name);
@@ -6211,6 +6277,7 @@ async function write_one_text_file_attempt(
 				const failure =
 					file_reference_failure(published._nay.name) ??
 					file_revision_failure(published._nay.name) ??
+					file_save_failure(published._nay.name) ??
 					(published._nay.message === "Unauthenticated"
 						? { status: 401 as const, errorCode: "unauthenticated" as const }
 						: published._nay.message === "Permission denied"
@@ -6317,11 +6384,21 @@ async function write_one_text_file_attempt(
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 403, errorCode: "permission_denied" } },
 			});
 		}
-		// A locked target or parent is a conflict, not a permission error. A permission error would
-		// stop the whole batch. A conflict stops only this item.
+		// A purge is deleting this item. Answer like any other job that holds the path.
+		if (prepared._nay.name === "deleting") {
+			return Result({
+				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
+			});
+		}
+		// A Read-only target or parent is a 409, not a permission error. A permission error would stop
+		// the whole batch. A 409 stops only this item.
 		if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 			return Result({
-				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
+				_nay: {
+					name: "nay",
+					message: prepared._nay.message,
+					data: { status: 409, errorCode: prepared._nay.name },
+				},
 			});
 		}
 		const revisionFailure = file_revision_failure(prepared._nay.name);
@@ -6402,18 +6479,17 @@ async function write_one_text_file_attempt(
 		// while the auth and storage failures use fixed literals.
 		const failure =
 			file_reference_failure(published._nay.name) ??
+			file_save_failure(published._nay.name) ??
 			(published._nay.message === "Unauthenticated"
 				? { status: 401 as const, errorCode: "unauthenticated" as const }
 				: published._nay.message === "Permission denied"
 					? { status: 403 as const, errorCode: "permission_denied" as const }
 					: published._nay.message === "Write was not published"
 						? { status: 500 as const, errorCode: "storage_failure" as const }
-						: published._nay.name === "too_many_folders"
-							? { status: 400 as const, errorCode: "invalid_input" as const }
-							: // Another writer created the file after the check above.
-								published._nay.name === "file_exists"
-								? { status: 409 as const, errorCode: "file_exists" as const }
-								: { status: 409 as const, errorCode: "conflict" as const });
+						: // Another writer created the file after the check above.
+							published._nay.name === "file_exists"
+							? { status: 409 as const, errorCode: "file_exists" as const }
+							: { status: 409 as const, errorCode: "conflict" as const });
 		// A read-only refusal already cleaned up the stage during publish. Cleanup keeps the plugin
 		// call open: the route settles it with this refusal's own status.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -6524,7 +6600,9 @@ export async function public_api_http_read_file(args: {
 }) {
 	const { ctx, request, path } = args;
 	const headers = { "Cache-Control": "no-store" };
-	const refuse = <S extends number>(status: S, errorCode: string, message: string) => ({
+	// Storage failures answer 503, not 502. The deployed `convex.site` edge replaces 502 bodies, so the
+	// client would lose the errorCode.
+	const refuse = <S extends number, ErrorCode extends string>(status: S, errorCode: ErrorCode, message: string) => ({
 		status,
 		headers,
 		body: { message, errorCode },
@@ -6537,7 +6615,7 @@ export async function public_api_http_read_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return { ...public_api_with_auth_error_code(auth._nay), headers };
+		return { ...auth._nay, headers };
 	}
 	const { principal, pluginCallId, presentedToken } = auth._yay;
 	let fileReadStarted = false;
@@ -6628,7 +6706,7 @@ export async function public_api_http_read_file(args: {
 		if (cursor && cursor.sourceDigest !== source.sourceDigest)
 			return refuse(409, "file_changed", "File changed. Start a new read.");
 		if (source.contentType.length > 256 || !/^[\x20-\x7e]+$/u.test(source.contentType))
-			return refuse(502, "storage_unavailable", "File content type unavailable");
+			return refuse(503, "storage_unavailable", "File content type unavailable");
 		const offset = cursor?.offset ?? 0;
 		if (cursor && offset >= source.size) return refuse(400, "invalid_cursor", "Invalid cursor");
 		const length = Math.min(FILES_READ_PAGE_BYTES, source.size - offset);
@@ -6660,7 +6738,7 @@ export async function public_api_http_read_file(args: {
 				etag = response.headers.get("ETag");
 				if (!response.ok || !response.body || !etag || !/^"[\x21\x23-\x7e]{1,256}"$/u.test(etag)) {
 					await response.body?.cancel();
-					return refuse(502, "storage_unavailable", "File range unavailable");
+					return refuse(503, "storage_unavailable", "File range unavailable");
 				}
 				// A still-live upload URL can replace the object without changing its saved asset doc.
 				if (cursor && cursor.etag !== etag) {
@@ -6673,7 +6751,7 @@ export async function public_api_http_read_file(args: {
 						: response.status === 200 && offset === 0 && length === source.size;
 				if (!validRange) {
 					await response.body.cancel();
-					return refuse(502, "storage_unavailable", "File range unavailable");
+					return refuse(503, "storage_unavailable", "File range unavailable");
 				}
 				const reader = response.body.getReader();
 				let received = 0;
@@ -6682,18 +6760,18 @@ export async function public_api_http_read_file(args: {
 						const chunk = await reader.read();
 						if (chunk.done) break;
 						if (received + chunk.value.byteLength > length)
-							return refuse(502, "storage_unavailable", "File range unavailable");
+							return refuse(503, "storage_unavailable", "File range unavailable");
 						bytes.set(chunk.value, received);
 						received += chunk.value.byteLength;
 					}
 				} finally {
 					await reader.cancel();
 				}
-				if (received !== length) return refuse(502, "storage_unavailable", "File range unavailable");
+				if (received !== length) return refuse(503, "storage_unavailable", "File range unavailable");
 			}
 			request.signal.throwIfAborted();
 		} catch {
-			return refuse(502, "storage_unavailable", "File bytes unavailable");
+			return refuse(503, "storage_unavailable", "File bytes unavailable");
 		}
 		const nextCursor =
 			offset + length < source.size
@@ -6825,17 +6903,21 @@ export async function public_api_http_get_file_read_only(args: {
 
 	const body = await server_request_json_parse_and_validate(request, get_file_read_only_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	if (body._yay.path !== undefined) {
 		if (!body._yay.path.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute." } } as const;
+			return { status: 400, body: { message: "Path must be absolute.", errorCode: "invalid_input" } } as const;
 		}
 		const length = files_check_request_path_length(body._yay.path);
-		if (length._nay) return { status: 400, body: { message: length._nay.message } } as const;
+		if (length._nay)
+			return { status: 400, body: { message: length._nay.message, errorCode: "invalid_input" } } as const;
 		body._yay.path = server_path_normalize(body._yay.path);
 		if (body._yay.path === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root." } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must not be the workspace root.", errorCode: "invalid_input" },
+			} as const;
 		}
 	}
 
@@ -6848,10 +6930,14 @@ export async function public_api_http_get_file_read_only(args: {
 		...body._yay,
 	})) as get_file_read_only_Result;
 	if (result._nay) {
-		return {
-			status: result._nay.message === "Unauthenticated" ? 401 : result._nay.message === "Not found" ? 404 : 403,
-			body: { message: result._nay.message },
-		} as const;
+		const message = result._nay.message;
+		if (message === "Unauthenticated") {
+			return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
+		}
+		if (message === "Not found") {
+			return { status: 404, body: { message, errorCode: "not_found" } } as const;
+		}
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
@@ -6888,17 +6974,21 @@ export async function public_api_http_set_file_read_only(args: {
 
 	const body = await server_request_json_parse_and_validate(request, set_file_read_only_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	if (body._yay.path !== undefined) {
 		if (!body._yay.path.startsWith("/")) {
-			return { status: 400, body: { message: "Path must be absolute." } } as const;
+			return { status: 400, body: { message: "Path must be absolute.", errorCode: "invalid_input" } } as const;
 		}
 		const length = files_check_request_path_length(body._yay.path);
-		if (length._nay) return { status: 400, body: { message: length._nay.message } } as const;
+		if (length._nay)
+			return { status: 400, body: { message: length._nay.message, errorCode: "invalid_input" } } as const;
 		body._yay.path = server_path_normalize(body._yay.path);
 		if (body._yay.path === "/") {
-			return { status: 400, body: { message: "Path must not be the workspace root." } } as const;
+			return {
+				status: 400,
+				body: { message: "Path must not be the workspace root.", errorCode: "invalid_input" },
+			} as const;
 		}
 	}
 
@@ -6911,10 +7001,14 @@ export async function public_api_http_set_file_read_only(args: {
 		...body._yay,
 	})) as set_file_read_only_Result;
 	if (result._nay) {
-		return {
-			status: result._nay.message === "Unauthenticated" ? 401 : result._nay.message === "Not found" ? 404 : 403,
-			body: { message: result._nay.message },
-		} as const;
+		const message = result._nay.message;
+		if (message === "Unauthenticated") {
+			return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
+		}
+		if (message === "Not found") {
+			return { status: 404, body: { message, errorCode: "not_found" } } as const;
+		}
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
@@ -6949,14 +7043,17 @@ export async function public_api_http_set_file_public(args: {
 
 	const body = await server_request_json_parse_and_validate(request, set_file_public_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = auth._yay.principal;
 	// The same bucket as the app's Sharing writes.
 	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: principal.userId });
 	if (rateLimit) {
-		return { status: 429, body: { message: rateLimit.message, retryAfterMs: rateLimit.retryAfterMs } } as const;
+		return {
+			status: 429,
+			body: { message: rateLimit.message, errorCode: "rate_limited", retryAfterMs: rateLimit.retryAfterMs },
+		} as const;
 	}
 
 	const result = (await ctx.runMutation(internal.public_api.set_file_public, {
@@ -6967,20 +7064,24 @@ export async function public_api_http_set_file_public(args: {
 		...body._yay,
 	})) as set_file_public_Result;
 	if (result._nay) {
-		return {
-			status:
-				result._nay.message === "Unauthenticated"
-					? 401
-					: result._nay.message === "Not found"
-						? 404
-						: result._nay.name === "not_a_file"
-							? 400
-							: // A Move or an access change that is still running. Retry later.
-								result._nay.name === "move_busy" || result._nay.name === "not_ready"
-								? 409
-								: 403,
-			body: { message: result._nay.message },
-		} as const;
+		const message = result._nay.message;
+		if (message === "Unauthenticated") {
+			return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
+		}
+		if (message === "Not found") {
+			return { status: 404, body: { message, errorCode: "not_found" } } as const;
+		}
+		if (result._nay.name === "not_a_file") {
+			return { status: 400, body: { message, errorCode: "invalid_input" } } as const;
+		}
+		// A Move or an access change that is still running. Retry later.
+		if (result._nay.name === "move_busy") {
+			return { status: 409, body: { message, errorCode: "move_busy" } } as const;
+		}
+		if (result._nay.name === "not_ready") {
+			return { status: 409, body: { message, errorCode: "not_ready" } } as const;
+		}
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 
 	return {
@@ -7110,14 +7211,18 @@ export async function public_api_http_write_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return public_api_with_auth_error_code(auth._nay);
+		return auth._nay;
 	}
 	const principal = auth._yay.principal;
 	const pluginCallId = auth._yay.pluginCallId;
 
 	// Settles the consumed plugin call and builds the error body in one step; the
-	// caller supplies the matching literal status so the response union stays narrow.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	// caller supplies the matching literal status and code so the response union stays narrow.
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -7309,7 +7414,7 @@ export async function public_api_http_write_file(args: {
 		const bearer = request.headers.get("Authorization");
 		const secret = request.headers.get("X-Bonobo-Service-Authorization");
 		if (!bearer?.startsWith("Bearer ") || !secret?.startsWith("Bearer ")) {
-			return { status: 401, body: { message: "Unauthenticated" } } as const;
+			return { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } as const;
 		}
 		const checkedIds = await ctx.runQuery(internal.plugins_external_files.check_public_request, {
 			writerId: writer.writerId,
@@ -7318,7 +7423,7 @@ export async function public_api_http_write_file(args: {
 		if (checkedIds._nay)
 			return {
 				status: 400,
-				body: { message: checkedIds._nay.message },
+				body: { message: checkedIds._nay.message, errorCode: "invalid_input" },
 			} as const;
 
 		if (shape === null) {
@@ -7352,13 +7457,19 @@ export async function public_api_http_write_file(args: {
 		};
 		const prior = await ctx.runQuery(internal.plugins_external_files.get_write_receipt, receiptArgs);
 		if (prior._nay) {
-			const status =
-				prior._nay.name === "stale_write" || prior._nay.name === "read_only"
-					? 409
-					: prior._nay.message === "Permission denied"
-						? 403
-						: 401;
-			return { status, body: { message: status === 401 ? "Unauthenticated" : prior._nay.message } } as const;
+			if (prior._nay.name === "stale_write") {
+				return { status: 409, body: { message: prior._nay.message, errorCode: "stale_write" } } as const;
+			}
+			if (prior._nay.name === "read_only") {
+				return { status: 409, body: { message: prior._nay.message, errorCode: "read_only" } } as const;
+			}
+			if (prior._nay.name === "deleting") {
+				return { status: 409, body: { message: prior._nay.message, errorCode: "path_busy" } } as const;
+			}
+			if (prior._nay.message === "Permission denied") {
+				return { status: 403, body: { message: prior._nay.message, errorCode: "permission_denied" } } as const;
+			}
+			return { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } as const;
 		}
 		if (prior._yay) {
 			return {
@@ -7419,25 +7530,27 @@ export async function public_api_http_write_file(args: {
 		force: body._yay.force === true,
 	});
 	if (written._nay) {
-		const failBody = await fail({
-			status: written._nay.data.status,
-			message: written._nay.message,
-			errorCode: written._nay.data.errorCode,
-		});
-		// Branch per literal so the response union keeps exact status literals.
-		if (written._nay.data.status === 400) {
-			return { status: 400, body: failBody } as const;
+		const message = written._nay.message;
+		const failure = written._nay.data;
+		// Branch per status and build the body inside the branch. Then the route types tie each code to
+		// its own status.
+		if (failure.status === 400) {
+			return { status: 400, body: await fail({ status: 400, message, errorCode: failure.errorCode }) } as const;
 		}
-		if (written._nay.data.status === 409) {
-			return { status: 409, body: failBody } as const;
+		if (failure.status === 409) {
+			return { status: 409, body: await fail({ status: 409, message, errorCode: failure.errorCode }) } as const;
 		}
-		if (written._nay.data.status === 403) {
-			return { status: 403, body: failBody } as const;
+		if (failure.status === 403) {
+			return { status: 403, body: await fail({ status: 403, message, errorCode: failure.errorCode }) } as const;
 		}
-		if (written._nay.data.status === 401) {
-			return { status: 401, body: failBody } as const;
+		if (failure.status === 401) {
+			return { status: 401, body: await fail({ status: 401, message, errorCode: failure.errorCode }) } as const;
 		}
-		return { status: 500, body: failBody } as const;
+		// Only edits and appends refuse a missing file, and this route only writes.
+		if (failure.status === 404) {
+			throw should_never_happen("Edit refusal in a write", { path: requestedPath });
+		}
+		return { status: 500, body: await fail({ status: 500, message, errorCode: failure.errorCode }) } as const;
 	}
 
 	// A skipped write is a success for the caller and for a plugin call, but no
@@ -7487,15 +7600,26 @@ export async function public_api_http_write_file(args: {
 	if (receiptArgs) {
 		const receipt = await ctx.runQuery(internal.plugins_external_files.get_write_receipt, receiptArgs);
 		if (receipt._nay) {
-			const status =
-				receipt._nay.name === "stale_write" || receipt._nay.name === "read_only"
-					? 409
-					: receipt._nay.message === "Permission denied"
-						? 403
-						: 401;
-			return { status, body: { message: status === 401 ? "Unauthenticated" : receipt._nay.message } } as const;
+			if (receipt._nay.name === "stale_write") {
+				return { status: 409, body: { message: receipt._nay.message, errorCode: "stale_write" } } as const;
+			}
+			if (receipt._nay.name === "read_only") {
+				return { status: 409, body: { message: receipt._nay.message, errorCode: "read_only" } } as const;
+			}
+			if (receipt._nay.name === "deleting") {
+				return { status: 409, body: { message: receipt._nay.message, errorCode: "path_busy" } } as const;
+			}
+			if (receipt._nay.message === "Permission denied") {
+				return { status: 403, body: { message: receipt._nay.message, errorCode: "permission_denied" } } as const;
+			}
+			return { status: 401, body: { message: "Unauthenticated", errorCode: "unauthenticated" } } as const;
 		}
-		if (!receipt._yay) return { status: 500, body: { message: "The write receipt is unavailable" } } as const;
+		if (!receipt._yay) {
+			return {
+				status: 500,
+				body: { message: "The write receipt is unavailable", errorCode: "internal_error" },
+			} as const;
+		}
 		return {
 			status: 200,
 			body: {
@@ -7579,7 +7703,7 @@ export async function public_api_http_change_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return public_api_with_auth_error_code(auth._nay);
+		return auth._nay;
 	}
 	const principal = auth._yay.principal;
 	// The change starts from the file's text, so the key must also be allowed to read it.
@@ -7644,24 +7768,26 @@ export async function public_api_http_change_file(args: {
 		force: body._yay.force === true,
 	});
 	if (written._nay) {
-		const failBody = { message: written._nay.message, errorCode: written._nay.data.errorCode };
-		// Branch per literal so the response union keeps exact status literals.
-		if (written._nay.data.status === 400) {
-			return { status: 400, body: failBody } as const;
+		const message = written._nay.message;
+		const failure = written._nay.data;
+		// Branch per status and read the code inside the branch. Then the route types tie each code to
+		// its own status.
+		if (failure.status === 400) {
+			return { status: 400, body: { message, errorCode: failure.errorCode } } as const;
 		}
-		if (written._nay.data.status === 404) {
-			return { status: 404, body: failBody } as const;
+		if (failure.status === 404) {
+			return { status: 404, body: { message, errorCode: failure.errorCode } } as const;
 		}
-		if (written._nay.data.status === 409) {
-			return { status: 409, body: failBody } as const;
+		if (failure.status === 409) {
+			return { status: 409, body: { message, errorCode: failure.errorCode } } as const;
 		}
-		if (written._nay.data.status === 403) {
-			return { status: 403, body: failBody } as const;
+		if (failure.status === 403) {
+			return { status: 403, body: { message, errorCode: failure.errorCode } } as const;
 		}
-		if (written._nay.data.status === 401) {
-			return { status: 401, body: failBody } as const;
+		if (failure.status === 401) {
+			return { status: 401, body: { message, errorCode: failure.errorCode } } as const;
 		}
-		return { status: 500, body: failBody } as const;
+		return { status: 500, body: { message, errorCode: failure.errorCode } } as const;
 	}
 
 	console.info(written._yay.unchanged ? "Public API file change skipped as unchanged" : "Public API file changed", {
@@ -7737,7 +7863,7 @@ export async function public_api_http_write_many(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return public_api_with_auth_error_code(auth._nay);
+		return auth._nay;
 	}
 	const principal = auth._yay.principal;
 
@@ -8027,6 +8153,9 @@ export async function public_api_http_write_many(args: {
 		errorCode:
 			| "permission_denied"
 			| "conflict"
+			| "read_only"
+			| "stale_write"
+			| "path_busy"
 			| "file_exists"
 			| "storage_failure"
 			| "file_changed"
@@ -8048,6 +8177,10 @@ export async function public_api_http_write_many(args: {
 			}
 			if (result._nay.data.errorCode === "invalid_input") {
 				return { status: 400, body: { message: result._nay.message, errorCode: "invalid_input" } } as const;
+			}
+			// Like a bad path, too many new folders refuses the whole request.
+			if (result._nay.data.errorCode === "too_many_folders") {
+				return { status: 400, body: { message: result._nay.message, errorCode: "too_many_folders" } } as const;
 			}
 			// Only plugin writes check file refs, and this route takes only people's keys.
 			if (
@@ -8128,8 +8261,12 @@ export async function public_api_http_touch_files(args: {
 	const pluginCallId = auth._yay.pluginCallId;
 
 	// Settles the consumed plugin call and builds the error body in one step; the
-	// caller supplies the matching literal status so the response union stays narrow.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	// caller supplies the matching literal status and code so the response union stays narrow.
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -8137,7 +8274,7 @@ export async function public_api_http_touch_files(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, touch_files_body_validator);
@@ -8273,18 +8410,25 @@ export async function public_api_http_touch_files(args: {
 				path: requestedPath,
 				principalRef,
 				force: body._yay.force === true,
-			})) as "ok" | "permission_denied" | "read_only";
+			})) as "ok" | "permission_denied" | "read_only" | "deleting";
 			if (canWriteNode === "permission_denied") {
 				return {
 					status: 403,
 					body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 				} as const;
 			}
-			// A locked target refuses touch. Return the same conflict as a locked write.
+			// A Read-only target refuses touch, like a write.
 			if (canWriteNode === "read_only") {
 				return {
 					status: 409,
-					body: await fail({ status: 409, message: "This item is read-only.", errorCode: "conflict" }),
+					body: await fail({ status: 409, message: "This item is read-only.", errorCode: "read_only" }),
+				} as const;
+			}
+			// A purge is deleting this item. Answer like any other job that holds the path.
+			if (canWriteNode === "deleting") {
+				return {
+					status: 409,
+					body: await fail({ status: 409, message: "This item is being deleted.", errorCode: "path_busy" }),
 				} as const;
 			}
 			if (activeNode.kind === "folder") {
@@ -8342,11 +8486,18 @@ export async function public_api_http_touch_files(args: {
 					body: await fail({ status: 400, message: prepared._nay.message, errorCode: "invalid_input" }),
 				} as const;
 			}
-			// A locked parent is a conflict, not a permission error.
+			// A purge is deleting this item. Answer like any other job that holds the path.
+			if (prepared._nay.name === "deleting") {
+				return {
+					status: 409,
+					body: await fail({ status: 409, message: prepared._nay.message, errorCode: "path_busy" }),
+				} as const;
+			}
+			// A Read-only parent is a 409, not a permission error.
 			if (prepared._nay.name === "read_only") {
 				return {
 					status: 409,
-					body: await fail({ status: 409, message: prepared._nay.message, errorCode: "conflict" }),
+					body: await fail({ status: 409, message: prepared._nay.message, errorCode: "read_only" }),
 				} as const;
 			}
 			return {
@@ -8407,32 +8558,7 @@ export async function public_api_http_touch_files(args: {
 			targetAnchor: prepared._yay.targetAnchor,
 		});
 		if (published._nay) {
-			// Conflict is the fallback: structural 409s pass their specific message through,
-			// while the auth and storage failures use fixed literals.
-			const failedStatus =
-				published._nay.message === "Unauthenticated"
-					? 401
-					: published._nay.message === "Permission denied"
-						? 403
-						: published._nay.message === "Write was not published"
-							? 500
-							: published._nay.name === "too_many_folders"
-								? 400
-								: 409;
-			const failBody = await fail({
-				status: failedStatus,
-				message: published._nay.message,
-				errorCode:
-					failedStatus === 409
-						? "conflict"
-						: failedStatus === 403
-							? "permission_denied"
-							: failedStatus === 401
-								? "unauthenticated"
-								: failedStatus === 400
-									? "invalid_input"
-									: "storage_failure",
-			});
+			const message = published._nay.message;
 			// A read-only refusal already cleaned up the stage during publish.
 			if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
 				await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
@@ -8441,19 +8567,40 @@ export async function public_api_http_touch_files(args: {
 					orphanedScope: stageScope,
 				});
 			}
-			if (failedStatus === 409) {
-				return { status: 409, body: failBody } as const;
+
+			// Conflict is the fallback: structural 409s pass their specific message through, while the
+			// auth and storage failures use fixed literals. One return per status keeps each code tied to it.
+			if (message === "Unauthenticated") {
+				return {
+					status: 401,
+					body: await fail({ status: 401, message, errorCode: "unauthenticated" }),
+				} as const;
 			}
-			if (failedStatus === 403) {
-				return { status: 403, body: failBody } as const;
+			if (message === "Permission denied") {
+				return {
+					status: 403,
+					body: await fail({ status: 403, message, errorCode: "permission_denied" }),
+				} as const;
 			}
-			if (failedStatus === 401) {
-				return { status: 401, body: failBody } as const;
+			if (message === "Write was not published") {
+				return {
+					status: 500,
+					body: await fail({ status: 500, message, errorCode: "storage_failure" }),
+				} as const;
 			}
-			if (failedStatus === 400) {
-				return { status: 400, body: failBody } as const;
+			if (published._nay.name === "too_many_folders") {
+				return {
+					status: 400,
+					body: await fail({ status: 400, message, errorCode: "too_many_folders" }),
+				} as const;
 			}
-			return { status: 500, body: failBody } as const;
+			if (published._nay.name === "read_only") {
+				return { status: 409, body: await fail({ status: 409, message, errorCode: "read_only" }) } as const;
+			}
+			if (published._nay.name === "deleting") {
+				return { status: 409, body: await fail({ status: 409, message, errorCode: "path_busy" }) } as const;
+			}
+			return { status: 409, body: await fail({ status: 409, message, errorCode: "conflict" }) } as const;
 		}
 
 		files.push({ path: requestedPath, nodeId: published._yay.nodeId, created: published._yay.created });
@@ -8497,25 +8644,31 @@ export async function public_api_http_download_urls(args: {
 
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
-		return { status: 400, body: { message: "Request body is too large" } } as const;
+		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
 	}
 	const bodyText = await read_request_text_bounded(request, FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES);
 	if (bodyText === null) {
-		return { status: 400, body: { message: "Request body is too large" } } as const;
+		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
 	}
 	let bodyJson: unknown;
 	try {
 		bodyJson = JSON.parse(bodyText);
 	} catch {
-		return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+		return {
+			status: 400,
+			body: { message: "Failed to parse request body as JSON", errorCode: "invalid_input" },
+		} as const;
 	}
 	const body = download_urls_body_validator.safeParse(bodyJson);
 	if (!body.success) {
-		return { status: 400, body: { message: server_request_body_issue_message(body.error) } } as const;
+		return {
+			status: 400,
+			body: { message: server_request_body_issue_message(body.error), errorCode: "invalid_input" },
+		} as const;
 	}
 	// Duplicate ids never consume principal capacity or start file work.
 	if (new Set(body.data.fileNodeIds).size !== body.data.fileNodeIds.length) {
-		return { status: 400, body: { message: "fileNodeIds must be unique" } } as const;
+		return { status: 400, body: { message: "fileNodeIds must be unique", errorCode: "invalid_input" } } as const;
 	}
 
 	const auth = await public_api_authorize_request({
@@ -8532,7 +8685,11 @@ export async function public_api_http_download_urls(args: {
 	const pluginCallId = auth._yay.pluginCallId;
 	const presentedToken = auth._yay.presentedToken;
 
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -8540,7 +8697,7 @@ export async function public_api_http_download_urls(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	// A backend plugin can request only its triggering upload, but it uses the same
@@ -8578,7 +8735,7 @@ export async function public_api_http_download_urls(args: {
 		});
 		return {
 			status: 429,
-			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			body: { message: batchRateLimit.message, errorCode: "rate_limited", retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
 	}
 
@@ -8667,15 +8824,11 @@ export async function public_api_http_download_urls(args: {
 		requiredScope: "files:download" satisfies public_api_Scope,
 	});
 	if (signingAuthority._nay) {
-		const status = signingAuthority._nay.message === "Permission denied" ? 403 : 401;
-		return {
-			status,
-			body: await fail({
-				status,
-				message: signingAuthority._nay.message,
-				errorCode: status === 403 ? "permission_denied" : "unauthenticated",
-			}),
-		} as const;
+		const message = signingAuthority._nay.message;
+		if (message === "Permission denied") {
+			return { status: 403, body: await fail({ status: 403, message, errorCode: "permission_denied" }) } as const;
+		}
+		return { status: 401, body: await fail({ status: 401, message, errorCode: "unauthenticated" }) } as const;
 	}
 	if (!has_same_download_authority(principal, signingAuthority._yay)) {
 		return {
@@ -8751,12 +8904,17 @@ export async function public_api_http_download_urls(args: {
 	);
 	const expiresAt = Math.min(preSignAt + expiresIn * 1000, principalAuthorityExpiresAt ?? Number.POSITIVE_INFINITY);
 	const items: Array<{ fileNodeId: string; url: string; expiresAt: number }> = [];
-	const errors: Array<{ fileNodeId: string; message: string }> = [];
+	const errors: Array<
+		| { fileNodeId: string; message: "Permission denied"; errorCode: "permission_denied" }
+		| { fileNodeId: string; message: "Not found"; errorCode: "not_found" }
+	> = [];
 	for (const entry of signed) {
 		if (entry.url) {
 			items.push({ fileNodeId: entry.fileNodeId, url: entry.url, expiresAt });
+		} else if (entry.locked) {
+			errors.push({ fileNodeId: entry.fileNodeId, message: "Permission denied", errorCode: "permission_denied" });
 		} else {
-			errors.push({ fileNodeId: entry.fileNodeId, message: entry.locked ? "Permission denied" : "Not found" });
+			errors.push({ fileNodeId: entry.fileNodeId, message: "Not found", errorCode: "not_found" });
 		}
 	}
 
@@ -8768,15 +8926,11 @@ export async function public_api_http_download_urls(args: {
 		requiredScope: "files:download" satisfies public_api_Scope,
 	});
 	if (revalidated._nay) {
-		const status = revalidated._nay.message === "Permission denied" ? 403 : 401;
-		return {
-			status,
-			body: await fail({
-				status,
-				message: revalidated._nay.message,
-				errorCode: status === 403 ? "permission_denied" : "unauthenticated",
-			}),
-		} as const;
+		const message = revalidated._nay.message;
+		if (message === "Permission denied") {
+			return { status: 403, body: await fail({ status: 403, message, errorCode: "permission_denied" }) } as const;
+		}
+		return { status: 401, body: await fail({ status: 401, message, errorCode: "unauthenticated" }) } as const;
 	}
 	if (!has_same_download_authority(principal, revalidated._yay)) {
 		return {
@@ -8874,12 +9028,17 @@ export async function public_api_http_upload_urls(args: {
 
 	const body = await server_request_json_parse_and_validate(request, upload_urls_body_validator);
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 	// Refuse a path too long to look up before the batch takes more rate limit slots.
 	for (const file of body._yay.files) {
 		const pathLength = files_check_request_path_length(file.path);
-		if (pathLength._nay) return { status: 400, body: { message: pathLength._nay.message, path: file.path } } as const;
+		if (pathLength._nay) {
+			return {
+				status: 400,
+				body: { message: pathLength._nay.message, errorCode: "invalid_input", path: file.path },
+			} as const;
+		}
 	}
 
 	// Authorization charged one principal slot for the request. The URLs charge their own bulk
@@ -8892,7 +9051,7 @@ export async function public_api_http_upload_urls(args: {
 	if (batchRateLimit) {
 		return {
 			status: 429,
-			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			body: { message: batchRateLimit.message, errorCode: "rate_limited", retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
 	}
 
@@ -8910,38 +9069,34 @@ export async function public_api_http_upload_urls(args: {
 		// Mint failures are all-or-nothing: the mutation validates the whole batch
 		// before writing, so no partial targets exist when it returns `_nay`.
 		const failedPath = created._nay.data?.path;
-		const isReadOnly = created._nay.name === "read_only";
-		const failedStatus =
-			created._nay.message === "Unauthenticated"
-				? 401
-				: created._nay.message === "Permission denied" ||
-					  created._nay.name === "storage_full" ||
-					  created._nay.name === "plan_required"
-					? 403
-					: isReadOnly ||
-						  created._nay.name === "move_busy" ||
-						  created._nay.name === "path_busy" ||
-						  created._nay.message === "A file already exists at this path" ||
-						  created._nay.message === "The path cannot point to a folder" ||
-						  created._nay.message === files_PATH_BELOW_FILE_MESSAGE
-						? 409
-						: 400;
-		if (failedStatus === 401) {
-			return { status: 401, body: { message: created._nay.message } } as const;
+		const message = created._nay.message;
+		const name = created._nay.name;
+		if (message === "Unauthenticated") {
+			return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
 		}
-		if (failedStatus === 403) {
-			return { status: 403, body: { message: created._nay.message, path: failedPath } } as const;
+		if (message === "Permission denied") {
+			return { status: 403, body: { message, errorCode: "permission_denied", path: failedPath } } as const;
 		}
-		if (failedStatus === 409) {
-			return { status: 409, body: { message: created._nay.message, path: failedPath } } as const;
+		if (name === "storage_full" || name === "plan_required") {
+			return { status: 403, body: { message, errorCode: name, path: failedPath } } as const;
 		}
-		if (created._nay.name === "too_many_folders") {
-			return {
-				status: 400,
-				body: { message: created._nay.message, path: failedPath, code: created._nay.name },
-			} as const;
+		if (name === "read_only" || name === "move_busy" || name === "path_busy") {
+			return { status: 409, body: { message, errorCode: name, path: failedPath } } as const;
 		}
-		return { status: 400, body: { message: created._nay.message, path: failedPath } } as const;
+		// A purge is deleting this item. Answer like any other job that holds the path.
+		if (name === "deleting") {
+			return { status: 409, body: { message, errorCode: "path_busy", path: failedPath } } as const;
+		}
+		if (message === "A file already exists at this path") {
+			return { status: 409, body: { message, errorCode: "file_exists", path: failedPath } } as const;
+		}
+		if (message === "The path cannot point to a folder" || message === files_PATH_BELOW_FILE_MESSAGE) {
+			return { status: 409, body: { message, errorCode: "conflict", path: failedPath } } as const;
+		}
+		if (name === "too_many_folders") {
+			return { status: 400, body: { message, errorCode: name, path: failedPath } } as const;
+		}
+		return { status: 400, body: { message, errorCode: "invalid_input", path: failedPath } } as const;
 	}
 
 	console.info("Public API upload urls minted", {
@@ -8990,8 +9145,12 @@ export async function public_api_http_start_activity(args: {
 	const pluginCallId = auth._yay.pluginCallId;
 
 	// Settles the consumed plugin call and builds the error body in one step; the
-	// caller supplies the matching literal status so the response union stays narrow.
-	const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+	// caller supplies the matching literal status and code so the response union stays narrow.
+	const fail = async <ErrorCode extends string>(failArgs: {
+		status: number;
+		message: string;
+		errorCode: ErrorCode;
+	}) => {
 		await public_api_settle_plugin_call_best_effort(ctx, {
 			callId: pluginCallId,
 			status: "failed",
@@ -8999,7 +9158,7 @@ export async function public_api_http_start_activity(args: {
 			errorCode: failArgs.errorCode,
 			errorMessage: failArgs.message,
 		});
-		return { message: failArgs.message };
+		return { message: failArgs.message, errorCode: failArgs.errorCode };
 	};
 
 	const body = await server_request_json_parse_and_validate(request, start_activity_body_validator);

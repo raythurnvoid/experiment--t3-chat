@@ -75,7 +75,13 @@ const written_validator = v.object({ path: v.string(), bytes: v.number() });
 type RunContext = { runId: Id<"plugins_event_runs">; callId: Id<"plugins_event_run_calls">; tokenHash: string };
 type FailureStatus = Infer<typeof failure_data_validator>["status"];
 
-function failure(args: { status: FailureStatus; message: string; errorCode: string; retryAfterMs?: number }) {
+// Keep the literal status and code, so the route type ties each code to its status.
+function failure<const Status extends FailureStatus, const ErrorCode extends string>(args: {
+	status: Status;
+	message: string;
+	errorCode: ErrorCode;
+	retryAfterMs?: number;
+}) {
 	const { retryAfterMs, errorCode, message, status } = args;
 
 	return Result({
@@ -506,7 +512,7 @@ export const stage = internalMutation({
 			return failure({
 				status: 429,
 				message: rate.message,
-				errorCode: "rate_limit_exceeded",
+				errorCode: "rate_limited",
 				retryAfterMs: rate.retryAfterMs,
 			});
 		const now = Date.now();
@@ -584,7 +590,7 @@ export const publish = internalMutation({
 			return failure({
 				status: 429,
 				message: rate.message,
-				errorCode: "rate_limit_exceeded",
+				errorCode: "rate_limited",
 				retryAfterMs: rate.retryAfterMs,
 			});
 		if (volume.publishedGenerationId)
@@ -633,7 +639,7 @@ export const delete_volume = internalMutation({
 			return failure({
 				status: 429,
 				message: rate.message,
-				errorCode: "rate_limit_exceeded",
+				errorCode: "rate_limited",
 				retryAfterMs: rate.retryAfterMs,
 			});
 		await plugins_volumes_db_schedule_volume_drain(ctx, { volumeId: volume._id });
@@ -685,7 +691,7 @@ export const prepare_write = internalMutation({
 			return failure({
 				status: 429,
 				message: rate.message,
-				errorCode: "rate_limit_exceeded",
+				errorCode: "rate_limited",
 				retryAfterMs: rate.retryAfterMs,
 			});
 		const { generation, volume } = staging._yay;
@@ -1031,14 +1037,12 @@ export type public_api_volumes_http_write_many_Body = z.infer<typeof write_many_
 export type public_api_volumes_http_publish_Body = z.infer<typeof publish_body_validator>;
 export type public_api_volumes_http_delete_Body = z.infer<typeof delete_body_validator>;
 
-async function finish_failure(args: {
-	ctx: ActionCtx;
-	callId: Id<"plugins_event_run_calls">;
-	error: { message: string; data?: Infer<typeof failure_data_validator> };
-}) {
+async function finish_failure<
+	const Failure extends { message: string; data: Infer<typeof failure_data_validator> },
+>(args: { ctx: ActionCtx; callId: Id<"plugins_event_run_calls">; error: Failure }) {
 	const { ctx, error, callId } = args;
 
-	const data = error.data ?? { status: 500 as const, errorCode: "storage_failure" };
+	const data = error.data;
 	await public_api_settle_plugin_call_best_effort(ctx, {
 		callId,
 		status: "failed",
@@ -1046,6 +1050,9 @@ async function finish_failure(args: {
 		errorCode: data.errorCode,
 		errorMessage: error.message,
 	});
+
+	// Map each failure member to its own response member. Without this cast, TypeScript merges them
+	// into one member, and every code would show under every status in the route type.
 	return {
 		status: data.status,
 		body: {
@@ -1054,7 +1061,13 @@ async function finish_failure(args: {
 			...(data.retryAfterMs === undefined ? {} : { retryAfterMs: data.retryAfterMs }),
 		},
 		headers: { "Cache-Control": "no-store" },
-	} as const;
+	} as Failure extends unknown
+		? {
+				readonly status: Failure["data"]["status"];
+				readonly body: { message: string; errorCode: Failure["data"]["errorCode"]; retryAfterMs?: number };
+				readonly headers: { readonly "Cache-Control": "no-store" };
+			}
+		: never;
 }
 
 async function finish_response<T>(args: { ctx: ActionCtx; callId: Id<"plugins_event_run_calls">; body: T }) {

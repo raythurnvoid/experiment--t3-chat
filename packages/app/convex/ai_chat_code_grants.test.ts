@@ -406,7 +406,7 @@ describe("two-root code grants", () => {
 		await f.file({ workspace: "personal", textContent: "abcdef", stored: true });
 		await f.mint();
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 500 }));
-		expect((await f.read("personal")).status).toBe(502);
+		expect((await f.read("personal")).status).toBe(503);
 		expect((await f.t.run((ctx) => ctx.db.query("ai_chat_code_read_budgets").first()))?.remainingReadBytes).toBe(
 			8 * 1024 * 1024 - 6,
 		);
@@ -716,14 +716,14 @@ describe("two-root code grants", () => {
 		for (const { route, body } of requests) {
 			const response = await f.request({ workspace: "personal", route, body });
 			expect(response.status).toBe(403);
-			expect(await response.json()).toEqual({ message: "Permission denied" });
+			expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		}
 		await f.leave(true);
 		for (const { route, body } of requests) {
 			const response = await f.request({ workspace: "personal", route, body });
 			expect(response.status).toBe(401);
 			expect(response.headers.get("Location")).toBeNull();
-			expect(await response.json()).toEqual({ message: "Unauthenticated" });
+			expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 		}
 		expect(getUrl).not.toHaveBeenCalled();
 	});

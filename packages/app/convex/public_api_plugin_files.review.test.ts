@@ -272,7 +272,7 @@ describe("ensure_plugin_folder", () => {
 			};
 			const refused = await t.fetch("/api/v1/files/plugin-folders/ensure", request);
 			expect(refused.status).toBe(403);
-			expect(await refused.json()).toEqual({ message: "Permission denied" });
+			expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 			expect(
 				await t.run(async (ctx) => ({
 					nodes: await ctx.db.query("files_nodes").collect(),

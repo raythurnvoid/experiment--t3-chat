@@ -844,6 +844,38 @@ describe("external file writes", () => {
 		expect(await t.run(async (ctx) => (await ctx.db.query("plugins_external_file_writers").collect()).length)).toBe(1);
 	});
 
+	test("answers a write without force into the Read-only output root with 409 read_only", async () => {
+		const { t, root, token } = await setup();
+		install_object_uploads();
+
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				path: `${ROOT}/general.md`,
+				expectedParentNodeId: root.folderNodeId,
+				content: "Hello",
+				nonCollaborative: true,
+				writer: {
+					writerId: root.writerId,
+					operationId: "write-1",
+					writerGeneration: 1,
+					sequence: 1,
+					expectedNodeId: null,
+					expectedContentRevision: null,
+					contentHash: await crypto_sha256_hex("Hello"),
+				},
+			}),
+		});
+
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
+	});
+
 	test("publishes content and its receipt once, and preserves the file ID on the next save", async () => {
 		const { t, credentials, root, token } = await setup();
 		install_object_uploads();
@@ -1364,7 +1396,7 @@ describe("archive", () => {
 			}),
 		});
 		expect(changed.status, await changed.clone().text()).toBe(409);
-		expect(await changed.json()).toEqual({ message: "The file changed" });
+		expect(await changed.json()).toEqual({ message: "The file changed", errorCode: "stale_write" });
 
 		const response = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
@@ -1479,7 +1511,7 @@ describe("archive", () => {
 				});
 				expect(blocked.status, await blocked.clone().text()).toBe(condition === "personal consent" ? 403 : 409);
 				if (condition !== "personal consent")
-					expect(await blocked.json()).toEqual({ message: "This item is read-only." });
+					expect(await blocked.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 			}
 
 			expect(
@@ -1566,7 +1598,7 @@ describe("archive", () => {
 
 		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		for (const target of [
-			{ path: folderPath, nodeId: folder.folderNodeId, message: "The file changed" },
+			{ path: folderPath, nodeId: folder.folderNodeId, message: "The file changed", errorCode: "stale_write" },
 			{
 				path: `${folderPath}/protected.md`,
 				nodeId: before.find((node) => node.path === `${folderPath}/protected.md`)!._id,
@@ -1590,7 +1622,7 @@ describe("archive", () => {
 			});
 			if (target.nodeId === folder.folderNodeId) {
 				expect(blocked.status, await blocked.clone().text()).toBe(409);
-				expect(await blocked.json()).toEqual({ message: target.message });
+				expect(await blocked.json()).toEqual({ message: target.message, errorCode: target.errorCode });
 			} else expect(blocked.status, await blocked.clone().text()).toBe(200);
 		}
 

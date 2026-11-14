@@ -270,7 +270,9 @@ export async function plugins_external_files_db_check_write(
 		writeContext: facts._yay.writeContext,
 		target: node ? { kind: "node", node } : { kind: "create", parentNode: facts._yay.parentNode, path: args.path },
 	});
-	if (writable._nay) return Result({ _nay: writable._nay });
+	// Return the refusal itself. Wrapping it again in `Result` hides its `read_only` and `deleting`
+	// names from the types.
+	if (writable._nay) return writable;
 	return Result({ _yay: { ...facts._yay, writer, fingerprint, receipt: null } });
 }
 

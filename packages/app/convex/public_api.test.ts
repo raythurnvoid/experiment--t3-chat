@@ -707,21 +707,21 @@ describe("public_api_http_read_file", () => {
 	test("refuses ignored ranges, oversized bodies and missing ETags and keeps the charge", async () => {
 		const { t, read } = await create_fixture(1024 * 1024 + 6);
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(new Uint8Array(6)));
-		expect((await read()).status).toBe(502);
+		expect((await read()).status).toBe(503);
 		vi.mocked(fetch).mockResolvedValueOnce(
 			new Response(new Uint8Array(1024 * 1024 + 1), {
 				status: 206,
 				headers: { "Content-Range": "bytes 0-1048575/1048582", ETag: '"valid"' },
 			}),
 		);
-		expect((await read()).status).toBe(502);
+		expect((await read()).status).toBe(503);
 		vi.mocked(fetch).mockResolvedValueOnce(
 			new Response(new Uint8Array(1024 * 1024), {
 				status: 206,
 				headers: { "Content-Range": "bytes 0-1048575/1048582" },
 			}),
 		);
-		expect((await read()).status).toBe(502);
+		expect((await read()).status).toBe(503);
 		const grant = await t.run((ctx) => ctx.db.query("public_api_grants").first());
 		expect(grant?.remainingReadBytes).toBe(5 * 1024 * 1024);
 	});
@@ -834,7 +834,7 @@ describe("public_api_http_read_file", () => {
 		await gate.started;
 		abort.abort();
 		gate.release();
-		expect((await pending).status).toBe(502);
+		expect((await pending).status).toBe(503);
 		const grant = await t.run((ctx) => ctx.db.query("public_api_grants").first());
 		expect(grant?.remainingReadBytes).toBe(8 * 1024 * 1024 - 6);
 	});
@@ -1203,7 +1203,7 @@ describe("service-bound API credentials", () => {
 		signing.release();
 		const refused = await pending;
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 
 	test("an account-bound key acts as the account, not as its sponsor", async () => {
@@ -1870,12 +1870,7 @@ describe("public files API", () => {
 			expect(response.status).toBe(400);
 			expect(await response.json()).toEqual({
 				message: "Request body validation failed",
-				...(path === "/api/v1/files/list" ||
-				path === "/api/v1/files/read" ||
-				path === "/api/v1/files/write" ||
-				path === "/api/v1/files/write-many"
-					? { errorCode: "invalid_input" }
-					: {}),
+				errorCode: "invalid_input",
 			});
 		}
 
@@ -1885,7 +1880,10 @@ describe("public files API", () => {
 			body: "{",
 		});
 		expect(invalidJson.status).toBe(400);
-		expect(await invalidJson.json()).toEqual({ message: "Failed to parse request body as JSON" });
+		expect(await invalidJson.json()).toEqual({
+			message: "Failed to parse request body as JSON",
+			errorCode: "invalid_input",
+		});
 
 		// A misspelled field must not be dropped in silence. The message names it and where it sits.
 		for (const [path, body, message] of [
@@ -2835,6 +2833,41 @@ describe("public files API", () => {
 		});
 	});
 
+	test("an error the route does not catch answers 500 internal_error without its text", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-uncaught" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-uncaught",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: db.membershipId,
+			name: "Uncaught error checker",
+			scopes: ["files:write", "files:download"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const credential = created._yay.credential;
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/uncaught/report.md", content: "# Report\n" }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { nodeId: string };
+
+		vi.spyOn(R2.prototype, "getUrl").mockRejectedValueOnce(new Error("secret signing detail"));
+		const download = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId] }),
+		});
+		expect(download.status).toBe(500);
+		expect(await download.json()).toEqual({ message: "Internal error", errorCode: "internal_error" });
+	});
+
 	test("skipIfUnchanged compares against the saved text, not the caller's own proposal", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -3695,7 +3728,7 @@ describe("public files API", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(401);
-		expect(await response.json()).toEqual({ message: "Unauthenticated" });
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 	});
 
 	test("keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts", async () => {
@@ -4757,16 +4790,16 @@ describe("locked and missing paths", () => {
 			for (const path of ["/hidden.md", "/secret", "/secret/h01.md", "/secret/missing.md"]) {
 				expect(await post(t, route, key._yay.credential, { path, ...flag }), path).toEqual({
 					status: 403,
-					body: { message: "Permission denied" },
+					body: { message: "Permission denied", errorCode: "permission_denied" },
 				});
 			}
 			expect(await post(t, route, key._yay.credential, { path: "/notes/missing", ...flag })).toEqual({
 				status: 404,
-				body: { message: "Not found" },
+				body: { message: "Not found", errorCode: "not_found" },
 			});
 			expect(await post(t, route, key._yay.credential, { nodeId: f.hiddenFileId, ...flag })).toEqual({
 				status: 404,
-				body: { message: "Not found" },
+				body: { message: "Not found", errorCode: "not_found" },
 			});
 		}
 		expect(
@@ -4774,7 +4807,7 @@ describe("locked and missing paths", () => {
 				path: "/secret/shared/ok.md",
 				readOnly: true,
 			}),
-		).toEqual({ status: 403, body: { message: "Permission denied" } });
+		).toEqual({ status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } });
 		expect(
 			(await post(t, "/api/v1/files/read-only/get", key._yay.credential, { path: "/secret/shared/ok.md" })).status,
 		).toBe(200);
@@ -4978,8 +5011,8 @@ describe("locked and missing paths", () => {
 			body: {
 				items: [],
 				errors: [
-					{ fileNodeId: f.hiddenFileId, message: "Permission denied" },
-					{ fileNodeId: goneId, message: "Not found" },
+					{ fileNodeId: f.hiddenFileId, message: "Permission denied", errorCode: "permission_denied" },
+					{ fileNodeId: goneId, message: "Not found", errorCode: "not_found" },
 				],
 				truncated: false,
 			},
@@ -5016,7 +5049,10 @@ describe("locked and missing paths", () => {
 				files: [{ path: "/hidden.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
 				overwrite: "fail",
 			}),
-		).toEqual({ status: 409, body: { message: "A file already exists at this path", path: "/hidden.md" } });
+		).toEqual({
+			status: 409,
+			body: { message: "A file already exists at this path", errorCode: "file_exists", path: "/hidden.md" },
+		});
 		// Below a locked folder no name shows, so a create there stays Permission denied.
 		expect(
 			await post(t, "/api/v1/files/write", f.memberCredential, {
@@ -5133,8 +5169,8 @@ describe("locked and missing paths", () => {
 			body: {
 				items: [],
 				errors: [
-					{ fileNodeId: openFileId, message: "Permission denied" },
-					{ fileNodeId: f.hiddenFileId, message: "Permission denied" },
+					{ fileNodeId: openFileId, message: "Permission denied", errorCode: "permission_denied" },
+					{ fileNodeId: f.hiddenFileId, message: "Permission denied", errorCode: "permission_denied" },
 				],
 				truncated: false,
 			},
@@ -5260,7 +5296,11 @@ describe("locked and missing paths", () => {
 				paths: ["/notes", rawPath, "/missing"],
 			});
 			expect.soft(result.status, "an overlong raw path refuses the whole batch").toBe(400);
-			expect.soft(result.body).toEqual({ message: "Paths can have at most 1,024 characters.", path: rawPath });
+			expect.soft(result.body).toEqual({
+				message: "Paths can have at most 1,024 characters.",
+				errorCode: "invalid_input",
+				path: rawPath,
+			});
 		}
 		expect.soft(pathCalls, "overlong batches make no path query").toBe(0);
 		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["/notes"] })).toMatchObject({
@@ -5315,17 +5355,25 @@ describe("locked and missing paths", () => {
 		// The second path is refused, so the first one is not created either.
 		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/notes/c", "/secret/new"] })).toEqual({
 			status: 403,
-			body: { message: "Permission denied", path: "/secret/new" },
+			body: { message: "Permission denied", errorCode: "permission_denied", path: "/secret/new" },
 		});
 		expect(await stat(["/notes/c"])).toEqual(["missing"]);
 
 		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/b.md"] })).toEqual({
 			status: 409,
-			body: { message: "A file already exists at this path. Pick another path.", path: "/b.md" },
+			body: {
+				message: "A file already exists at this path. Pick another path.",
+				errorCode: "file_exists",
+				path: "/b.md",
+			},
 		});
 		expect(await post(t, "/api/v1/files/mkdir", f.memberCredential, { paths: ["/b.md/x"] })).toEqual({
 			status: 409,
-			body: { message: "A file is in the way on this path. Rename or move it, or pick another path.", path: "/b.md/x" },
+			body: {
+				message: "A file is in the way on this path. Rename or move it, or pick another path.",
+				errorCode: "conflict",
+				path: "/b.md/x",
+			},
 		});
 	});
 
@@ -5340,12 +5388,15 @@ describe("locked and missing paths", () => {
 
 		expect(await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/b.md"] })).toEqual({
 			status: 400,
-			body: { message: "requestId is required. Send a unique ID and reuse it when retrying the same delete." },
+			body: {
+				message: "requestId is required. Send a unique ID and reuse it when retrying the same delete.",
+				errorCode: "invalid_input",
+			},
 		});
 		for (const requestId of [null, 1, "", "x".repeat(65)]) {
 			expect(await post(t, "/api/v1/files/delete", f.memberCredential, { paths: ["/b.md"], requestId })).toEqual({
 				status: 400,
-				body: { message: "Request body validation failed" },
+				body: { message: "Request body validation failed", errorCode: "invalid_input" },
 			});
 		}
 		expect(deleteCalls, "invalid requests never start the delete mutation").toBe(0);
@@ -5380,10 +5431,10 @@ describe("locked and missing paths", () => {
 				jobId: null,
 				isDone: true,
 				refused: [
-					{ path: "/missing.md", message: "Not found" },
+					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
 					// Not the general "None of these items can be archived…" message.
-					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again." },
-					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again." },
+					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
+					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
 				],
 			},
 		});
@@ -5444,11 +5495,11 @@ describe("locked and missing paths", () => {
 				isDone: true,
 				refused: [
 					// A locked file, and a file that exists or not inside a locked folder, answer the same.
-					{ path: "/hidden.md", message: "Permission denied" },
-					{ path: "/secret/h01.md", message: "Permission denied" },
-					{ path: "/secret/nope.md", message: "Permission denied" },
-					{ path: "/missing.md", message: "Not found" },
-					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again." },
+					{ path: "/hidden.md", message: "Permission denied", errorCode: "permission_denied" },
+					{ path: "/secret/h01.md", message: "Permission denied", errorCode: "permission_denied" },
+					{ path: "/secret/nope.md", message: "Permission denied", errorCode: "permission_denied" },
+					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
+					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
 				],
 			},
 		});
@@ -5470,7 +5521,10 @@ describe("locked and missing paths", () => {
 		});
 		expect(await post(t, "/api/v1/files/delete", f.memberCredential, { ...body, paths: ["/b.md"] })).toEqual({
 			status: 409,
-			body: { message: "This requestId was already used for another request. Send a new requestId." },
+			body: {
+				message: "This requestId was already used for another request. Send a new requestId.",
+				errorCode: "request_id_reused",
+			},
 		});
 	});
 
@@ -5521,7 +5575,7 @@ describe("locked and missing paths", () => {
 		for (const path of ["/new", "/secret/other"]) {
 			expect(await post(t, "/api/v1/files/mkdir", guestCredential, { paths: [path] }), path).toEqual({
 				status: 403,
-				body: { message: "Permission denied", path },
+				body: { message: "Permission denied", errorCode: "permission_denied", path },
 			});
 		}
 	});
@@ -5607,8 +5661,8 @@ describe("locked and missing paths", () => {
 			// A folder may end with "/", like in `mv`.
 			const body = { from: ["/b.md", "/notes/", "/hidden.md", "/missing.md"], to: "/dest", requestId: "move-1" };
 			const refused = [
-				{ path: "/hidden.md", message: "Permission denied" },
-				{ path: "/missing.md", message: "Not found" },
+				{ path: "/hidden.md", message: "Permission denied", errorCode: "permission_denied" },
+				{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
 			];
 
 			const started = await post(t, "/api/v1/files/move", f.memberCredential, body);
@@ -5624,7 +5678,10 @@ describe("locked and missing paths", () => {
 				await post(t, "/api/v1/files/move", f.memberCredential, { from: ["/b.md"], to: "/notes", requestId: "move-2" }),
 			).toEqual({
 				status: 409,
-				body: { message: "A transfer is already running in this workspace. Wait for it to finish, then try again." },
+				body: {
+					message: "A transfer is already running in this workspace. Wait for it to finish, then try again.",
+					errorCode: "transfer_busy",
+				},
 			});
 
 			await finish_move(t, jobId);
@@ -5656,11 +5713,17 @@ describe("locked and missing paths", () => {
 			});
 			expect(await post(t, "/api/v1/files/move", f.memberCredential, { ...body, force: true })).toEqual({
 				status: 409,
-				body: { message: "This requestId was already used for another request. Send a new requestId." },
+				body: {
+					message: "This requestId was already used for another request. Send a new requestId.",
+					errorCode: "request_id_reused",
+				},
 			});
 			expect(await post(t, "/api/v1/files/move", f.memberCredential, { ...body, to: "/notes" })).toEqual({
 				status: 409,
-				body: { message: "This requestId was already used for another request. Send a new requestId." },
+				body: {
+					message: "This requestId was already used for another request. Send a new requestId.",
+					errorCode: "request_id_reused",
+				},
 			});
 			// Another key of the same person cannot read this job.
 			const otherKey = await create_key({
@@ -5674,7 +5737,7 @@ describe("locked and missing paths", () => {
 			});
 			expect(await post(t, "/api/v1/files/jobs/get", otherKey.credential, { jobId })).toEqual({
 				status: 404,
-				body: { message: "Job not found" },
+				body: { message: "Job not found", errorCode: "not_found" },
 			});
 		});
 
@@ -5702,7 +5765,11 @@ describe("locked and missing paths", () => {
 				}),
 			).toEqual({
 				status: 400,
-				body: { message: "To move or copy several paths, `to` must be an existing folder.", path: "/new-name.md" },
+				body: {
+					message: "To move or copy several paths, `to` must be an existing folder.",
+					errorCode: "invalid_input",
+					path: "/new-name.md",
+				},
 			});
 			expect(
 				await post(t, "/api/v1/files/move", f.memberCredential, {
@@ -5714,6 +5781,7 @@ describe("locked and missing paths", () => {
 				status: 409,
 				body: {
 					message: "The folder above `to` does not exist. Make it with files/mkdir, then try again.",
+					errorCode: "conflict",
 					path: "/nope/renamed.md",
 				},
 			});
@@ -5726,7 +5794,11 @@ describe("locked and missing paths", () => {
 				}),
 			).toEqual({
 				status: 409,
-				body: { message: '`to` ends with "/", so it must be an existing folder.', path: "/archive/" },
+				body: {
+					message: '`to` ends with "/", so it must be an existing folder.',
+					errorCode: "conflict",
+					path: "/archive/",
+				},
 			});
 			// A trailing "/" on a `from` path refuses a file, like `mv file.md/ dest`.
 			expect(
@@ -5737,7 +5809,11 @@ describe("locked and missing paths", () => {
 				}),
 			).toEqual({
 				status: 200,
-				body: { jobId: null, isDone: true, refused: [{ path: "/notes/renamed.md/", message: "Not a folder" }] },
+				body: {
+					jobId: null,
+					isDone: true,
+					refused: [{ path: "/notes/renamed.md/", message: "Not a folder", errorCode: "conflict" }],
+				},
 			});
 			// The API never renames on its own, so a new name must already be clean.
 			expect(
@@ -5754,7 +5830,10 @@ describe("locked and missing paths", () => {
 					to: "/secret",
 					requestId: "rename-4",
 				}),
-			).toEqual({ status: 403, body: { message: "Permission denied", path: "/secret" } });
+			).toEqual({
+				status: 403,
+				body: { message: "Permission denied", errorCode: "permission_denied", path: "/secret" },
+			});
 		});
 
 		test("files copy skips the items the key cannot open and pages them", async () => {
@@ -5812,7 +5891,10 @@ describe("locked and missing paths", () => {
 				}),
 			).toEqual({
 				status: 403,
-				body: { message: "Copy needs an API key with the files:read and files:download scopes." },
+				body: {
+					message: "Copy needs an API key with the files:read and files:download scopes.",
+					errorCode: "permission_denied",
+				},
 			});
 		});
 
@@ -6049,7 +6131,7 @@ describe("locked and missing paths", () => {
 					body: {
 						jobId: expect.any(String),
 						isDone: true,
-						refused: [{ path: "/b.md", message: "Permission denied" }],
+						refused: [{ path: "/b.md", message: "Permission denied", errorCode: "permission_denied" }],
 					},
 				});
 				expect(
@@ -6063,7 +6145,7 @@ describe("locked and missing paths", () => {
 					body: {
 						jobId: null,
 						isDone: true,
-						refused: [{ path: "/secret", message: "Permission denied" }],
+						refused: [{ path: "/secret", message: "Permission denied", errorCode: "permission_denied" }],
 					},
 				});
 
@@ -6091,7 +6173,7 @@ describe("locked and missing paths", () => {
 						to: "/notes",
 						requestId: "read-1",
 					}),
-				).toEqual({ status: 403, body: { message: "Permission denied" } });
+				).toEqual({ status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } });
 
 				// Write on `/secret` lets the account change what is inside, but taking an item out changes who
 				// can open it, which needs Can manage there.
@@ -6625,6 +6707,7 @@ describe("files upload-urls", () => {
 		expect(nonCanonical.status).toBe(400);
 		expect(await nonCanonical.json()).toEqual({
 			message: "Path must be absolute and normalized",
+			errorCode: "invalid_input",
 			path: "imports/x.png",
 		});
 
@@ -6635,7 +6718,11 @@ describe("files upload-urls", () => {
 			],
 		});
 		expect(duplicate.status).toBe(400);
-		expect(await duplicate.json()).toEqual({ message: "Duplicate path in batch", path: "/imports/x.png" });
+		expect(await duplicate.json()).toEqual({
+			message: "Duplicate path in batch",
+			errorCode: "invalid_input",
+			path: "/imports/x.png",
+		});
 
 		const conflict = await post({
 			files: [{ path: "/existing/report.md", contentType: "text/markdown;charset=utf-8", size: 1 }],
@@ -6644,6 +6731,7 @@ describe("files upload-urls", () => {
 		expect(conflict.status).toBe(409);
 		expect(await conflict.json()).toEqual({
 			message: "A file already exists at this path",
+			errorCode: "file_exists",
 			path: "/existing/report.md",
 		});
 
@@ -6651,6 +6739,7 @@ describe("files upload-urls", () => {
 		expect(folderCollision.status).toBe(409);
 		expect(await folderCollision.json()).toEqual({
 			message: "The path cannot point to a folder",
+			errorCode: "conflict",
 			path: "/existing",
 		});
 
@@ -6712,7 +6801,11 @@ describe("files upload-urls", () => {
 					body: JSON.stringify({ files, overwrite: "fail" }),
 				});
 				expect(refused.status).toBe(409);
-				expect(await refused.json()).toEqual({ message: "A file already exists at this path", path: literalPath });
+				expect(await refused.json()).toEqual({
+					message: "A file already exists at this path",
+					errorCode: "file_exists",
+					path: literalPath,
+				});
 			}
 		},
 	);
@@ -6752,6 +6845,7 @@ describe("files upload-urls", () => {
 		expect(response.status, "upload-urls into a moved folder").toBe(409);
 		expect(await response.json()).toEqual({
 			message: "This item is being moved. Try again when the Move ends.",
+			errorCode: "move_busy",
 			path: "/dir/new.png",
 		});
 		const written = await t.run(async (ctx) => ({
@@ -6860,7 +6954,7 @@ describe("files upload-urls", () => {
 			expect(response.status, "found parents count toward the limit").toBe(400);
 			expect(await response.json()).toEqual({
 				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
-				code: "too_many_folders",
+				errorCode: "too_many_folders",
 				path: `/e${over}/a/b/c/f.bin`,
 			});
 		});
@@ -6884,7 +6978,7 @@ describe("files upload-urls", () => {
 			expect(tooMany.status).toBe(400);
 			expect(await tooMany.json(), "too many folders in one batch").toEqual({
 				message: `This request uses too many folders (limit ${files_REQUEST_FOLDER_PREFIXES_MAX}). Send fewer files per request.`,
-				code: "too_many_folders",
+				errorCode: "too_many_folders",
 				path: "/r/2.bin",
 			});
 
@@ -6894,7 +6988,7 @@ describe("files upload-urls", () => {
 			expect(await tooDeep.json()).toEqual({
 				message: `This path creates too many new folders (limit ${files_NEW_FOLDER_DEPTH_MAX}).`,
 				path: tooDeepPath,
-				code: "too_many_folders",
+				errorCode: "too_many_folders",
 			});
 			expect(await count()).toEqual(before);
 		});
@@ -6918,6 +7012,7 @@ describe("files upload-urls", () => {
 		expect(response.status).toBe(400);
 		expect(await response.json(), "a path over the stored path cap").toEqual({
 			message: "Paths can have at most 1,024 characters.",
+			errorCode: "invalid_input",
 			path: longPath,
 		});
 		// The refused batch took no slot from the upload bulk bucket, so all 20 are still free.
@@ -6948,7 +7043,11 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(response.status, "upload-urls with a long name").toBe(400);
-		expect(await response.json()).toEqual({ message: "Names can have at most 255 characters.", path: longPath });
+		expect(await response.json()).toEqual({
+			message: "Names can have at most 255 characters.",
+			errorCode: "invalid_input",
+			path: longPath,
+		});
 		const written = await t.run(async (ctx) => ({
 			nodes: await ctx.db.query("files_nodes").collect(),
 			assets: await ctx.db.query("files_r2_assets").collect(),
@@ -7047,6 +7146,7 @@ describe("files upload-urls", () => {
 		expect(created.status, "a new path over the limit").toBe(400);
 		expect(await created.json()).toEqual({
 			message: "Paths can have at most 1,024 characters.",
+			errorCode: "invalid_input",
 			path: `${folderPath}/new.png`,
 		});
 		const replaced = await post(`${folderPath}/old.png`);
@@ -7089,6 +7189,7 @@ describe("files upload-urls", () => {
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({
 			message: files_INVALID_CONTENT_TYPE_MESSAGE,
+			errorCode: "invalid_input",
 			path: "/imports/invalid.png",
 		});
 
@@ -7212,7 +7313,11 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied", path: "/outer/media/photo.png" });
+		expect(await refused.json()).toEqual({
+			message: "Permission denied",
+			errorCode: "permission_denied",
+			path: "/outer/media/photo.png",
+		});
 
 		// A hidden intermediate file gets the same denial as a hidden folder. Its kind must not
 		// turn the response into the visible structural 409 below.
@@ -7226,6 +7331,7 @@ describe("files upload-urls", () => {
 		expect(hiddenFileRefused.status).toBe(403);
 		expect(await hiddenFileRefused.json()).toEqual({
 			message: "Permission denied",
+			errorCode: "permission_denied",
 			path: "/hidden-file.md/photo.png",
 		});
 
@@ -7241,6 +7347,7 @@ describe("files upload-urls", () => {
 		expect(visibleFileConflict.status).toBe(409);
 		expect(await visibleFileConflict.json()).toEqual({
 			message: "An intermediate segment is owned by a file",
+			errorCode: "conflict",
 			path: "/visible-file.md/photo.png",
 		});
 
@@ -7368,7 +7475,10 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "This workspace has reached its storage limit" });
+		expect(await refused.json()).toEqual({
+			message: "This workspace has reached its storage limit",
+			errorCode: "storage_full",
+		});
 
 		// The refused batch neither minted a node nor consumed more budget.
 		const after = await t.run(async (ctx) => {
@@ -7413,7 +7523,7 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "File uploads need a paid plan" });
+		expect(await refused.json()).toEqual({ message: "File uploads need a paid plan", errorCode: "plan_required" });
 
 		// A mutation that returns `_nay` still commits whatever it wrote first, so the plan door has to
 		// come before the quota doc is created. No node and no quota doc means it did.
@@ -7458,7 +7568,7 @@ describe("files upload-urls", () => {
 			}),
 		});
 		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "Request body validation failed" });
+		expect(await response.json()).toEqual({ message: "Request body validation failed", errorCode: "invalid_input" });
 	});
 
 	test("refuses an unclean file or folder name with the rule and the clean name to send", async () => {
@@ -7476,6 +7586,7 @@ describe("files upload-urls", () => {
 		expect(badFile.status).toBe(400);
 		expect(await badFile.json()).toEqual({
 			message: `File name "My Photo.PNG" is not allowed. ${rule} Try "my-photo.png".`,
+			errorCode: "invalid_input",
 			path: "/photos/My Photo.PNG",
 		});
 
@@ -7487,6 +7598,7 @@ describe("files upload-urls", () => {
 		expect(badFolder.status).toBe(400);
 		expect(await badFolder.json()).toEqual({
 			message: `Folder name "My Photos" is not allowed. ${rule} Try "my-photos".`,
+			errorCode: "invalid_input",
 			path: "/My Photos/a.png",
 		});
 	});
@@ -9528,8 +9640,8 @@ describe("files read-only locks", () => {
 					files: paths.map((path) => ({ path, contentType: "application/octet-stream", size: 1 })),
 				}),
 			});
-			const body = (await response.json()) as { message: string; code?: string };
-			return { status: response.status, message: body.message, code: body.code };
+			const body = (await response.json()) as { message: string; errorCode?: string };
+			return { status: response.status, message: body.message, errorCode: body.errorCode };
 		};
 		const newChain = (head: string, folders: number) => `/${[head, ...Array<string>(folders - 1).fill("a")].join("/")}`;
 		// Each guess would pass a folder limit only when the guessed name exists.
@@ -9546,7 +9658,7 @@ describe("files read-only locks", () => {
 			// A hidden file that exists must not answer before a later item's error while a missing one does not.
 			laterBadItem: await answer([`/secret/${name}/${longFolder}/old.bin`, "/dup.bin", "/dup.bin"]),
 		});
-		const denied = { status: 403, message: "Permission denied", code: undefined };
+		const denied = { status: 403, message: "Permission denied", errorCode: "permission_denied" };
 		const known = await guesses("known");
 		expect(known).toEqual({ newFolders: denied, batch: denied, longPath: denied, laterBadItem: denied });
 		expect(await guesses("missing"), "a missing name inside a hidden folder answers like an existing one").toEqual(
@@ -9690,7 +9802,7 @@ describe("files read-only locks", () => {
 						"unchanged write checks the selected parent scope while the unrelated scope job waits",
 					)
 					.toBe(403);
-				expect.soft(await touched.json()).toEqual({ message: "Permission denied" });
+				expect.soft(await touched.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 				expect.soft(await unchanged.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 			});
 			expect(checkedPublishedScope, "the real worker reaches publication before physical repair").toBe(true);
@@ -9731,7 +9843,7 @@ describe("files read-only locks", () => {
 		});
 	});
 
-	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {
+	test("a Read-only file answers the public write with a 409 read_only", async () => {
 		vi.useFakeTimers();
 		const t = test_convex();
 		install_r2_object_reads();
@@ -9754,9 +9866,9 @@ describe("files read-only locks", () => {
 			content: "# Change\n",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
-		// The public vocabulary is 409/conflict; the internal refusal keeps its `read_only` name.
+		// The internal refusal uses the same `read_only` name as the public code.
 		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
 			organizationId: writer.db.organizationId,
 			workspaceId: writer.db.workspaceId,
@@ -9811,7 +9923,7 @@ describe("files read-only locks", () => {
 		for (const path of ["/locked-dir/other.md", "/locked-dir/deep/nested.md"]) {
 			const refused = await write_file({ t, credential: writer.credential, path, content: "# Nope\n" });
 			expect(refused.status).toBe(409);
-			expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+			expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		}
 		expect(await find_active_node({ t, db: writer.db, path: "/locked-dir/other.md" })).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
@@ -9857,10 +9969,10 @@ describe("files read-only locks", () => {
 			skipIfUnchanged: true,
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 	});
 
-	test("write-many reports a locked item as a per-item conflict and still writes the others", async () => {
+	test("write-many reports a Read-only item as a per-item read_only and still writes the others", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-write-many" });
@@ -9891,9 +10003,9 @@ describe("files read-only locks", () => {
 			written: Array<{ path: string; nodeId: string; contentType: string }>;
 			errors: Array<{ path: string; message: string; errorCode: string }>;
 		};
-		// The locked item is a per-item conflict; the item after it still ran and succeeded.
+		// The locked item is a per-item read_only; the item after it still ran and succeeded.
 		expect(body.errors).toEqual([
-			{ path: "/bulk-lock/locked.md", message: "This item is read-only.", errorCode: "conflict" },
+			{ path: "/bulk-lock/locked.md", message: "This item is read-only.", errorCode: "read_only" },
 		]);
 		expect(body.written).toEqual([
 			{
@@ -9958,7 +10070,7 @@ describe("files read-only locks", () => {
 			skipIfUnchanged: true,
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
@@ -9967,7 +10079,7 @@ describe("files read-only locks", () => {
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-touch" });
 
-		// Locked existing target: the already-exists shortcut answers the conflict itself.
+		// Read-only existing target: the already-exists shortcut answers the read_only refusal itself.
 		const seeded = await write_file({
 			t,
 			credential: writer.credential,
@@ -9983,7 +10095,7 @@ describe("files read-only locks", () => {
 			body: JSON.stringify({ paths: ["/touch-locked.md"] }),
 		});
 		expect(refusedExisting.status).toBe(409);
-		expect(await refusedExisting.json()).toEqual({ message: "This item is read-only." });
+		expect(await refusedExisting.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
 		// Locked destination folder: the batch refuses at the locked path, but the touch a loop
 		// turn earlier already committed and stays.
@@ -10002,7 +10114,7 @@ describe("files read-only locks", () => {
 			body: JSON.stringify({ paths: ["/touch-fresh.md", "/touch-dir/new.md"] }),
 		});
 		expect(refusedBatch.status).toBe(409);
-		expect(await refusedBatch.json()).toEqual({ message: "This item is read-only." });
+		expect(await refusedBatch.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await find_active_node({ t, db: writer.db, path: "/touch-fresh.md" })).not.toBeNull();
 		expect(await find_active_node({ t, db: writer.db, path: "/touch-dir/new.md" })).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
@@ -10046,7 +10158,11 @@ describe("files read-only locks", () => {
 			}),
 		});
 		expect(refusedOccupant.status).toBe(409);
-		expect(await refusedOccupant.json()).toEqual({ message: "This item is read-only.", path: "/up/occupied.md" });
+		expect(await refusedOccupant.json()).toEqual({
+			message: "This item is read-only.",
+			errorCode: "read_only",
+			path: "/up/occupied.md",
+		});
 
 		// A locked ancestor folder refuses the batch the same way.
 		const folder = await find_active_node({ t, db: writer.db, path: "/up" });
@@ -10059,7 +10175,11 @@ describe("files read-only locks", () => {
 			}),
 		});
 		expect(refusedAncestor.status).toBe(409);
-		expect(await refusedAncestor.json()).toEqual({ message: "This item is read-only.", path: "/up/sub/data.bin" });
+		expect(await refusedAncestor.json()).toEqual({
+			message: "This item is read-only.",
+			errorCode: "read_only",
+			path: "/up/sub/data.bin",
+		});
 
 		// Nothing was minted: no asset docs, no nodes, no quota consumption.
 		const countsAfter = await t.run(async (ctx) => ({
@@ -10580,7 +10700,7 @@ describe("files read-only locks", () => {
 
 		const response = await touchPromise;
 		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(await response.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await find_active_node({ t, db: writer.db, path: "/touch-hidden/new.md" })).toBeNull();
 		await t.run(async (ctx) => {
 			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
@@ -10966,7 +11086,7 @@ describe("files read-only locks", () => {
 			overwrite: "replace",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		await t.run(async (ctx) => {
 			const target = await ctx.db.get("files_nodes", occupantNodeId);
 			expect(target?.archiveOperationId).toBeNull();
@@ -11742,7 +11862,7 @@ describe("service file writes", () => {
 			content: "# Transcript\n\nAgain\n",
 		});
 		expect(refused.status).toBe(409);
-		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "conflict" });
+		expect(await refused.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 	});
 
 	test("Read-only creation needs plugin consent and the actor's write permission", async () => {
@@ -11991,7 +12111,7 @@ describe("service file writes", () => {
 		});
 		const memberFile = await archive("/meetings/member.md");
 		expect(memberFile.status).toBe(403);
-		expect(await memberFile.json()).toEqual({ message: "Permission denied" });
+		expect(await memberFile.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// A folder can never carry service write provenance, so the service branch refuses it.
 		expect(
@@ -12016,12 +12136,12 @@ describe("service file writes", () => {
 		expect(locked._nay).toBeUndefined();
 		const memberLocked = await archive("/meetings/meeting-1/summary.md");
 		expect(memberLocked.status).toBe(409);
-		expect(await memberLocked.json()).toEqual({ message: "This item is read-only." });
+		expect(await memberLocked.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 
 		// The seal bounds this door the same way it bounds the write.
 		const outside = await archive("/elsewhere/file.md");
 		expect(outside.status).toBe(403);
-		expect(await outside.json()).toEqual({ message: "Permission denied" });
+		expect(await outside.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 
 	test("forced destination archive and Restore keep the Read-only flag", async () => {
@@ -12144,7 +12264,7 @@ describe("service file writes", () => {
 			body: JSON.stringify({ requestId: crypto.randomUUID() }),
 		});
 		expect(archived.status).toBe(409);
-		expect(await archived.json()).toEqual({ message: "This item is read-only." });
+		expect(await archived.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" })).not.toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings" })).not.toBeNull();
 	});
@@ -12202,7 +12322,7 @@ describe("service file writes", () => {
 			body: JSON.stringify({ requestId: crypto.randomUUID() }),
 		});
 		expect(archived.status).toBe(409);
-		expect(await archived.json()).toEqual({ message: "This item is read-only." });
+		expect(await archived.json()).toEqual({ message: "This item is read-only.", errorCode: "read_only" });
 		expect(await find_active_node({ t, db, path: "/meetings/meeting-1" })).not.toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" })).not.toBeNull();
 	});

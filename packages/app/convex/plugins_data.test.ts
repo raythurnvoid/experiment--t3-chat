@@ -943,7 +943,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", value: { n: 1 } }),
 		});
 		expect(written.status).toBe(401);
-		expect(await written.json()).toEqual({ message: "Unauthenticated" });
+		expect(await written.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 
 		// Read the tables, not the response. A refusal that still wrote would answer 401 all the same.
 		expect(await read_documents(t, fixture)).toHaveLength(0);
@@ -1084,7 +1084,7 @@ describe("public API routes", () => {
 				body: JSON.stringify({ collection: "meetings", keyPrefix }),
 			});
 			expect(refused.status).toBe(400);
-			expect(await refused.json()).toEqual({ message });
+			expect(await refused.json()).toEqual({ message, errorCode: "invalid_input" });
 		}
 	});
 
@@ -1210,6 +1210,7 @@ describe("public API routes", () => {
 			expect([changedField, refused.status]).toEqual([changedField, 400]);
 			expect(await refused.json()).toEqual({
 				message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.`,
+				errorCode: "invalid_cursor",
 			});
 		}
 
@@ -1217,7 +1218,10 @@ describe("public API routes", () => {
 		// where it would throw while being parsed.
 		const forged = await list({ ...rangedBody, cursor: "not-a-cursor" });
 		expect(forged.status).toBe(400);
-		expect(await forged.json()).toEqual({ message: "cursor is not a cursor this route issued" });
+		expect(await forged.json()).toEqual({
+			message: "cursor is not a cursor this route issued",
+			errorCode: "invalid_cursor",
+		});
 
 		// A client that always sends the field and passes null on the first page is sending a legal
 		// body. Refusing it would 400 the fencepost path's own first request.
@@ -1314,7 +1318,7 @@ describe("public API routes", () => {
 		]) {
 			const refused = await write(value);
 			expect(refused.status).toBe(400);
-			expect(await refused.json()).toEqual({ message: "Request body validation failed" });
+			expect(await refused.json()).toEqual({ message: "Request body validation failed", errorCode: "invalid_input" });
 		}
 
 		// The rule is about what Convex stores, not about tidy names or small values. Everything
@@ -1345,7 +1349,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "\ud800", key: "meeting-1", value: { title: "Weekly sync" } }),
 		});
 		expect(malformed.status).toBe(400);
-		expect(await malformed.json()).toEqual({ message: "Request body validation failed" });
+		expect(await malformed.json()).toEqual({ message: "Request body validation failed", errorCode: "invalid_input" });
 
 		const unknown = await t.fetch("/api/v1/plugin-data/read", {
 			method: "POST",
@@ -1353,7 +1357,10 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", padding: "not allowed" }),
 		});
 		expect(unknown.status).toBe(400);
-		expect(await unknown.json()).toEqual({ message: 'Unknown request field "padding". Remove it.' });
+		expect(await unknown.json()).toEqual({
+			message: 'Unknown request field "padding". Remove it.',
+			errorCode: "invalid_input",
+		});
 
 		const oversized = await t.fetch("/api/v1/plugin-data/read", {
 			method: "POST",
@@ -1361,7 +1368,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", padding: "x".repeat(64 * 1024) }),
 		});
 		expect(oversized.status).toBe(400);
-		expect(await oversized.json()).toEqual({ message: "Request body is too large" });
+		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 	});
 
@@ -1386,7 +1393,7 @@ describe("public API routes", () => {
 				body: JSON.stringify(body),
 			});
 			expect(refused.status).toBe(400);
-			expect(await refused.json()).toEqual({ message: "Request body validation failed" });
+			expect(await refused.json()).toEqual({ message: "Request body validation failed", errorCode: "invalid_input" });
 		}
 
 		expect(await read_documents(t, fixture)).toHaveLength(0);
@@ -1406,7 +1413,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", value: { n: 1 } }),
 		});
 		expect(written.status).toBe(403);
-		expect(await written.json()).toEqual({ message: "Permission denied" });
+		expect(await written.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 		expect(await read_usage(t, fixture)).toBeNull();
 	});
@@ -1432,7 +1439,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", revision: 1, value: { n: 1 } }),
 		});
 		expect(ordered.status).toBe(403);
-		expect(await ordered.json()).toEqual({ message: "Permission denied" });
+		expect(await ordered.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// The same key writes normally once it names the installation it means.
 		const missingInstallation = await t.fetch("/api/v1/plugin-data/write", {
@@ -1441,7 +1448,10 @@ describe("public API routes", () => {
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", value: { n: 1 } }),
 		});
 		expect(missingInstallation.status).toBe(400);
-		expect(await missingInstallation.json()).toEqual({ message: "installationId is required for an API key" });
+		expect(await missingInstallation.json()).toEqual({
+			message: "installationId is required for an API key",
+			errorCode: "invalid_input",
+		});
 
 		const written = await t.fetch("/api/v1/plugin-data/write", {
 			method: "POST",
@@ -1661,7 +1671,7 @@ describe("public API routes", () => {
 			expect([route, refused.status]).toEqual([route, 400]);
 			expect([route, await refused.json()]).toEqual([
 				route,
-				{ message: "installationId is not allowed for this token" },
+				{ message: "installationId is not allowed for this token", errorCode: "invalid_input" },
 			]);
 		}
 
@@ -1693,7 +1703,7 @@ describe("public API routes", () => {
 				body: JSON.stringify({ installationId, collection: "meetings", key: "meeting-1", value: { n: 1 } }),
 			});
 			expect(written.status).toBe(404);
-			expect(await written.json()).toEqual({ message: "Not found" });
+			expect(await written.json()).toEqual({ message: "Not found", errorCode: "not_found" });
 		}
 
 		expect(await read_documents(t, fixture)).toHaveLength(0);
@@ -1732,7 +1742,10 @@ describe("public API routes", () => {
 			}),
 		});
 		expect(repeated.status).toBe(400);
-		expect(await repeated.json()).toEqual({ message: "A write batch names the same document twice" });
+		expect(await repeated.json()).toEqual({
+			message: "A write batch names the same document twice",
+			errorCode: "invalid_input",
+		});
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 	});
 
@@ -1863,7 +1876,10 @@ describe("public API routes", () => {
 		expect((await ordered({ collection: "meetings", key: "m", revision: 1, value: { n: 1 } })).status).toBe(200);
 		const skipped = await ordered({ collection: "meetings", key: "m", revision: 3, value: { n: 3 } });
 		expect(skipped.status).toBe(409);
-		expect(await skipped.json()).toEqual({ message: "This document does not have the revision before this one" });
+		expect(await skipped.json()).toEqual({
+			message: "This document does not have the revision before this one",
+			errorCode: "conflict",
+		});
 
 		const deleted = await t.fetch("/api/v1/plugin-data/delete-versioned", {
 			method: "POST",
@@ -1876,7 +1892,7 @@ describe("public API routes", () => {
 
 		const late = await ordered({ collection: "meetings", key: "m", revision: 2, value: { n: 2 } });
 		expect(late.status).toBe(409);
-		expect(await late.json()).toEqual({ message: "This document was deleted by its service" });
+		expect(await late.json()).toEqual({ message: "This document was deleted by its service", errorCode: "conflict" });
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 	});
 
@@ -2028,7 +2044,10 @@ describe("public API routes", () => {
 
 		const full = await write("b");
 		expect(full.status).toBe(403);
-		expect(await full.json()).toEqual({ message: "This plugin has used its 16 MiB of storage" });
+		expect(await full.json()).toEqual({
+			message: "This plugin has used its 16 MiB of storage",
+			errorCode: "storage_full",
+		});
 		expect(await read_documents(t, fixture)).toHaveLength(1);
 	});
 
@@ -2085,7 +2104,7 @@ describe("public API routes", () => {
 			}),
 		});
 		expect(replayed.status).toBe(409);
-		expect(await replayed.json()).toEqual({ message: "This reservation was already released" });
+		expect(await replayed.json()).toEqual({ message: "This reservation was already released", errorCode: "conflict" });
 		expect(await read_usage(t, fixture)).toMatchObject({ reservedBytes: 0, reservedDocuments: 0 });
 	});
 });
@@ -2242,7 +2261,7 @@ describe("invoke file write preconditions", () => {
 			expect(accessible.status).toBe(409);
 			expect(await accessible.json()).toEqual({
 				message: "The parent folder changed during the write",
-				errorCode: "conflict",
+				errorCode: "stale_write",
 			});
 			const prepared = await prepare_file({ t, fixture: { ...fixture, userId: member.userId } });
 			if (prepared._nay) throw new Error(prepared._nay.message);
@@ -2677,7 +2696,7 @@ describe("/api/v1/auth/verify", () => {
 			}),
 		});
 		expect(written.status).toBe(403);
-		expect(await written.json()).toEqual({ message: "Permission denied" });
+		expect(await written.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 
 		const read = await t.fetch("/api/v1/plugin-data/read", {
@@ -2701,7 +2720,7 @@ describe("/api/v1/auth/verify", () => {
 			headers: { Authorization: `Bearer ${minted._yay.token}` },
 		});
 		expect(refused.status).toBe(403);
-		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await refused.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 	});
 });
 
@@ -3002,7 +3021,7 @@ describe("plugin-data credential revalidation", () => {
 			});
 			expect(paused).toHaveBeenCalledTimes(1);
 			expect(response.status, `${kind} must refuse ${change} before ${operation}`).toBe(401);
-			expect(await response.json()).toEqual({ message: "Unauthenticated" });
+			expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 			// Compare full docs so refused writes cannot change revision, ownership, or member charges.
 			expect(await read_documents(t, fixture)).toEqual(before);
 			expect(await read_usage(t, fixture)).toEqual(usageBefore);
@@ -9193,6 +9212,7 @@ describe("per-member capacity", () => {
 		expect(refused.status).toBe(403);
 		expect(await refused.json()).toEqual({
 			message: "You have used your 1.6 MiB share of this plugin's storage",
+			errorCode: "storage_full",
 		});
 		expect((await batch(keyB._yay.credential, "b-1")).status).toBe(200);
 	});
@@ -9244,7 +9264,10 @@ describe("per-member capacity", () => {
 				}),
 			});
 			expect(overBatch.status).toBe(403);
-			expect(await overBatch.json()).toEqual({ message: "You can create at most 8 collections in this plugin" });
+			expect(await overBatch.json()).toEqual({
+				message: "You can create at most 8 collections in this plugin",
+				errorCode: "storage_full",
+			});
 
 			// The share is per member, not per installation: B has introduced none and the installation
 			// still holds eight of its sixteen.

@@ -332,3 +332,107 @@ export interface api_schemas_Main {
 export type api_schemas_Main_Path = keyof api_schemas_Main;
 
 // #endregion Main Schema
+
+// #region Error body check
+/*
+Every /api/v1 error answer (status 4xx or 5xx) must be `{ message, errorCode, ...extra }`. Clients branch on
+`errorCode`, so one code must always come with one status, in every route.
+
+The check reads the inferred route types, so there is no list of codes to keep up to date. It fails when:
+- an error body has no `errorCode`, or the code can be `undefined` or any `string`;
+- a route status is typed `number`, because then the check cannot see which codes it answers;
+- one code is used with two statuses, in one route or across routes.
+
+On failure the lint error names a problem, for example
+`"/api/v1/files/list 401: also used by another status: rate_limited"`.
+*/
+type ApiErrorMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+type ApiErrorPath = Extract<keyof api_schemas_Main, `/api/v1/${string}`>;
+
+type ApiErrorStatus<Response> =
+	Extract<keyof Response, number> extends infer Status
+		? Status extends number
+			? `${Status}` extends `${4 | 5}${string}`
+				? Status
+				: never
+			: never
+		: never;
+
+// Check a union body member by member.
+type ApiErrorCodeOf<Body> = Body extends { errorCode: infer ErrorCode } ? ErrorCode : "(no errorCode)";
+
+type ApiErrorCodesAt<Response, Status> = Response[Status & keyof Response] extends { body: infer Body }
+	? ApiErrorCodeOf<Body>
+	: never;
+
+type ApiErrorStatusProblems<Path extends string, Response, Status extends number> =
+	| ("(no errorCode)" extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: a body without errorCode` : never)
+	| (undefined extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: errorCode can be undefined` : never)
+	| (string extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: errorCode is string` : never)
+	| (string extends ApiErrorCodesAt<Response, Status>
+			? never
+			: Exclude<
+						Extract<
+							ApiErrorCodesAt<Response, Exclude<ApiErrorStatus<Response>, Status>>,
+							ApiErrorCodesAt<Response, Status>
+						>,
+						"(no errorCode)" | undefined
+				  > extends infer Shared extends string
+				? `${Path} ${Status}: also used by another status: ${Shared}`
+				: never);
+
+type ApiErrorRouteProblems<Path extends ApiErrorPath> = {
+	[Method in keyof api_schemas_Main[Path] & ApiErrorMethod]: api_schemas_Main[Path][Method] extends {
+		response: infer Response;
+	}
+		?
+				| (number extends keyof Response ? `${Path}: a status is typed number` : never)
+				| {
+						[Status in ApiErrorStatus<Response>]: ApiErrorStatusProblems<Path, Response, Status>;
+				  }[ApiErrorStatus<Response>]
+		: never;
+}[keyof api_schemas_Main[Path] & ApiErrorMethod];
+
+// Every [code, status] pair that any /api/v1 route answers.
+type ApiErrorPairs = {
+	[Path in ApiErrorPath]: {
+		[Method in keyof api_schemas_Main[Path] & ApiErrorMethod]: api_schemas_Main[Path][Method] extends {
+			response: infer Response;
+		}
+			? {
+					[Status in ApiErrorStatus<Response>]: ApiErrorCodesAt<Response, Status> extends infer ErrorCode
+						? ErrorCode extends string
+							? string extends ErrorCode
+								? never
+								: ErrorCode extends "(no errorCode)"
+									? never
+									: [ErrorCode, Status]
+							: never
+						: never;
+				}[ApiErrorStatus<Response>]
+			: never;
+	}[keyof api_schemas_Main[Path] & ApiErrorMethod];
+}[ApiErrorPath];
+
+type ApiErrorGlobalProblems<Pair = ApiErrorPairs> = Pair extends [
+	infer ErrorCode extends string,
+	infer Status extends number,
+]
+	? Exclude<Extract<ApiErrorPairs, [ErrorCode, number]>[1], Status> extends infer Other extends number
+		? `${ErrorCode}: used with ${Status} and with ${Other}`
+		: never
+	: never;
+
+type ApiErrorExpectNone<Problems extends never> = Problems;
+
+// Keep two checks. One union of both `never` results fails oxlint's union rules.
+
+//@ts-ignore Only hides "declared but never used". A problem still fails on the next line.
+type _ApiErrorRouteCheck = //
+	ApiErrorExpectNone<{ [Path in ApiErrorPath]: ApiErrorRouteProblems<Path> }[ApiErrorPath]>;
+
+//@ts-ignore Only hides "declared but never used". A problem still fails on the next line.
+type _ApiErrorGlobalCheck = //
+	ApiErrorExpectNone<ApiErrorGlobalProblems>;
+// #endregion Error body check

@@ -232,22 +232,22 @@ function store_failure(failure: { name?: string; message: string }) {
 	const message = failure.message;
 
 	if (failure.name === REFUSAL_CONFLICT) {
-		return { status: 409, body: { message } } as const;
+		return { status: 409, body: { message, errorCode: "conflict" } } as const;
 	}
 	if (failure.name === REFUSAL_STORAGE_FULL) {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "storage_full" } } as const;
 	}
 	if (message === "Unauthenticated") {
-		return { status: 401, body: { message } } as const;
+		return { status: 401, body: { message, errorCode: "unauthenticated" } } as const;
 	}
 	if (message === "Permission denied") {
-		return { status: 403, body: { message } } as const;
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
 	}
 	if (message === "Not found") {
-		return { status: 404, body: { message } } as const;
+		return { status: 404, body: { message, errorCode: "not_found" } } as const;
 	}
 
-	return { status: 400, body: { message } } as const;
+	return { status: 400, body: { message, errorCode: "invalid_input" } } as const;
 }
 
 type AuthorizedPrincipal = Extract<
@@ -265,7 +265,12 @@ type AuthorizedPrincipal = Extract<
 function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: string | undefined) {
 	if (principal.kind === "user_api_key") {
 		if (!bodyInstallationId) {
-			return { _nay: { status: 400, body: { message: "installationId is required for an API key" } } } as const;
+			return {
+				_nay: {
+					status: 400,
+					body: { message: "installationId is required for an API key", errorCode: "invalid_input" },
+				},
+			} as const;
 		}
 
 		return {
@@ -283,7 +288,10 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 
 	if (bodyInstallationId) {
 		return {
-			_nay: { status: 400, body: { message: "installationId is not allowed for this token" } },
+			_nay: {
+				status: 400,
+				body: { message: "installationId is not allowed for this token", errorCode: "invalid_input" },
+			},
 		} as const;
 	}
 
@@ -331,38 +339,30 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 
 	// A read-only file grant has no installation and no plugin. Routes never allow this kind, so
 	// reaching here would mean an `allowedKinds` list and this function disagree.
-	return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
+	return { _nay: { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } } as const;
 }
-
-/**
- * The same failure vocabulary the file routes report on a settled plugin call.
- */
-const ERROR_CODE_BY_STATUS: Record<number, string> = {
-	400: "invalid_input",
-	401: "unauthenticated",
-	403: "permission_denied",
-	404: "not_found",
-	409: "conflict",
-	429: "rate_limited",
-};
 
 /**
  * Plugin runs pay one call slot per API request and report how that call ended. Every other kind has
  * nothing to settle, and `public_api_settle_plugin_call_best_effort` already ignores a null id.
+ *
+ * A failed call passes the `errorCode` of the body it answers, so the log and the client see the
+ * same code.
  */
 async function settle(args: {
 	ctx: ActionCtx;
 	callId: Parameters<typeof public_api_settle_plugin_call_best_effort>[1]["callId"];
 	status: number;
+	errorCode?: string;
 	errorMessage?: string;
 }) {
-	const { ctx, status, callId, errorMessage } = args;
+	const { ctx, status, callId, errorCode, errorMessage } = args;
 
 	await public_api_settle_plugin_call_best_effort(ctx, {
 		callId,
 		status: status === 200 ? "succeeded" : "failed",
 		responseStatus: status,
-		errorCode: status === 200 ? undefined : (ERROR_CODE_BY_STATUS[status] ?? "invalid_input"),
+		errorCode,
 		errorMessage,
 	});
 }
@@ -405,11 +405,12 @@ export async function plugins_data_http_read(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		const response = { status: 400, body: { message: body._nay.message } } as const;
+		const response = { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -421,6 +422,7 @@ export async function plugins_data_http_read(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: principal._nay.status,
+			errorCode: principal._nay.body.errorCode,
 			errorMessage: principal._nay.body.message,
 		});
 		return principal._nay;
@@ -437,6 +439,7 @@ export async function plugins_data_http_read(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -575,11 +578,12 @@ export async function plugins_data_http_list(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		const response = { status: 400, body: { message: body._nay.message } } as const;
+		const response = { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -591,6 +595,7 @@ export async function plugins_data_http_list(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: principal._nay.status,
+			errorCode: principal._nay.body.errorCode,
 			errorMessage: principal._nay.body.message,
 		});
 		return principal._nay;
@@ -613,12 +618,13 @@ export async function plugins_data_http_list(args: {
 		if (unpacked === null) {
 			const response = {
 				status: 400,
-				body: { message: "cursor is not a cursor this route issued" },
+				body: { message: "cursor is not a cursor this route issued", errorCode: "invalid_cursor" },
 			} as const;
 			await settle({
 				ctx,
 				callId: auth._yay.pluginCallId,
 				status: response.status,
+				errorCode: response.body.errorCode,
 				errorMessage: response.body.message,
 			});
 			return response;
@@ -628,12 +634,16 @@ export async function plugins_data_http_list(args: {
 		if (changedField !== null) {
 			const response = {
 				status: 400,
-				body: { message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.` },
+				body: {
+					message: `cursor was issued for a different ${changedField}. Start a new page instead of reusing it.`,
+					errorCode: "invalid_cursor",
+				},
 			} as const;
 			await settle({
 				ctx,
 				callId: auth._yay.pluginCallId,
 				status: response.status,
+				errorCode: response.body.errorCode,
 				errorMessage: response.body.message,
 			});
 			return response;
@@ -659,6 +669,7 @@ export async function plugins_data_http_list(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -719,11 +730,12 @@ export async function plugins_data_http_write(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		const response = { status: 400, body: { message: body._nay.message } } as const;
+		const response = { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -735,6 +747,7 @@ export async function plugins_data_http_write(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: principal._nay.status,
+			errorCode: principal._nay.body.errorCode,
 			errorMessage: principal._nay.body.message,
 		});
 		return principal._nay;
@@ -752,6 +765,7 @@ export async function plugins_data_http_write(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -809,11 +823,12 @@ export async function plugins_data_http_write_batch(args: {
 		maxBytes: PLUGIN_DATA_WRITE_BATCH_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		const response = { status: 400, body: { message: body._nay.message } } as const;
+		const response = { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -825,6 +840,7 @@ export async function plugins_data_http_write_batch(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: principal._nay.status,
+			errorCode: principal._nay.body.errorCode,
 			errorMessage: principal._nay.body.message,
 		});
 		return principal._nay;
@@ -840,12 +856,13 @@ export async function plugins_data_http_write_batch(args: {
 	if (batchRateLimit) {
 		const response = {
 			status: 429,
-			body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+			body: { message: batchRateLimit.message, errorCode: "rate_limited", retryAfterMs: batchRateLimit.retryAfterMs },
 		} as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -864,6 +881,7 @@ export async function plugins_data_http_write_batch(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -912,11 +930,12 @@ export async function plugins_data_http_delete(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		const response = { status: 400, body: { message: body._nay.message } } as const;
+		const response = { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 		await settle({
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -928,6 +947,7 @@ export async function plugins_data_http_delete(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: principal._nay.status,
+			errorCode: principal._nay.body.errorCode,
 			errorMessage: principal._nay.body.message,
 		});
 		return principal._nay;
@@ -944,6 +964,7 @@ export async function plugins_data_http_delete(args: {
 			ctx,
 			callId: auth._yay.pluginCallId,
 			status: response.status,
+			errorCode: response.body.errorCode,
 			errorMessage: response.body.message,
 		});
 		return response;
@@ -1000,7 +1021,7 @@ export async function plugins_data_http_write_versioned(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
@@ -1064,7 +1085,7 @@ export async function plugins_data_http_delete_versioned(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
@@ -1133,7 +1154,7 @@ export async function plugins_data_http_reserve(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);
@@ -1199,7 +1220,7 @@ export async function plugins_data_http_release_reservation(args: {
 		maxBytes: PLUGIN_DATA_REQUEST_MAX_BYTES,
 	});
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message } } as const;
+		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
 	}
 
 	const principal = to_store_principal(auth._yay.principal, body._yay.installationId);

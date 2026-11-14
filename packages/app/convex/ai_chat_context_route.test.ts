@@ -1053,6 +1053,46 @@ describe("/api/v1/runs/stream provider errors", () => {
 		expect(logged).not.toContain("PRIVATE_TITLE_INPUT");
 		expect(logged).not.toContain("PRIVATE_PROVIDER_RESPONSE");
 	});
+
+	test("answers a thrown error without its text", async () => {
+		const { asUser, membership, threadId } = await setup();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		model.streamText.mockImplementation(() => {
+			throw new Error("PRIVATE_INTERNAL_DETAIL");
+		});
+
+		const response = await asUser.fetch("/api/v1/runs/stream", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				membershipId: membership.membershipId,
+				thread_id: threadId,
+				assistant_id: "system/thread_title",
+				messages: [{ role: "user", content: "Title" }],
+			}),
+		});
+
+		expect(response.status).toBe(500);
+		expect(await response.json()).toEqual({ message: "Title generation error", errorCode: "internal_error" });
+	});
+
+	test("answers 401 without a login", async () => {
+		const { t, membership, threadId } = await setup();
+
+		const response = await t.fetch("/api/v1/runs/stream", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				membershipId: membership.membershipId,
+				thread_id: threadId,
+				assistant_id: "system/thread_title",
+				messages: [{ role: "user", content: "Title" }],
+			}),
+		});
+
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
+	});
 });
 
 describe("/api/chat workspace instructions", () => {

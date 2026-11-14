@@ -57,7 +57,7 @@ For a typed exact-path endpoint, follow this structure:
 - For a heavy implementation, export the plain function from its heavy module. In the small route module, use a type-only `typeof import(...)` reference for the response schema and a literal dynamic import inside `httpAction(...)` for the runtime call.
 - Keep every returned `status` literal narrow with `as const`; widening one status to `number`
   collapses the response schema into a numeric index signature.
-- Register the real endpoint with `router.route({ path, method, handler: httpAction(...) })`.
+- Register the real endpoint with `router.route({ path, method, handler: httpAction(...) })`. An `/api/v1` route uses `public_api_http_action(...)` (`convex/public_api_http_action.ts`) instead, so an error it does not catch answers the public 500 body. See "Error bodies" in `.agents/skills/public-api/SKILL.md`.
 - For the type schema, return a typed object whose `response` is derived from the plain handler:
   - local: `response: api_schemas_BuildResponseSpecFromHandler<typeof handler>`
   - lazy: `response: api_schemas_BuildResponseSpecFromHandler<typeof import("./heavy.ts").handler>`

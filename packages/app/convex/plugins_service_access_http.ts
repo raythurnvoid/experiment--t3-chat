@@ -26,16 +26,19 @@ function bearer(request: Request, header: string) {
 }
 
 function failure(message: string) {
-	if (message === "Rate limit exceeded") return { status: 429, body: { code: "rate_limited", message } } as const;
+	if (message === "Rate limit exceeded") return { status: 429, body: { message, errorCode: "rate_limited" } } as const;
 	if (message === "Unauthorized")
-		return { status: 401, body: { code: "unauthorized", message: "Unauthorized" } } as const;
-	if (message === "Permission denied") return { status: 403, body: { code: "permission_denied", message } } as const;
-	if (message === "Lease has expired") return { status: 409, body: { code: "expired_lease", message } } as const;
-	if (message === "Snapshot required") return { status: 410, body: { code: "snapshot_required", message } } as const;
+		return { status: 401, body: { message: "Unauthorized", errorCode: "unauthenticated" } } as const;
+	if (message === "Permission denied")
+		return { status: 403, body: { message, errorCode: "permission_denied" } } as const;
+	if (message === "Lease has expired") return { status: 409, body: { message, errorCode: "expired_lease" } } as const;
+	if (message === "Snapshot required")
+		return { status: 410, body: { message, errorCode: "snapshot_required" } } as const;
 	if (message === "Installation is unavailable")
-		return { status: 409, body: { code: "unavailable", message } } as const;
-	if (message === "Installation has been removed") return { status: 410, body: { code: "revoked", message } } as const;
-	return { status: 400, body: { code: "invalid_request", message } } as const;
+		return { status: 409, body: { message, errorCode: "unavailable" } } as const;
+	if (message === "Installation has been removed")
+		return { status: 410, body: { message, errorCode: "revoked" } } as const;
+	return { status: 400, body: { message, errorCode: "invalid_input" } } as const;
 }
 
 async function request_failure(args: { ctx: ActionCtx; request: Request; message: string }) {

@@ -494,8 +494,9 @@ closes once. Council retains its attempt and prior receipt across retries.
 # Error Contract
 
 - Internal Read-only refusals keep `name: "read_only"`. Missing ACL remains a permission refusal.
-- Preserve each public door's existing envelope and status mapping. Do not force every route into
-  one HTTP status shape.
+- Every public door answers a Read-only refusal with 409 `{ message, errorCode: "read_only" }`. One
+  code keeps one status in every route, so a client can branch on the code alone. See "Error bodies"
+  in `../public-api/SKILL.md`.
 - `/files/write-many` keeps per-item results. Touch keeps sequential request-level failure.
   Upload URL batches preflight before minting. Atomic batch doors remain atomic.
 - A partial move to Trash reports completed work and refusals. It does not roll back completed siblings.
