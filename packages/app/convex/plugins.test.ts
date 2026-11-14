@@ -2367,7 +2367,7 @@ describe("plugins Phase 0", () => {
 		});
 
 		expect(response.status).toBe(409);
-		expect(await response.json()).toEqual({ message: "A file already exists at this path", errorCode: "conflict" });
+		expect(await response.json()).toEqual({ message: "A file already exists at this path", errorCode: "file_exists" });
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		// The failed constraint still burned a quota slot.
 		expect(run?.apiCallCount).toBe(1);
@@ -2385,7 +2385,7 @@ describe("plugins Phase 0", () => {
 			route: "/api/v1/files/write",
 			status: "failed",
 			responseStatus: 409,
-			errorCode: "conflict",
+			errorCode: "file_exists",
 			errorMessage: "A file already exists at this path",
 		});
 		expect(calls[0]?.finishedAt).toBeDefined();
@@ -3445,6 +3445,65 @@ describe("plugins Phase 0", () => {
 		// Cleanup settled the consumed call as failed.
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
+	});
+
+	test("a create-only write answers file_exists when another write takes the name after staging", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run({
+			t,
+			fixture,
+			eventId: "plugin:publish-file-exists-race-test",
+			status: "running",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		await t.run(async (ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, {
+				apiTokenHash: await crypto_sha256_hex(`plr_${"3".repeat(64)}`),
+				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
+			}),
+		);
+		const stage_write = async (overwrite: "replace" | "fail") => {
+			const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+				runId,
+				kind: "api_request",
+				route: "/api/v1/files/write",
+			});
+			if (consumed._nay) throw new Error(consumed._nay.message);
+			const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId: fixture.membership.userId,
+				principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
+				path: "/expired.png.md",
+				overwrite,
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
+				contentSize: 5,
+				yjsSnapshotSize: 5,
+			});
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			return prepared._yay;
+		};
+
+		// The create-only write stages while the name is free. Another write then creates the file.
+		const createOnly = await stage_write("fail");
+		const other = await stage_write("replace");
+		const created = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: other.stageId,
+			content: "# Old",
+			targetAnchor: other.targetAnchor,
+			addedFileRefs: [],
+		});
+		expect(created._nay).toBeUndefined();
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: createOnly.stageId,
+			content: "# New",
+			targetAnchor: createOnly.targetAnchor,
+			addedFileRefs: [],
+		});
+		expect(published).toMatchObject({ _nay: { name: "file_exists", message: "A file already exists at this path" } });
 	});
 
 	test("a write's plugin call stays open until the route settles it with the caller's answer", async () => {
@@ -8671,7 +8730,7 @@ describe("plugins metadata file doors", () => {
 		});
 		expect([listFile.status, await listFile.json()]).toEqual([
 			400,
-			{ message: "Path must point to a folder: /probe/tail.md" },
+			{ message: "Path must point to a folder: /probe/tail.md", errorCode: "invalid_input" },
 		]);
 
 		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
@@ -8735,10 +8794,7 @@ describe("plugins metadata file doors", () => {
 			expect([route, refused.status]).toEqual([route, 403]);
 			expect([route, await refused.json()]).toEqual([
 				route,
-				{
-					message: "Permission denied",
-					...(route === "/api/v1/files/read" ? { errorCode: "permission_denied" } : {}),
-				},
+				{ message: "Permission denied", errorCode: "permission_denied" },
 			]);
 		}
 	});

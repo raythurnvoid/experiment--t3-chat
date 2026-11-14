@@ -134,6 +134,7 @@ import {
 	public_api_resolve_live_principal,
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
+	public_api_with_auth_error_code,
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
@@ -3622,6 +3623,11 @@ export const publish_file_write = internalMutation({
 				? args.targetAnchor.kind !== "existing" || args.targetAnchor.nodeId !== activeNode._id
 				: args.targetAnchor.kind !== "create"
 		) {
+			// Another writer created the file after this create-only write staged. Answer like the check
+			// before staging. The action deletes the stage and settles the plugin call with this code.
+			if (stage.overwrite === "fail" && activeNode?.kind === "file") {
+				return Result({ _nay: { name: "file_exists", message: "A file already exists at this path" } });
+			}
 			const staleRefusal = file_write_stale_refusal();
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
@@ -3652,7 +3658,7 @@ export const publish_file_write = internalMutation({
 				return Result({ _nay: { message: "A folder already exists at this path" } });
 			}
 			if (stage.overwrite === "fail") {
-				return Result({ _nay: { message: "A file already exists at this path" } });
+				return Result({ _nay: { name: "file_exists", message: "A file already exists at this path" } });
 			}
 			if (
 				principalRef.kind === "plugin_service" &&
@@ -5348,6 +5354,18 @@ function written_file_revision(written: { revision: string | null }, path: strin
 }
 
 /**
+ * The save rules that change a text before it is saved: LF line endings and no leading BOM. This
+ * names the rules that changed `text`, so a caller knows why the saved bytes differ from its own.
+ * It matches `files_normalize_text_document_input`.
+ */
+function text_normalizations(text: string) {
+	const normalizations: Array<"line_endings" | "bom_removed"> = [];
+	if (text.includes("\r")) normalizations.push("line_endings");
+	if (text.charCodeAt(0) === 0xfeff) normalizations.push("bom_removed");
+	return normalizations;
+}
+
+/**
  * The text after an edit or append. An edit replaces exactly one literal match of `oldText`, and
  * overlapping matches count. The refusals never show the file's text.
  */
@@ -5461,10 +5479,19 @@ async function write_one_text_file_attempt(
 
 	// The text this attempt saves. A write saves its own text. An edit or append changes the latest
 	// text: the saved bytes when they are the latest text, else the editor text.
+	// A write's route already normalized its text, so no rule changes it here. The route reports
+	// the rules it applied.
 	const build_content = (savedText: string | null, editorText: string | null) => {
 		if (args.change.kind === "write") {
 			const content = args.change.content;
-			return Result({ _yay: { content, contentBytes: files_get_utf8_byte_size(content), contentChanged: false } });
+			return Result({
+				_yay: {
+					content,
+					contentBytes: files_get_utf8_byte_size(content),
+					normalizations: text_normalizations(content),
+					usedEditorText: false,
+				},
+			});
 		}
 
 		const baseline = savedText ?? editorText;
@@ -5496,7 +5523,12 @@ async function write_one_text_file_attempt(
 		}
 		// The editor text can differ from the saved bytes, for example in its Markdown style.
 		return Result({
-			_yay: { content, contentBytes, contentChanged: content !== changed._yay || savedText === null },
+			_yay: {
+				content,
+				contentBytes,
+				normalizations: text_normalizations(changed._yay),
+				usedEditorText: savedText === null,
+			},
 		});
 	};
 
@@ -5508,7 +5540,12 @@ async function write_one_text_file_attempt(
 	const find_unchanged_result = async (
 		node: Doc<"files_nodes">,
 		contentType: files_ContentType,
-		built: { content: string; contentBytes: number; contentChanged: boolean },
+		built: {
+			content: string;
+			contentBytes: number;
+			normalizations: ReturnType<typeof text_normalizations>;
+			usedEditorText: boolean;
+		},
 		baseline: string | null,
 	) => {
 		if ((!args.skipIfUnchanged && args.change.kind === "write") || args.principalRef.kind !== "user_api_key")
@@ -5558,7 +5595,8 @@ async function write_one_text_file_attempt(
 				unchanged: true,
 				revision: current.revision,
 				size: built.contentBytes,
-				contentChanged: built.contentChanged,
+				normalizations: built.normalizations,
+				usedEditorText: built.usedEditorText,
 			},
 		});
 	};
@@ -5647,18 +5685,20 @@ async function write_one_text_file_attempt(
 			},
 		});
 	}
+	// `file_exists` tells a create-only caller that the name is taken by a file, so it can pick
+	// another name without parsing the message.
 	if (activeNode && args.overwrite === "fail") {
 		return Result({
 			_nay: {
 				name: "nay",
 				message: "A file already exists at this path",
-				data: { status: 409, errorCode: "conflict" },
+				data: { status: 409, errorCode: "file_exists" },
 			},
 		});
 	}
 	// A create-only write onto a locked name answers "File exists", like the OS. The name already
 	// shows as a locked row, so this tells nothing new. An overwrite of it is refused as "Permission
-	// denied" by the write below.
+	// denied" by the write below. A folder there keeps `conflict`, like an unlocked folder above.
 	if (!activeNode && args.overwrite === "fail") {
 		const access = await ctx.runQuery(internal.files_nodes.get_path_access, {
 			organizationId: args.organizationId,
@@ -5666,15 +5706,21 @@ async function write_one_text_file_attempt(
 			subject: args.subject,
 			path: args.path,
 		});
+		if (access.status === "locked" && access.node?.kind === "folder") {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "A folder already exists at this path",
+					data: { status: 409, errorCode: "conflict" },
+				},
+			});
+		}
 		if (access.status === "locked" && access.node) {
 			return Result({
 				_nay: {
 					name: "nay",
-					message:
-						access.node.kind === "folder"
-							? "A folder already exists at this path"
-							: "A file already exists at this path",
-					data: { status: 409, errorCode: "conflict" },
+					message: "A file already exists at this path",
+					data: { status: 409, errorCode: "file_exists" },
 				},
 			});
 		}
@@ -5713,7 +5759,7 @@ async function write_one_text_file_attempt(
 			previous?.target.kind === "saved" && previous.target.id === activeNode._id ? previous.content : null;
 		const built = build_content(previousText, null);
 		if (built._nay) return (await find_save_refusal(activeNode)) ?? built;
-		const { content, contentBytes, contentChanged } = built._yay;
+		const { content, contentBytes, normalizations, usedEditorText } = built._yay;
 
 		const unchanged = await find_unchanged_result(activeNode, activeNodeContentType, built._yay, previousText);
 		if (unchanged) return unchanged;
@@ -5864,7 +5910,8 @@ async function write_one_text_file_attempt(
 				unchanged: false,
 				revision: published._yay.revision,
 				size: contentBytes,
-				contentChanged,
+				normalizations,
+				usedEditorText,
 			},
 		});
 	}
@@ -5904,7 +5951,7 @@ async function write_one_text_file_attempt(
 			const savedText = saved?.target.kind === "saved" && saved.target.id === activeNode._id ? saved.content : null;
 			const built = build_content(savedText, currentContent._yay.text);
 			if (built._nay) return (await find_save_refusal(activeNode)) ?? built;
-			const { content, contentBytes, contentChanged } = built._yay;
+			const { content, contentBytes, normalizations, usedEditorText } = built._yay;
 
 			const fileRefs = find_added_file_refs(content, currentContent._yay.text, activeNode.textKind);
 			if (fileRefs._nay) return fileRefs;
@@ -6195,7 +6242,8 @@ async function write_one_text_file_attempt(
 					unchanged: false,
 					revision: published._yay.revision,
 					size: contentBytes,
-					contentChanged,
+					normalizations,
+					usedEditorText,
 				},
 			});
 		}
@@ -6362,7 +6410,10 @@ async function write_one_text_file_attempt(
 						? { status: 500 as const, errorCode: "storage_failure" as const }
 						: published._nay.name === "too_many_folders"
 							? { status: 400 as const, errorCode: "invalid_input" as const }
-							: { status: 409 as const, errorCode: "conflict" as const });
+							: // Another writer created the file after the check above.
+								published._nay.name === "file_exists"
+								? { status: 409 as const, errorCode: "file_exists" as const }
+								: { status: 409 as const, errorCode: "conflict" as const });
 		// A read-only refusal already cleaned up the stage during publish. Cleanup keeps the plugin
 		// call open: the route settles it with this refusal's own status.
 		if (published._nay.name !== "read_only" && published._nay.name !== "stale_write") {
@@ -6386,7 +6437,8 @@ async function write_one_text_file_attempt(
 			unchanged: false,
 			revision: published._yay.revision,
 			size: contentBytes,
-			contentChanged: false,
+			normalizations: text_normalizations(content),
+			usedEditorText: false,
 		},
 	});
 }
@@ -6427,20 +6479,6 @@ export async function public_api_write_one_text_file(
 }
 
 // HTTP routes
-
-/**
- * Add the documented error code to a refusal from `public_api_authorize_request`.
- */
-function with_auth_error_code<Refusal extends { status: number; body: object }>(refusal: Refusal) {
-	return {
-		...refusal,
-		body: {
-			...refusal.body,
-			errorCode:
-				refusal.status === 401 ? "unauthenticated" : refusal.status === 429 ? "rate_limited" : "permission_denied",
-		},
-	};
-}
 
 /**
  * Whether a path names a file exactly as it is stored. The read, edit, and append routes take only
@@ -6499,7 +6537,7 @@ export async function public_api_http_read_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return { ...with_auth_error_code(auth._nay), headers };
+		return { ...public_api_with_auth_error_code(auth._nay), headers };
 	}
 	const { principal, pluginCallId, presentedToken } = auth._yay;
 	let fileReadStarted = false;
@@ -7072,7 +7110,7 @@ export async function public_api_http_write_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return with_auth_error_code(auth._nay);
+		return public_api_with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 	const pluginCallId = auth._yay.pluginCallId;
@@ -7183,8 +7221,10 @@ export async function public_api_http_write_file(args: {
 	// the document, the R2 content snapshot, the committed chunks, and the stored size
 	// must all see the same LF-normalized, BOM-stripped string.
 	const content = files_normalize_text_document_input(body._yay.content);
-	// Only the LF and BOM rule above can make the saved text differ from the request.
-	const contentChanged = content !== body._yay.content;
+	// Only the LF and BOM rule above can make the saved text differ from the request. A write always
+	// saves its own text, never the editor text.
+	const normalizations = text_normalizations(body._yay.content);
+	const contentChanged = normalizations.length > 0;
 	if (content.length === 0) {
 		return {
 			status: 400,
@@ -7422,6 +7462,8 @@ export async function public_api_http_write_file(args: {
 				revision: written_file_revision(written._yay, requestedPath),
 				size: contentBytes,
 				contentChanged,
+				normalizations,
+				usedEditorText: false,
 				unchanged: true as const,
 			},
 			headers: { "Cache-Control": "no-store" },
@@ -7475,6 +7517,8 @@ export async function public_api_http_write_file(args: {
 			revision: written_file_revision(written._yay, requestedPath),
 			size: contentBytes,
 			contentChanged,
+			normalizations,
+			usedEditorText: false,
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
@@ -7535,7 +7579,7 @@ export async function public_api_http_change_file(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return with_auth_error_code(auth._nay);
+		return public_api_with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 	// The change starts from the file's text, so the key must also be allowed to read it.
@@ -7634,7 +7678,9 @@ export async function public_api_http_change_file(args: {
 			contentType: written._yay.contentType,
 			revision: written_file_revision(written._yay, requestedPath),
 			size: written._yay.size,
-			contentChanged: written._yay.contentChanged,
+			contentChanged: written._yay.normalizations.length > 0 || written._yay.usedEditorText,
+			normalizations: written._yay.normalizations,
+			usedEditorText: written._yay.usedEditorText,
 			...(written._yay.unchanged ? { unchanged: true as const } : {}),
 		},
 		headers: { "Cache-Control": "no-store" },
@@ -7691,7 +7737,7 @@ export async function public_api_http_write_many(args: {
 		route: path,
 	});
 	if (auth._nay) {
-		return with_auth_error_code(auth._nay);
+		return public_api_with_auth_error_code(auth._nay);
 	}
 	const principal = auth._yay.principal;
 
@@ -7732,7 +7778,7 @@ export async function public_api_http_write_many(args: {
 		expectedRevision: string | undefined;
 		shape: { contentType: files_ContentType; rootKind: files_YjsRootKind } | null;
 		nonCollaborative: boolean;
-		contentChanged: boolean;
+		normalizations: ReturnType<typeof text_normalizations>;
 	}> = [];
 	const seenPaths = new Set<string>();
 	// Resolve every path at once. The loop below still checks items in request order, so the first
@@ -7841,7 +7887,7 @@ export async function public_api_http_write_many(args: {
 			expectedRevision: file.expectedRevision,
 			shape,
 			nonCollaborative: file.nonCollaborative ?? false,
-			contentChanged: content !== file.content,
+			normalizations: text_normalizations(file.content),
 		});
 	}
 
@@ -7971,6 +8017,8 @@ export async function public_api_http_write_many(args: {
 		revision: string;
 		size: number;
 		contentChanged: boolean;
+		normalizations: ReturnType<typeof text_normalizations>;
+		usedEditorText: false;
 		unchanged?: true;
 	}> = [];
 	const errors: Array<{
@@ -7979,6 +8027,7 @@ export async function public_api_http_write_many(args: {
 		errorCode:
 			| "permission_denied"
 			| "conflict"
+			| "file_exists"
 			| "storage_failure"
 			| "file_changed"
 			| "file_not_latest"
@@ -8028,7 +8077,9 @@ export async function public_api_http_write_many(args: {
 			contentType: result._yay.contentType,
 			revision: written_file_revision(result._yay, file.path),
 			size: file.contentBytes,
-			contentChanged: file.contentChanged,
+			contentChanged: file.normalizations.length > 0,
+			normalizations: file.normalizations,
+			usedEditorText: false,
 			...(result._yay.unchanged ? { unchanged: true as const } : {}),
 		});
 	}

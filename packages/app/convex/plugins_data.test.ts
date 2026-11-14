@@ -918,7 +918,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({}),
 		});
 		expect(live.status).toBe(403);
-		expect(await live.json()).toEqual({ message: "Permission denied" });
+		expect(await live.json()).toEqual({ message: "Permission denied", errorCode: "permission_denied" });
 
 		// Expiry is checked before the kind, so the same request now fails as authentication instead.
 		await t.run(async (ctx) => {
@@ -930,7 +930,7 @@ describe("public API routes", () => {
 			body: JSON.stringify({}),
 		});
 		expect(expired.status).toBe(401);
-		expect(await expired.json()).toEqual({ message: "Unauthenticated" });
+		expect(await expired.json()).toEqual({ message: "Unauthenticated", errorCode: "unauthenticated" });
 	});
 
 	test("refuses a caller with no token at all, and writes nothing", async () => {

@@ -513,6 +513,7 @@ describe("two-root code grants", () => {
 				expect(result.status, "list must reject changed code-source authority after settlement").toBe(404);
 				expect(await result.json(), "lost code source must release no file details").toEqual({
 					message: "File unavailable",
+					errorCode: "not_found",
 				});
 			}
 		},
@@ -526,7 +527,10 @@ describe("two-root code grants", () => {
 			const response = await f.request({ workspace: "personal", route: "list", body: { path } });
 			return [response.status, await response.json()];
 		};
-		expect(await list("/data.txt")).toEqual([400, { message: "Path must point to a folder: /data.txt" }]);
+		expect(await list("/data.txt")).toEqual([
+			400,
+			{ message: "Path must point to a folder: /data.txt", errorCode: "invalid_input" },
+		]);
 
 		// The auth step calls this function inside its own module, so the spy sees only the route's recheck.
 		const resolve = publicApiHttpAuth.public_api_resolve_live_principal;
@@ -538,7 +542,7 @@ describe("two-root code grants", () => {
 			});
 		expect(await list("/data.txt"), "a lost source must not learn that the path is a file").toEqual([
 			404,
-			{ message: "File unavailable" },
+			{ message: "File unavailable", errorCode: "not_found" },
 		]);
 		expect(recheck).toHaveBeenCalledTimes(1);
 	});
@@ -562,7 +566,7 @@ describe("two-root code grants", () => {
 		if (draft._nay || !draft._yay.pendingUpdateId) throw new Error("Expected a folder draft");
 		expect(await list(), "the folder lookup reads saved files only").toEqual([
 			404,
-			{ message: "Folder not found: /drafts" },
+			{ message: "Folder not found: /drafts", errorCode: "not_found" },
 		]);
 
 		const saved = await test_save_file_pending_update(

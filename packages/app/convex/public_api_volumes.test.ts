@@ -1232,7 +1232,7 @@ describe("scheduled Files response authority", () => {
 		});
 		// The member cannot open the workspace root, so a list of it is locked, like Bash `ls /`.
 		expect(listed.status).toBe(403);
-		expect(await listed.json()).toEqual({ message: "Permission denied: /" });
+		expect(await listed.json()).toEqual({ message: "Permission denied: /", errorCode: "permission_denied" });
 		const denied = await f.t.fetch("/api/v1/files/read", {
 			method: "POST",
 			headers: { Authorization: `Bearer ${f.token}` },
@@ -1253,7 +1253,7 @@ describe("scheduled Files response authority", () => {
 			body: JSON.stringify({}),
 		});
 		expect(locked.status).toBe(403);
-		expect(await locked.json()).toEqual({ message: "Permission denied: /" });
+		expect(await locked.json()).toEqual({ message: "Permission denied: /", errorCode: "permission_denied" });
 		await open_root(f);
 		for (const [path, body] of [
 			["/api/v1/files/read", { path: "/note.txt" }],

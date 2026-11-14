@@ -678,7 +678,7 @@ describe("volume tenant API isolation", () => {
 				body: JSON.stringify({ path, recursive: true }),
 			});
 			expect(response.status).toBe(404);
-			expect(await response.json()).toEqual({ message: `Folder not found: ${path}` });
+			expect(await response.json()).toEqual({ message: `Folder not found: ${path}`, errorCode: "not_found" });
 		}
 		const volumePaths = [f.path, "/.mounts/sources/repo/notes.md"];
 		for (const path of volumePaths) {

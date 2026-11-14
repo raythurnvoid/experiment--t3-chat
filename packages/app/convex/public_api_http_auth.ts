@@ -262,6 +262,25 @@ export async function public_api_authorize_key_inspection(args: { ctx: ActionCtx
 }
 
 /**
+ * Add the stable `errorCode` to a refusal from `public_api_authorize_request`.
+ * That function answers only 401, 403, or 429.
+ */
+export function public_api_with_auth_error_code<Refusal extends { status: number; body: object }>(refusal: Refusal) {
+	return {
+		...refusal,
+		body: {
+			...refusal.body,
+			errorCode:
+				refusal.status === 401
+					? ("unauthenticated" as const)
+					: refusal.status === 429
+						? ("rate_limited" as const)
+						: ("permission_denied" as const),
+		},
+	};
+}
+
+/**
  * Settle a plugin call created during authorization. Telemetry must not change an HTTP response
  * that the route already decided.
  */

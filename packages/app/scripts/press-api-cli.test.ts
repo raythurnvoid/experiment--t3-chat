@@ -234,6 +234,8 @@ describe("write", () => {
 			revision: "r2",
 			size: 15,
 			contentChanged: true,
+			normalizations: ["line_endings", "bom_removed"],
+			usedEditorText: false,
 		};
 		let errorCode: string | null = null;
 		const api = await start_api((_request, response) => {

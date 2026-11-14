@@ -1870,7 +1870,10 @@ describe("public files API", () => {
 			expect(response.status).toBe(400);
 			expect(await response.json()).toEqual({
 				message: "Request body validation failed",
-				...(path === "/api/v1/files/read" || path === "/api/v1/files/write" || path === "/api/v1/files/write-many"
+				...(path === "/api/v1/files/list" ||
+				path === "/api/v1/files/read" ||
+				path === "/api/v1/files/write" ||
+				path === "/api/v1/files/write-many"
 					? { errorCode: "invalid_input" }
 					: {}),
 			});
@@ -1949,7 +1952,7 @@ describe("public files API", () => {
 				body: JSON.stringify(body),
 			});
 			expect(response.status, JSON.stringify(body)).toBe(400);
-			expect(await response.json()).toEqual({ message });
+			expect(await response.json()).toEqual({ message, errorCode: "invalid_input" });
 		}
 	});
 
@@ -2095,6 +2098,8 @@ describe("public files API", () => {
 			revision: expect.any(String),
 			size: expect.any(Number),
 			contentChanged: false,
+			normalizations: [],
+			usedEditorText: false,
 		});
 
 		const listResponse = await t.fetch("/api/v1/files/list", {
@@ -2951,6 +2956,8 @@ describe("public files API", () => {
 			revision: expect.any(String),
 			size: expect.any(Number),
 			contentChanged: false,
+			normalizations: [],
+			usedEditorText: false,
 			unchanged: true,
 		});
 		const after = await t.run(async (ctx) => ({
@@ -3749,7 +3756,7 @@ describe("public files API", () => {
 				body: JSON.stringify({ path, recursive: true }),
 			});
 			expect(listMount.status).toBe(404);
-			expect(await listMount.json()).toEqual({ message: `Folder not found: ${path}` });
+			expect(await listMount.json()).toEqual({ message: `Folder not found: ${path}`, errorCode: "not_found" });
 		}
 
 		for (const path of ["/t3-chat/README.md", "/.mounts/t3-chat/README.md"]) {
@@ -4638,7 +4645,7 @@ describe("locked and missing paths", () => {
 		const huge = await list(t, f.memberCredential, { path: "/", cursor: `c1.${"A".repeat(16384)}` });
 		expect(huge, "the body check refuses an over-long cursor before the server decodes it").toEqual({
 			status: 400,
-			body: { message: "Request body validation failed" },
+			body: { message: "Request body validation failed", errorCode: "invalid_input" },
 		});
 	});
 
@@ -4663,22 +4670,22 @@ describe("locked and missing paths", () => {
 			// Git Bash turns `/c/...` arguments into Windows paths. The 404 shows the path the server read.
 			expect(await list(t, f.memberCredential, { path: "C:/Program Files/Git/", recursive })).toEqual({
 				status: 404,
-				body: { message: "Folder not found: /C:/Program Files/Git" },
+				body: { message: "Folder not found: /C:/Program Files/Git", errorCode: "not_found" },
 			});
-			// A locked folder or file, and any path below a locked folder, is 403 with only a message.
+			// A locked folder or file, and any path below a locked folder, is 403 with only a message and a code.
 			for (const path of ["/secret", "/hidden.md", "/secret/h01.md", "/secret/nope"]) {
 				expect(await list(t, f.memberCredential, { path, recursive })).toEqual({
 					status: 403,
-					body: { message: `Permission denied: ${path}` },
+					body: { message: `Permission denied: ${path}`, errorCode: "permission_denied" },
 				});
 			}
 			expect(await list(t, f.memberCredential, { path: "/notes/nope", recursive })).toEqual({
 				status: 404,
-				body: { message: "Folder not found: /notes/nope" },
+				body: { message: "Folder not found: /notes/nope", errorCode: "not_found" },
 			});
 			expect(await list(t, f.memberCredential, { path: "/b.md", recursive })).toEqual({
 				status: 400,
-				body: { message: "Path must point to a folder: /b.md" },
+				body: { message: "Path must point to a folder: /b.md", errorCode: "invalid_input" },
 			});
 		}
 
@@ -4816,7 +4823,7 @@ describe("locked and missing paths", () => {
 		).toMatchObject([{ path: "/hidden.md" }]);
 		expect(await list(t, f.memberCredential, { path: "/", order: "desc", recursive: true })).toEqual({
 			status: 400,
-			body: { message: 'order: "desc" needs a list without recursive.' },
+			body: { message: 'order: "desc" needs a list without recursive.', errorCode: "invalid_input" },
 		});
 	});
 
@@ -4870,7 +4877,7 @@ describe("locked and missing paths", () => {
 		for (const recursive of [false, true]) {
 			expect(await list(t, key._yay.credential, { path: "/", recursive })).toEqual({
 				status: 403,
-				body: { message: "Permission denied: /" },
+				body: { message: "Permission denied: /", errorCode: "permission_denied" },
 			});
 		}
 	});
@@ -4912,7 +4919,7 @@ describe("locked and missing paths", () => {
 		expect(archived._nay).toBeUndefined();
 		expect(await list(t, f.ownerCredential, next)).toEqual({
 			status: 404,
-			body: { message: "Folder not found: /secret" },
+			body: { message: "Folder not found: /secret", errorCode: "not_found" },
 		});
 
 		// Finish moving the old folder's children to Trash before reusing its path.
@@ -5003,7 +5010,7 @@ describe("locked and missing paths", () => {
 				content: "# Mine",
 				overwrite: "fail",
 			}),
-		).toEqual({ status: 409, body: { message: "A file already exists at this path", errorCode: "conflict" } });
+		).toEqual({ status: 409, body: { message: "A file already exists at this path", errorCode: "file_exists" } });
 		expect(
 			await post(t, "/api/v1/files/upload-urls", f.memberCredential, {
 				files: [{ path: "/hidden.md", contentType: "text/markdown;charset=utf-8", size: 6 }],
@@ -5094,7 +5101,10 @@ describe("locked and missing paths", () => {
 		const guestCredential = await seed_guest(t, f);
 
 		for (const body of [{}, { path: "/" }, { path: "/", recursive: true }]) {
-			expect(await list(t, guestCredential, body)).toEqual({ status: 403, body: { message: "Permission denied: /" } });
+			expect(await list(t, guestCredential, body)).toEqual({
+				status: 403,
+				body: { message: "Permission denied: /", errorCode: "permission_denied" },
+			});
 		}
 		// Control: a member with a role lists the root.
 		expect((await list(t, f.memberCredential, { path: "/" })).status).toBe(200);
@@ -7590,6 +7600,8 @@ describe("files write-many", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 			{
 				path: "/bulk/nested/new-2.md",
@@ -7598,6 +7610,8 @@ describe("files write-many", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 			// Same fill-in-place behavior as the single route: the nodeId stays stable.
 			{
@@ -7607,6 +7621,8 @@ describe("files write-many", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 		]);
 
@@ -8028,7 +8044,7 @@ describe("files write-many", () => {
 		};
 		expect(body.written.map((file) => file.path)).toEqual(["/bulk-c/new-1.md", "/bulk-c/new-2.md"]);
 		expect(body.errors).toEqual([
-			{ path: "/bulk-c/existing.md", message: "A file already exists at this path", errorCode: "conflict" },
+			{ path: "/bulk-c/existing.md", message: "A file already exists at this path", errorCode: "file_exists" },
 		]);
 
 		// The item after the conflict was still written.
@@ -8132,6 +8148,8 @@ describe("files write-many", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 				unchanged: true,
 			},
 			{
@@ -8141,6 +8159,8 @@ describe("files write-many", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 		]);
 
@@ -8257,11 +8277,16 @@ describe("files write conflicts", () => {
 	test("a write returns the revision and size that the next read shows", async () => {
 		const { write, read } = await seed_revision_writer("clerk-revision-response");
 
-		const written = await write({ content: "# Title\r\n\r\nCafé\r\n" });
+		const written = await write({ content: String.fromCharCode(0xfeff) + "# Title\r\n\r\nCafé\r\n" });
 		expect(written.status).toBe(200);
 		const body = (await written.json()) as { revision: string; size: number; contentChanged: boolean };
-		// The CRLF line endings are saved as LF, so the saved text differs from the request.
-		expect(body).toMatchObject({ size: new TextEncoder().encode("# Title\n\nCafé\n").length, contentChanged: true });
+		// The CRLF line endings are saved as LF and the BOM is removed. The answer names both rules.
+		expect(body).toMatchObject({
+			size: new TextEncoder().encode("# Title\n\nCafé\n").length,
+			contentChanged: true,
+			normalizations: ["line_endings", "bom_removed"],
+			usedEditorText: false,
+		});
 
 		const response = await read();
 		expect(response.headers.get("X-File-Revision")).toBe(body.revision);
@@ -8587,7 +8612,7 @@ describe("files edit and append", () => {
 
 		const edited = await change_file(writer, "edit", { oldText: "two", newText: "three" });
 		expect(edited.status).toBe(200);
-		expect(await edited.json()).toMatchObject({ contentChanged: true });
+		expect(await edited.json()).toMatchObject({ contentChanged: true, normalizations: [], usedEditorText: true });
 		const text = await (await writer.read()).text();
 		expect(text).toContain("three");
 		expect(text).not.toBe("# Title\n\n\n\nBody three\n");
@@ -9045,7 +9070,7 @@ describe("files write billing", () => {
 			errors: Array<{ path: string; errorCode: string }>;
 		};
 		expect(body.written).toHaveLength(2);
-		expect(body.errors).toEqual([expect.objectContaining({ path: "/billing/existing.md", errorCode: "conflict" })]);
+		expect(body.errors).toEqual([expect.objectContaining({ path: "/billing/existing.md", errorCode: "file_exists" })]);
 
 		// One event per committed item; the refused item emits nothing.
 		await test_drain_billing_usage_event_outbox(t);
@@ -9878,6 +9903,8 @@ describe("files read-only locks", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 			{
 				path: "/bulk-lock/b.md",
@@ -9886,6 +9913,8 @@ describe("files read-only locks", () => {
 				revision: expect.any(String),
 				size: expect.any(Number),
 				contentChanged: false,
+				normalizations: [],
+				usedEditorText: false,
 			},
 		]);
 		expect(await read_file_content({ t, credential: writer.credential, path: "/bulk-lock/locked.md" })).toContain(
@@ -11422,6 +11451,8 @@ describe("service file writes", () => {
 			revision: expect.any(String),
 			size: expect.any(Number),
 			contentChanged: false,
+			normalizations: [],
+			usedEditorText: false,
 		});
 
 		const asUser = t.withIdentity({
@@ -11569,6 +11600,8 @@ describe("service file writes", () => {
 			revision: expect.any(String),
 			size: expect.any(Number),
 			contentChanged: false,
+			normalizations: [],
+			usedEditorText: false,
 		});
 		expect(
 			await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId }),

@@ -12,6 +12,7 @@ import {
 	public_api_resolve_live_principal,
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
+	public_api_with_auth_error_code,
 } from "./public_api_http_auth.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
@@ -65,15 +66,19 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								route: path,
 							});
 							if (auth._nay) {
-								return auth._nay;
+								return public_api_with_auth_error_code(auth._nay);
 							}
 							const principal = auth._yay.principal;
 							const pluginCallId = auth._yay.pluginCallId;
 
 							// Authorizing consumed a plugin run's call slot, and a run that ends with a call still
 							// open is failed as "Plugin left API calls unfinished". So every branch below settles
-							// it, including the successful one.
-							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+							// it, including the successful one. Every error body carries the same stable `errorCode`.
+							const fail = async <ErrorCode extends string>(failArgs: {
+								status: number;
+								message: string;
+								errorCode: ErrorCode;
+							}) => {
 								await public_api_settle_plugin_call_best_effort(ctx, {
 									callId: pluginCallId,
 									status: "failed",
@@ -81,7 +86,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									errorCode: failArgs.errorCode,
 									errorMessage: failArgs.message,
 								});
-								return { message: failArgs.message };
+								return { message: failArgs.message, errorCode: failArgs.errorCode };
 							};
 
 							const body = await server_request_json_parse_and_validate(request, bodyValidator);
@@ -172,18 +177,15 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
 								)
 									throw error;
+								// Clients restart with `cursor: null` on this code. A Move or Rename in the workspace, a
+								// replaced folder, or a host update all end old cursors, so this is a normal answer.
 								return {
 									status: 400,
-									body: {
-										...(await fail({
-											status: 400,
-											message: "This list cursor changed. Start a new page.",
-											errorCode: "invalid_cursor",
-										})),
-										// Clients restart with `cursor: null` on this code. A Move or Rename in the workspace, a
-										// replaced folder, or a host update all end old cursors, so this is a normal answer.
-										errorCode: "invalid_cursor" as const,
-									},
+									body: await fail({
+										status: 400,
+										message: "This list cursor changed. Start a new page.",
+										errorCode: "invalid_cursor",
+									}),
 								} as const;
 							}
 							if (listed._nay) {
@@ -194,7 +196,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 										now: Date.now(),
 										requiredScope: "files:list",
 									});
-									if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+									if (current._nay)
+										return { status: 404, body: { message: "File unavailable", errorCode: "not_found" } } as const;
 								}
 								// A readable file is 400, not 404: a 404 would tell an agent that the path is free.
 								if (listed._nay.name === "not_a_folder") {
@@ -263,7 +266,8 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									now: Date.now(),
 									requiredScope: "files:list",
 								});
-								if (current._nay) return { status: 404, body: { message: "File unavailable" } } as const;
+								if (current._nay)
+									return { status: 404, body: { message: "File unavailable", errorCode: "not_found" } } as const;
 							}
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
