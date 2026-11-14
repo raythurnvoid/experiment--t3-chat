@@ -9,6 +9,8 @@ The public API serves external clients, scripts, and plugins. It includes Files,
 
 After changing a plugin-visible route's request or response, run `generate:plugin-sdk-types` and include the changed `packages/bonobo-plugin-sdk/http-api.d.ts`. The full app lint checks this generated file too. Set `TEMP` and `TMP` to the personal task folder for that check, so a stale-file preview stays outside the repo and OS temp folder.
 
+When a public route's answer or error body changes, run the whole `--project convex` test run before you commit. Some tests call a route through a shared helper that builds the path, so a search for the route path misses them. On 2026-11-14, a search for `files/list` missed `ai_chat_code_grants.test.ts` and `plugins_data.test.ts`.
+
 Keep AI conversations and human Messages in separate API names and scopes. AI reads use `/api/v1/ai-chat/threads/*` and `ai_chat:read`. Human channels and their reply threads have no public HTTP API yet; do not add a generic chat alias that mixes them.
 
 A credential never expands its subject's access. Personal plugin Files access uses applied consent. Check the request's subject and target, not just its scope. A personal key acts as its user; a service-bound key acts as its account. AI conversations remain creator-private even when an owner or admin has broad Files access.
