@@ -13,6 +13,8 @@ import type * as access_control_changes from "../access_control_changes.js";
 import type * as activities from "../activities.js";
 import type * as activities_db from "../activities_db.js";
 import type * as activities_feed from "../activities_feed.js";
+import type * as agent_skills_http from "../agent_skills_http.js";
+import type * as agent_skills_http_routes from "../agent_skills_http_routes.js";
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_chat_context from "../ai_chat_context.js";
 import type * as ai_chat_files from "../ai_chat_files.js";
@@ -204,6 +206,8 @@ declare const fullApi: ApiFromModules<{
   activities: typeof activities;
   activities_db: typeof activities_db;
   activities_feed: typeof activities_feed;
+  agent_skills_http: typeof agent_skills_http;
+  agent_skills_http_routes: typeof agent_skills_http_routes;
   ai_chat: typeof ai_chat;
   ai_chat_context: typeof ai_chat_context;
   ai_chat_files: typeof ai_chat_files;
