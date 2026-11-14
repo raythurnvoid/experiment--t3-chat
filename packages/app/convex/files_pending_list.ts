@@ -15,7 +15,7 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { files_trash_requests_db_get_summary } from "./files_trash_requests.ts";
+import { files_trash_requests_db_get_summary } from "./files_trash_requests_db.ts";
 
 // Reuse the loaded module between calls. Keep request state inside each query.
 export const experimental_reuseContext = true;

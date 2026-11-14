@@ -1417,9 +1417,11 @@ describe("plugins publish_version", () => {
 		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._yay).toBeDefined();
-		// TextDecoder drops this marker by default. Keeping it proves coverage uses the same UTF-8 bytes
-		// whose hash and size were checked and whose original buffer is uploaded.
-		expect(reviewer_saw()).toContain(workerSource);
+		// Bash reads a saved Files copy, and saving drops the BOM. The inventory names it instead,
+		// with the byte size that counts it.
+		expect(reviewer_saw()).toContain(
+			"dist/backend/worker.js (application/javascript, 67 bytes, starts with a UTF-8 BOM that Bash does not show)",
+		);
 		const expectedWorkerBytes = new TextEncoder().encode(workerSource);
 		const uploadedWorkerBody = github.uploadBodies.find(
 			(body): body is ArrayBuffer => body instanceof ArrayBuffer && body.byteLength === expectedWorkerBytes.byteLength,

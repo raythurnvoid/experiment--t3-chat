@@ -11,7 +11,8 @@ import {
 	seed_tree,
 	step,
 } from "./files_archive_runs.setup.test.ts";
-import { files_trash_requests_db_delete_batch, files_trash_requests_db_get_summary } from "./files_trash_requests.ts";
+import { files_trash_requests_db_delete_batch } from "./files_trash_requests.ts";
+import { files_trash_requests_db_get_summary } from "./files_trash_requests_db.ts";
 import { files_archive_runs_db_delete_run_batch } from "./files_archive_runs.ts";
 import { files_pending_list_db_get_summary } from "./files_pending_list.ts";
 import { activities_db_finish } from "./activities_db.ts";

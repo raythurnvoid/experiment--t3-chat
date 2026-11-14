@@ -920,7 +920,11 @@ function format_review_inventory(
 	unreviewableFiles: ReadonlyArray<{ path: string; contentType: string; bytes: number }>,
 ) {
 	return [
-		...files.map((file) => `${file.path} (${file.contentType}, ${files_get_utf8_byte_size(file.source)} bytes)`),
+		// Bash reads saved Files copies, and saving drops a leading BOM. The published bytes keep it, so say so here.
+		...files.map(
+			(file) =>
+				`${file.path} (${file.contentType}, ${files_get_utf8_byte_size(file.source)} bytes${file.source.startsWith("\uFEFF") ? ", starts with a UTF-8 BOM that Bash does not show" : ""})`,
+		),
 		...unreviewableFiles.map((file) => `${file.path} (${file.contentType}, ${file.bytes} bytes, binary asset)`),
 	].join("\n");
 }

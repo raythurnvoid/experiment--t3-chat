@@ -565,6 +565,10 @@ beforeEach(() => {
 				return pendingUpdates.length > 0
 					? [{ listKey: "own", lastUpdatedAt: 1, keyCreationTime: 1, keyId: "own_key" }]
 					: [];
+			// The tests have no Trash requests.
+			case "files_trash_requests:list_sources":
+			case "files_trash_requests:list_requests":
+				return [];
 			case "files_pending_list:get_files_pending_updates_summary":
 				return { count: pendingUpdates.length, truncated: false };
 			case "files_pending_updates:get_pending_move_occupant":
