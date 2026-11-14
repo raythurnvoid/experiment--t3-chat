@@ -9,8 +9,10 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 const INDEX_SCHEMA = "https://schemas.agentskills.io/discovery/0.2.0/schema.json";
 
-// The files change only with a deploy, so a short cache is enough.
-const CACHE_CONTROL = "public, max-age=300";
+// Clients check the index again on every read, so they always see the digest of this deploy.
+// The zip URL holds that digest, so a cached zip always matches its URL.
+const INDEX_CACHE_CONTROL = "no-cache";
+const ARCHIVE_CACHE_CONTROL = "public, max-age=300";
 
 // Give every zip entry the same date. Then the same files always make the same zip bytes,
 // and the digest in the index matches the zip on every server instance.
@@ -42,13 +44,16 @@ const get_skills = ((/* iife */) => {
 			const archive = new Uint8Array(zipSync(files, { mtime: ZIP_MTIME }));
 			const archiveName = `${name}.zip`;
 			archives.set(archiveName, archive);
+			const digest = await crypto_sha256_hex(archive);
 
 			index.skills.push({
 				name,
 				type: "archive",
 				description: parsed._yay.description,
-				url: `/.well-known/agent-skills/${archiveName}`,
-				digest: `sha256:${await crypto_sha256_hex(archive)}`,
+				// Put the digest in the URL, so a cache never pairs this digest with an older zip.
+				// The handler ignores the query.
+				url: `/.well-known/agent-skills/${archiveName}?sha256=${digest}`,
+				digest: `sha256:${digest}`,
 				// Extra field: the RFC tells clients to ignore it. The press-api helper compares it with
 				// its own version. `scripts/public-api-skill.test.ts` keeps metadata.version in this shape.
 				version: /^metadata:\n\s+version: "([^"]+)"/mu.exec(skillText)?.[1] ?? null,
@@ -74,12 +79,14 @@ export async function agent_skills_http_handle_request(args: { request: Request;
 	const skills = await get_skills();
 
 	if (fileName === "index.json") {
-		return Response.json(skills.index, { headers: { "Cache-Control": CACHE_CONTROL } });
+		return Response.json(skills.index, { headers: { "Cache-Control": INDEX_CACHE_CONTROL } });
 	}
 
 	const archive = skills.archives.get(fileName);
 	if (!archive) {
 		return new Response("Not found", { status: 404 });
 	}
-	return new Response(archive, { headers: { "Content-Type": "application/zip", "Cache-Control": CACHE_CONTROL } });
+	return new Response(archive, {
+		headers: { "Content-Type": "application/zip", "Cache-Control": ARCHIVE_CACHE_CONTROL },
+	});
 }

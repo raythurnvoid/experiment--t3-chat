@@ -7,6 +7,7 @@ describe("http routes", () => {
 
 		expect(routes.sort()).toEqual(
 			[
+				"GET /.well-known/agent-skills/*",
 				"GET /.well-known/jwks.json",
 				"OPTIONS /.well-known/jwks.json",
 				"POST /api/auth/anonymous",

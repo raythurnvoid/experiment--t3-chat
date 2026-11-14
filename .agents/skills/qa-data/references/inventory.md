@@ -147,7 +147,7 @@ Sign-in steps for the `qa.perm.*` accounts are in
 | Search: public and private | Retired: `qa-browser/home:/qa-search-0905` was erased. Its old restriction and grant setup is not available. |
 | Folder table sorts and columns | Retired: `qa-browser/home:/qa-sort-0924` and `/qa-sort-0924-r` were erased. No kept fixture is claimed to have the same sort ties or grants. |
 | More than 200 restricted children | Retired: `qa-browser/home:/qa-cap-0924` was erased. Its 203-child shape is not available. |
-| Agent skills folder | `personal/home:/.agents/skills/meeting-brief`, `personal/home:/.agents/skills/press-api` (app copy of the repo skill, written with text writes) |
+| Agent skills folder | `personal/home:/.agents/skills/meeting-brief`. The app agent gets press-api as the built-in `/skills/press-api`, so do not install a copy into Files. |
 | Bash agent eval fixture                  | Retired: `personal/home:/bash-eval-smoothness-fixture-2026-07-25-a` was erased in the 2026-11-01 Trash cleanup. The [old recipe](../../app-playwriter-harness/references/bash-tool-agent-eval.md) is historical. Reuse active Files fixtures above.                                                                                                                                                                                                                                                                                                                                                                                    |
 | Browser downloads | `personal/home:/.system/downloads`, `personal/home:/tmp/browser` |
 
@@ -272,6 +272,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-14: moved the old app copy `personal/home:/.agents/skills/press-api` (1.6.8) to Trash, with the user's approval. The built-in `/skills/press-api` replaces it. No new file, tenant or user.
 - 2026-11-13: the built-in skill check added one one-turn agent chat in `chitchat-qa/xfer-qa-0914` (thread `n174xaamc6xkp96752d3nabqnd8j5fdy`). It ran one read-only Bash command on `/skills/press-api`. No file, tenant or user.
 - 2026-11-10: frozen-Trash follow-ups repaired b.md and c.md through Restore then Trash. The small sharing fixture above proves that an item's own share survives its restricted folder. Both last-person and last-plugin-choice removal changed frozen pointers on the old backend. The temporary plugin choice is ended and sub-3 is live again. No new tenant or user.
 - 2026-11-10: plugin Restore checks in `chitchat-qa/copy-qa-0922` added the Restore folders above, published Data Probe 0.5.0 and 0.5.1 and installed 0.5.1, and added `qa.perm.member` as a member. The member's test file choices were removed. In `chitchat-qa/xfer-qa-0914` the frontmatter index check uploaded `/press-api-upload-qa/qa-frontmatter-overcap.md` (129 fields, all indexed), and `/g4-many` was moved to `/g4-dst` and back. No new tenant or user.

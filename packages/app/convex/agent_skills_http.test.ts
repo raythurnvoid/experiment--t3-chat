@@ -16,7 +16,8 @@ describe("agent_skills_http_handle_request", () => {
 		};
 		expect(index.$schema).toBe("https://schemas.agentskills.io/discovery/0.2.0/schema.json");
 		const entry = index.skills.find((skill) => skill.name === "press-api");
-		expect(entry).toMatchObject({ type: "archive", url: "/.well-known/agent-skills/press-api.zip" });
+		expect(entry).toMatchObject({ type: "archive" });
+		expect(entry?.url).toBe(`/.well-known/agent-skills/press-api.zip?sha256=${entry?.digest.slice("sha256:".length)}`);
 		expect(entry?.version).toMatch(/^\d+\.\d+\.\d+$/u);
 
 		const archiveResponse = await t.fetch(entry!.url);

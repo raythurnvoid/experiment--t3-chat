@@ -31,8 +31,11 @@ type ApiRequest = { route: string; body: Record<string, unknown> };
  */
 async function start_api(answer: (request: ApiRequest, response: ServerResponse) => void | Promise<void>) {
 	const requests: ApiRequest[] = [];
+	// The Authorization header of each request, in the same order as `requests`.
+	const authorizations: Array<string | undefined> = [];
 	const sockets = new Set<Socket>();
 	const server = createServer((incoming, response) => {
+		authorizations.push(incoming.headers.authorization);
 		let text = "";
 		incoming.setEncoding("utf8");
 		incoming.on("data", (chunk: string) => (text += chunk));
@@ -51,6 +54,7 @@ async function start_api(answer: (request: ApiRequest, response: ServerResponse)
 	return {
 		origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
 		requests,
+		authorizations,
 		close: () => {
 			for (const socket of sockets) socket.destroy();
 			return new Promise<void>((resolve) => server.close(() => resolve()));
@@ -433,6 +437,8 @@ describe("status", () => {
 				{ route: "/api/v1/auth/verify", body: {} },
 				{ route: "/.well-known/agent-skills/index.json", body: {} },
 			]);
+			// The index is public, so the key must not go there.
+			expect(api.authorizations).toEqual(["Bearer pk_test", undefined]);
 			expect(result.stdout.toString("utf8")).not.toContain("pk_test");
 		} finally {
 			await api.close();

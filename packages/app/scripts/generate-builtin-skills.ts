@@ -1,5 +1,6 @@
 /// <reference types="node" />
 
+import { execFileSync } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -25,31 +26,32 @@ const HEADER = `/**
  */
 `;
 
-async function list_files(folder: string): Promise<string[]> {
-	const entries = await fs.readdir(folder, { withFileTypes: true });
-	const files = await Promise.all(
-		entries.map(async (entry) => {
-			const entryPath = path.join(folder, entry.name);
-			return entry.isDirectory() ? await list_files(entryPath) : [entryPath];
-		}),
-	);
-	return files.flat();
+function git(cwd: string, args: string[]) {
+	return execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 }
 
 async function generate_builtin_skills_main() {
 	const check = process.argv.includes(CHECK_FLAG);
 	const appRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-	const skillsDir = path.resolve(appRootDir, "..", "bonobo-senate-skills", "skills");
+	const repoRootDir = path.resolve(appRootDir, "..", "..");
+	const submoduleDir = path.resolve(appRootDir, "..", "bonobo-senate-skills");
 	const outputPath = path.resolve(appRootDir, "server", "ai-chat-builtin-skills.ts");
+
+	// Read the skills from the submodule commit that this repo's index records (the staged gitlink),
+	// not from the submodule folder. The folder can be behind after a pull, or hold edits and scratch
+	// files, and the built-in skills are public. Output line: "160000 <commit> 0\t<path>".
+	const commit = git(repoRootDir, ["ls-files", "--stage", "--", "packages/bonobo-senate-skills"]).split(/\s+/)[1];
 
 	const lines: string[] = [];
 	for (const name of BUILTIN_SKILL_NAMES) {
-		const skillDir = path.join(skillsDir, name);
-		const files = (await list_files(skillDir)).sort();
+		const files = git(submoduleDir, ["ls-tree", "-r", "--name-only", commit, "--", `skills/${name}`])
+			.split("\n")
+			.filter(Boolean)
+			.sort();
 		for (const file of files) {
-			const relativePath = path.relative(skillDir, file).split(path.sep).join("/");
-			// A Windows checkout can have CRLF line endings. The served file must not depend on that.
-			const text = (await fs.readFile(file, "utf8")).replace(/\r\n/g, "\n");
+			const relativePath = file.slice(`skills/${name}/`.length);
+			// A file committed with CRLF line endings must not change the served text.
+			const text = git(submoduleDir, ["show", `${commit}:${file}`]).replace(/\r\n/g, "\n");
 			lines.push(`\t${JSON.stringify(`/${name}/${relativePath}`)}: ${JSON.stringify(text)},`);
 		}
 	}
