@@ -596,6 +596,8 @@ if (result._nay) return result;
 const value = result._yay;
 ```
 
+Bubble the Result itself, as above. Do not rebuild it with `Result({ _nay: result._nay })`: the new Result can lose the literal names in `_nay.name`, so a caller's check for a refusal name such as `read_only` looks unreachable to TypeScript while it still runs.
+
 ### Full-run concurrent Result aggregation (`Result_all` + `Promise.all`)
 
 Use `Result_all(await Promise.all(...))` when expected failures are fulfilled `Result` values and all concurrent tasks may finish before their results are combined. An `_nay` value does not end `Promise.all` early or cancel other tasks. If a task rejects unexpectedly, `Promise.all` rejects early, but the other started tasks keep running. Do not add a shared `nayResult` variable inside concurrent tasks and call it fail-fast; all tasks have already started, and the guard neither ends `Promise.all` early nor cancels work.
@@ -1419,6 +1421,7 @@ A flow that runs without an error only proves the code did not crash. It does no
 
 - Prove the problem is real before fixing it. Read the claim against the actual code, and say plainly when a claim is wrong or bigger than the code supports. Show the code that settles it.
 - Before you change a check, find the tests that assert the behaviour it has today. A guard with a passing test and a comment next to it is a decision somebody made, not something they forgot. Argue with the reason before you change the code, and if you still think it is wrong, say why the existing test is wrong too. Reading the code only proves the report describes it correctly; it does not prove the behaviour is a mistake.
+- Do not delete a branch only because TypeScript says it cannot run. A type can be narrower than the real value (for example a rebuilt Result that lost its refusal names). Prove it with a test that tries to reach the branch.
 - Check the exact thing the report describes, in the place it describes. A nearby check that looks similar is not the same check.
 - Say which checks ran, which passed, and what you could not verify.
 - A missing local tool is not a reason to leave a check unverified. Run browser tests on Playwriter's Chrome for Testing (see [tests.md](.agents/skills/codebase-uniformity/references/tests.md)). Run a refusal check as a seeded second account in a scratch browser (see "Browser QA" below).

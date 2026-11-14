@@ -165,6 +165,10 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Use `getCDPSession({ page })` for `Input.imeSetComposition`, and inspect the actual key event's `isComposing` field before claiming an IME check. Composition Enter must not send. `Input.insertText` ends composition; explicit Send can then save the committed text. This exercises browser IME events, not a full operating-system candidate window.
 - Run the frame-specific accessibility screen in wide, narrow, and active-modal states. Use a 512×384 CSS viewport as the layout equivalent of a 1024×768 display at 200% zoom, and label it that way. Verify actual `innerWidth`/`innerHeight` after screenshot failures: a timed-out capture can restore old metrics while Playwright's cached viewport reports the new size. Reapply a different explicit size before continuing.
 - Check reduced motion with `page.emulateMedia({ reducedMotion: "reduce" })`, then restore it. For theme checks, follow the palette recipe below: the host's root `light` class can still send dark surfaces. A local light-fallback preview must remove all host `--color-*` scales, then restore the saved frame style and class. Never call a partial two-colour override a light-theme screenshot.
+- Right after you open a channel, the main pane can show `Channel unavailable` and the alert
+  `Messages are hidden until Chitchat can confirm your access.` for a few seconds. Wait about 3 s and
+  read again before you call it a denial: the heading then becomes `#<channel>` and messages show.
+  Seen 2026-11-14.
 - Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Bonobo Senate stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
 - Old channels in `chitchat-qa/home` can show `Transcript sync needs attention.` with `Unauthenticated`
   in Transcript details. That is an expired Files connection, not a new bug. **Reconnect Files**

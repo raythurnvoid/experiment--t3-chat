@@ -272,6 +272,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-14: `errorCode` checks in `chitchat-qa/xfer-qa-0914` as the owner with the temporary key `qa-errcode-20261114` (now revoked, `revokedAt` set). The mkdir into `/u18/readonly-cli-check` was refused with 409 `read_only`, and the folder is still empty. The Chitchat page in `chitchat-qa/home` was only opened. No new file, tenant or user.
 - 2026-11-14: moved the old app copy `personal/home:/.agents/skills/press-api` (1.6.8) to Trash, with the user's approval. The built-in `/skills/press-api` replaces it. No new file, tenant or user.
 - 2026-11-13: the built-in skill check added one one-turn agent chat in `chitchat-qa/xfer-qa-0914` (thread `n174xaamc6xkp96752d3nabqnd8j5fdy`). It ran one read-only Bash command on `/skills/press-api`. No file, tenant or user.
 - 2026-11-10: frozen-Trash follow-ups repaired b.md and c.md through Restore then Trash. The small sharing fixture above proves that an item's own share survives its restricted folder. Both last-person and last-plugin-choice removal changed frozen pointers on the old backend. The temporary plugin choice is ended and sub-3 is live again. No new tenant or user.
