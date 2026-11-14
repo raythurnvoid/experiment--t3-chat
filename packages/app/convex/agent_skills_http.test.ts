@@ -10,6 +10,7 @@ describe("agent_skills_http_handle_request", () => {
 
 		const indexResponse = await t.fetch("/.well-known/agent-skills/index.json");
 		expect(indexResponse.status).toBe(200);
+		expect(indexResponse.headers.get("cache-control")).toBe("no-cache");
 		const index = (await indexResponse.json()) as {
 			$schema: string;
 			skills: Array<{ name: string; type: string; url: string; digest: string; version: string | null }>;
@@ -21,6 +22,7 @@ describe("agent_skills_http_handle_request", () => {
 		expect(entry?.version).toMatch(/^\d+\.\d+\.\d+$/u);
 
 		const archiveResponse = await t.fetch(entry!.url);
+		expect(archiveResponse.status).toBe(200);
 		expect(archiveResponse.headers.get("content-type")).toBe("application/zip");
 		const archive = new Uint8Array(await archiveResponse.arrayBuffer());
 		// Clients must refuse an archive whose bytes do not match the digest.
@@ -29,5 +31,19 @@ describe("agent_skills_http_handle_request", () => {
 		expect(strFromU8(unzipSync(archive)["SKILL.md"])).toBe(ai_chat_builtin_skills_FILES["/press-api/SKILL.md"]);
 
 		expect((await t.fetch("/.well-known/agent-skills/missing.zip")).status).toBe(404);
+	});
+
+	test("refuses an archive URL with a different digest and asks for a fresh index", async () => {
+		const t = test_convex();
+		const digest = await crypto_sha256_hex("a previous skill archive");
+		const response = await t.fetch(`/.well-known/agent-skills/press-api.zip?sha256=${digest}`);
+
+		expect(response.status).toBe(409);
+		expect(response.headers.get("cache-control")).toBe("no-store");
+		expect(await response.text()).toBe("Skill archive changed. Read /.well-known/agent-skills/index.json again.");
+
+		const currentResponse = await t.fetch("/.well-known/agent-skills/press-api.zip");
+		expect(currentResponse.status).toBe(200);
+		expect(currentResponse.headers.get("content-type")).toBe("application/zip");
 	});
 });

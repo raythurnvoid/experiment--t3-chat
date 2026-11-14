@@ -9,8 +9,8 @@ import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 const INDEX_SCHEMA = "https://schemas.agentskills.io/discovery/0.2.0/schema.json";
 
-// Clients check the index again on every read, so they always see the digest of this deploy.
-// The zip URL holds that digest, so a cached zip always matches its URL.
+// Clients recheck the index on every read. Archive requests check its digest too,
+// because a deploy can land between reading the index and downloading the zip.
 const INDEX_CACHE_CONTROL = "no-cache";
 const ARCHIVE_CACHE_CONTROL = "public, max-age=300";
 
@@ -30,7 +30,7 @@ const get_skills = ((/* iife */) => {
 		}
 
 		const index = { $schema: INDEX_SCHEMA, skills: [] as Array<Record<string, string | null>> };
-		const archives = new Map<string, Uint8Array<ArrayBuffer>>();
+		const archives = new Map<string, { bytes: Uint8Array<ArrayBuffer>; digest: string }>();
 		for (const [name, files] of filesBySkill) {
 			const skillText = ai_chat_builtin_skills_FILES[`/${name}/SKILL.md`];
 			const parsed = ai_chat_skills_parse(skillText ?? "", name);
@@ -43,15 +43,14 @@ const get_skills = ((/* iife */) => {
 			// Copy into an ArrayBuffer-backed view, so the bytes type as a Response body.
 			const archive = new Uint8Array(zipSync(files, { mtime: ZIP_MTIME }));
 			const archiveName = `${name}.zip`;
-			archives.set(archiveName, archive);
 			const digest = await crypto_sha256_hex(archive);
+			archives.set(archiveName, { bytes: archive, digest });
 
 			index.skills.push({
 				name,
 				type: "archive",
 				description: parsed._yay.description,
 				// Put the digest in the URL, so a cache never pairs this digest with an older zip.
-				// The handler ignores the query.
 				url: `/.well-known/agent-skills/${archiveName}?sha256=${digest}`,
 				digest: `sha256:${digest}`,
 				// Extra field: the RFC tells clients to ignore it. The press-api helper compares it with
@@ -75,7 +74,8 @@ const get_skills = ((/* iife */) => {
  */
 export async function agent_skills_http_handle_request(args: { request: Request; pathPrefix: string }) {
 	const { request, pathPrefix } = args;
-	const fileName = new URL(request.url).pathname.slice(pathPrefix.length);
+	const url = new URL(request.url);
+	const fileName = url.pathname.slice(pathPrefix.length);
 	const skills = await get_skills();
 
 	if (fileName === "index.json") {
@@ -86,7 +86,16 @@ export async function agent_skills_http_handle_request(args: { request: Request;
 	if (!archive) {
 		return new Response("Not found", { status: 404 });
 	}
-	return new Response(archive, {
+
+	const digest = url.searchParams.get("sha256");
+	if (digest !== null && digest !== archive.digest) {
+		return new Response("Skill archive changed. Read /.well-known/agent-skills/index.json again.", {
+			status: 409,
+			headers: { "Cache-Control": "no-store" },
+		});
+	}
+
+	return new Response(archive.bytes, {
 		headers: { "Content-Type": "application/zip", "Cache-Control": ARCHIVE_CACHE_CONTROL },
 	});
 }
