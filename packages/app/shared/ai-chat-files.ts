@@ -44,7 +44,8 @@ export const ai_chat_file_result_schema = z
 		metadata: z
 			.object({
 				// Every file tool shares this one stored shape, so the list holds all of their statuses:
-				// image_generation, browser_run, browser_reload, browser_close, and view_image.
+				// image_generation, browser_run, browser_reload, browser_close, view_image, and
+				// view_screenshot.
 				status: z.enum(["succeeded", "partial", "errored", "cancelled", "timed_out"]),
 				reason: z
 					.enum([
@@ -68,6 +69,9 @@ export const ai_chat_file_result_schema = z
 						"iframe_unsupported",
 						"needs_human",
 						"sensitive_input",
+						"declined",
+						"browser_unsupported",
+						"wrong_surface",
 					])
 					.nullable(),
 				// Both runners and the shared writer stop at eight files per call.
@@ -231,6 +235,45 @@ export const ai_chat_page_tool_output_schema = z
 	.strict();
 
 export type ai_chat_PageToolOutput = z.infer<typeof ai_chat_page_tool_output_schema>;
+
+/**
+ * The input of `view_snapshot`. A ref comes from an earlier snapshot: `e12`, or `p1e5` inside the
+ * first plugin frame.
+ */
+export const ai_chat_view_snapshot_input_schema = z
+	.object({
+		region: z.enum(["screen", "files_tree"]),
+		ref: z
+			.string()
+			.regex(/^(p\d{1,3})?e\d{1,9}$/)
+			.nullable(),
+	})
+	.strict();
+
+export type ai_chat_ViewSnapshotInput = z.infer<typeof ai_chat_view_snapshot_input_schema>;
+
+/**
+ * The one output shape of `view_snapshot`. `output` is the screen text the user's tab built, or the
+ * reason there is none. Only the server writes this part, so a client cannot plant a fake screen.
+ */
+export const ai_chat_view_snapshot_output_schema = z
+	.object({
+		title: z.string(),
+		output: z.string(),
+		metadata: z
+			.object({
+				kind: z.literal("view_snapshot_result"),
+				status: z.enum(["ok", "no_tab", "timeout", "error"]),
+				truncated: z.boolean(),
+				bytes: z.number(),
+				buildMs: z.number().nullable(),
+				plugins: z.array(z.object({ name: z.string(), answered: z.boolean() }).strict()),
+			})
+			.strict(),
+	})
+	.strict();
+
+export type ai_chat_ViewSnapshotOutput = z.infer<typeof ai_chat_view_snapshot_output_schema>;
 
 /**
  * The `data-mcp-auth-needed` part: servers left out of a turn because even their tool list needs

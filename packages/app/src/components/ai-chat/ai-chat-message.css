@@ -597,6 +597,30 @@
 	}
 	/* #endregion tool files */
 
+	/* #region tool screenshot */
+	.AiChatMessagePartToolScreenshot-reason {
+		padding: 4px 0 0 0;
+
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.AiChatMessagePartToolScreenshot-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+
+		padding: 8px 0 0 0;
+	}
+
+	.AiChatMessagePartToolScreenshot-status {
+		padding: 4px 0 8px 0;
+
+		font-size: 0.9375rem;
+		color: var(--color-fg-07);
+	}
+	/* #endregion tool screenshot */
+
 	/* #region tool browser */
 	.AiChatMessagePartToolBrowser-status {
 		padding: 4px 0 8px 0;

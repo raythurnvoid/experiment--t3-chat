@@ -163,6 +163,19 @@ export interface BonoboAgentContext {
 }
 
 /**
+ * Why the host asks the context provider.
+ *
+ * - `detail: "summary"`: the member is about to send a chat message. Keep it short.
+ * - `detail: "snapshot"`: the agent reads the member's screen (`view_snapshot`). Describe what the
+ *   page shows in more detail, as an indented list. `ref` is a ref from an earlier answer (like
+ *   `e3`) when the agent asks for that part only, else `null`.
+ */
+export interface BonoboAgentContextRequest {
+	detail: "summary" | "snapshot";
+	ref: string | null;
+}
+
+/**
  * The host's answer to {@link BonoboReadyMessage}: it delivers the short-lived scoped session
  * token (`plu_...`) with its plugin-session JWT, the Convex deployment URL the frame's own client
  * connects to, and the embedding context.
@@ -405,12 +418,15 @@ export interface BonoboClient {
 		setContext(context: BonoboAgentContext | null): void;
 		/**
 		 * Answer the host right before each chat message is sent, instead of pushing with
-		 * `setContext`. The host waits at most 2 seconds, then uses the last pushed value. A thrown
-		 * error or a bad value sends nothing. Needs `agent.view-context`, like `setContext`. Pass
-		 * `null` to remove it. Returns the unregister function.
+		 * `setContext`, and when the agent reads the member's screen. The request says which one (see
+		 * {@link BonoboAgentContextRequest}). The host waits at most 2 seconds, then uses the last
+		 * pushed value. A thrown error or a bad value sends nothing. Needs `agent.view-context`, like
+		 * `setContext`. Pass `null` to remove it. Returns the unregister function.
 		 */
 		setContextProvider(
-			provider: (() => BonoboAgentContext | null | Promise<BonoboAgentContext | null>) | null,
+			provider:
+				| ((request: BonoboAgentContextRequest) => BonoboAgentContext | null | Promise<BonoboAgentContext | null>)
+				| null,
 		): () => void;
 	};
 	/**

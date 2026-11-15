@@ -1201,7 +1201,7 @@ async function db_purge_organization_workspace_content_batch(
 		"mcp_custom_server_secrets",
 		"plugins_mcp_oauth_pending",
 		"plugins_mcp_calls",
-		"plugins_page_tool_calls",
+		"ai_chat_ui_calls",
 	] as const) {
 		const docs = await ctx.db
 			.query(tableName)
@@ -2598,14 +2598,14 @@ async function db_drain_thread_batch(
 		return { done: false, deletedCount: mcpCalls.length };
 	}
 
-	// A page tool call waiting for its page is part of the chat too.
-	const pageToolCalls = await ctx.db
-		.query("plugins_page_tool_calls")
+	// A UI call waiting for the member's tab is part of the chat too.
+	const uiCalls = await ctx.db
+		.query("ai_chat_ui_calls")
 		.withIndex("by_thread", (q) => q.eq("threadId", thread._id))
 		.take(args.batchSize);
-	if (pageToolCalls.length > 0) {
-		await Promise.all(pageToolCalls.map((doc) => ctx.db.delete("plugins_page_tool_calls", doc._id)));
-		return { done: false, deletedCount: pageToolCalls.length };
+	if (uiCalls.length > 0) {
+		await Promise.all(uiCalls.map((doc) => ctx.db.delete("ai_chat_ui_calls", doc._id)));
+		return { done: false, deletedCount: uiCalls.length };
 	}
 
 	// A reply step can be close to 1 MiB, so delete a few per pass.

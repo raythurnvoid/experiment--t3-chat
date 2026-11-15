@@ -133,7 +133,12 @@ import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/l
 import { path_extract_segments_from, path_name_of } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
-import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
+import {
+	dom_clear_text_selection,
+	type AppAgentSnapshot_CustomAttributes,
+	type AppClassName,
+	type AppElementId,
+} from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalCustomEvent, useGlobalEventList } from "@/lib/global-event.tsx";
 import { useFn, useVal } from "@/hooks/utils-hooks.ts";
@@ -2719,6 +2724,8 @@ const FilesSidebarTreeRow = memo(
 							aria-expanded={itemAriaExpanded}
 							aria-busy={isFolderLoading || undefined}
 							aria-selected={isSelected || isMenuOpen ? "true" : "false"}
+							// The open file. Automation and the agent's screen snapshot read it here.
+							aria-current={isNavigated ? "page" : undefined}
 							aria-label={label}
 							data-focused={isFocused || undefined}
 							onFocus={handleWrapperFocus}
@@ -3566,6 +3573,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				// explorer. Mod+V then pastes into the root. It stays out of the Tab order: rows own the tab stop.
 				tabIndex={-1}
 				aria-busy={isTreeLoading || undefined}
+				{...({ "data-agent-region": "files_tree" } satisfies Partial<AppAgentSnapshot_CustomAttributes>)}
 				style={sx({
 					...treeContainerProps.style,
 					height: virtualizer.getTotalSize(),

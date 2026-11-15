@@ -34,8 +34,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-	// A skipped query answers undefined, like the real hook. Only pages with agent tools run the
-	// pending calls query.
+	// A skipped query answers undefined, like the real hook.
 	useQuery: (reference: unknown, args: unknown) => {
 		const result = useQueryMock(reference, args);
 		return args === "skip" ? undefined : result;
@@ -63,9 +62,6 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			mint_page_session: "plugins_ui.mint_page_session",
 			refresh_ui_session: "plugins_ui.refresh_ui_session",
 			revoke_ui_session: "plugins_ui.revoke_ui_session",
-		},
-		plugins_page_tools: {
-			list_pending: "plugins_page_tools.list_pending",
 		},
 	},
 	app_convex_deployment_url: "https://deployment.convex.test",
@@ -113,6 +109,7 @@ vi.mock("@/components/my-button.tsx", () => ({
 	},
 }));
 
+import { AiChatUiCallResponder } from "@/components/ai-chat/ai-chat-ui-call-responder.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props, type PluginsUiFrame_Ref } from "@/components/plugins-ui-frame.tsx";
 import { Route } from "./$pluginName_.pages.$pageId.tsx";
 
@@ -2888,6 +2885,79 @@ describe("RoutePluginsPluginPage", () => {
 		await act(async () => post_ready(deniedBridge.nonce));
 		post_from_frame({ type: "bonobo:update-model-context", nonce: deniedBridge.nonce, context: shown });
 		expect(await deniedRef.current?.readAgentViewContext(), "no consent, no view context").toBeNull();
+	});
+
+	test("the screen snapshot asks this frame for its view, only with the consent", async () => {
+		const registerSpy = vi.spyOn(AiChatUiCallResponder, "registerSnapshotFrame");
+		const props_for = (hasAgentViewContext: boolean) =>
+			({
+				membershipId: "membership_1",
+				pluginName: "gallery",
+				pluginVersionId: "version_1",
+				entry: "dist/frontend/index.html",
+				title: "Media",
+				kindLabel: "plugin page",
+				mintSession: () =>
+					Promise.resolve({
+						_yay: {
+							token: "plu_page",
+							expiresAt: Date.now() + 60_000,
+							pluginVersionId: "version_1",
+							sessionId: "session_page",
+						},
+					}),
+				getInitContext: () => ({
+					kind: "page",
+					pluginName: "gallery",
+					pageId: "media",
+					pageTitle: "Media",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+				}),
+				hasAgentViewContext,
+				onError: () => {},
+			}) as unknown as ComponentProps<typeof PluginsUiFrame>;
+
+		const view = render(<PluginsUiFrame {...props_for(true)} />);
+		const { iframe, nonce } = bridge_for(view.container);
+		await act(async () => post_ready(nonce));
+		post_from_frame({ type: "bonobo:context-provider", nonce, enabled: true });
+		const frame = registerSpy.mock.calls.findLast((call) => call[0] === iframe)?.[1];
+		if (!frame) throw new Error("the frame did not register for snapshots");
+
+		postMessageMock.mockClear();
+		const described = frame.describe("e3");
+		const request = postMessageMock.mock.calls[0]?.[0] as { type: string; requestId: string };
+		expect(request, "the agent's screen read asks for a snapshot of part e3").toMatchObject({
+			type: "bonobo:context-request",
+			detail: "snapshot",
+			ref: "e3",
+		});
+		// An answer from another origin must not become the page's text.
+		post_from_frame(
+			{ type: "bonobo:context-result", nonce, requestId: request.requestId, ok: true, context: { content: [] } },
+			"https://evil.example",
+		);
+		post_from_frame({
+			type: "bonobo:context-result",
+			nonce,
+			requestId: request.requestId,
+			ok: true,
+			context: { content: [{ type: "text", text: "- list" }, { type: "text", text: "  - listitem [ref=e3]" }] },
+		});
+		expect(await described).toBe("- list\n  - listitem [ref=e3]");
+		view.unmount();
+
+		// Without the consent the frame is never asked.
+		const denied = render(<PluginsUiFrame {...props_for(false)} />);
+		const deniedBridge = bridge_for(denied.container);
+		await act(async () => post_ready(deniedBridge.nonce));
+		post_from_frame({ type: "bonobo:context-provider", nonce: deniedBridge.nonce, enabled: true });
+		const deniedFrame = registerSpy.mock.calls.findLast((call) => call[0] === deniedBridge.iframe)?.[1];
+		postMessageMock.mockClear();
+		expect(await deniedFrame?.describe(null), "no consent, no screen text").toBeNull();
+		expect(postMessageMock).not.toHaveBeenCalled();
+		registerSpy.mockRestore();
 	});
 
 	test("a context missing a field the SDK requires is a compile error", () => {

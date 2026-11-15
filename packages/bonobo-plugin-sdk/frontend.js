@@ -293,9 +293,10 @@ export async function bonobo_connect() {
 	const agentTools = new Map();
 
 	/**
-	 * The page's view context provider. The host asks it right before a chat message is sent.
+	 * The page's view context provider. The host asks it right before a chat message is sent, and
+	 * when the agent reads the screen.
 	 *
-	 * @type {(() => unknown) | null}
+	 * @type {((request: { detail: "summary" | "snapshot", ref: string | null }) => unknown) | null}
 	 */
 	let contextProvider = null;
 	// The JSON of the last view context posted to the host, the newest one the page set, and the
@@ -847,12 +848,19 @@ export async function bonobo_connect() {
 						);
 					}
 				};
+				// "snapshot" is the agent reading the screen with `view_snapshot`, and `ref` names one part of
+				// an earlier answer. An older host sends neither field, and that is a "summary" request.
+				/** @type {{ detail: "summary" | "snapshot", ref: string | null }} */
+				const request = {
+					detail: message.detail === "snapshot" ? "snapshot" : "summary",
+					ref: typeof message.ref === "string" && message.ref.length <= 64 ? message.ref : null,
+				};
 				const provider = contextProvider;
 				if (!provider) {
 					reply({ ok: false, error: "No context provider" });
 				} else {
 					Promise.resolve()
-						.then(() => provider())
+						.then(() => provider(request))
 						.then(
 							(context) =>
 								reply(

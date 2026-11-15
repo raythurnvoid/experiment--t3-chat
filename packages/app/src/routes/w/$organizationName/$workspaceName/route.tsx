@@ -6,6 +6,7 @@ import { useQuery } from "convex/react";
 import { LogIn } from "lucide-react";
 import { memo, useLayoutEffect, useRef, type Ref } from "react";
 
+import { AiChatUiCallResponder } from "@/components/ai-chat/ai-chat-ui-call-responder.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { FilesUnsavedText } from "@/components/files/files-unsaved-text.tsx";
 import { Logo } from "@/components/logo.tsx";
@@ -17,6 +18,7 @@ import { useIsMobile } from "@/hooks/use-mobile.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppLoadingCard } from "@/components/app-loading-card.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 
@@ -203,10 +205,14 @@ function RouteTenantOrganizationWorkspaceLayout() {
 				)}
 				onFocusCapture={handleWorkspaceFocusCapture}
 			>
+				{/* Answers the chat agent's screen reads and plugin page tool calls for this tab. */}
+				<AiChatUiCallResponder />
 				{!isPhoneChat && <MainAppHeader />}
 				{!isPhoneChat && <MainAppSidebar />}
 				<div
 					ref={handleFocusTargetRef}
+					// `view_screenshot` crops the shared tab to this element.
+					id={"app_workspace_content" satisfies AppElementId}
 					className={"RootLayout-content" satisfies RootLayout_ClassNames}
 					role="region"
 					aria-label={`${organizationName}/${workspaceName} workspace content`}

@@ -13,7 +13,8 @@ export type AppElementId =
 	| "app_channels_panel_tabs_agent"
 	| "app_files_sidebar_search"
 	| "app_plugin_activity_section"
-	| "app_scrollbar_width_probe";
+	| "app_scrollbar_width_probe"
+	| "app_workspace_content";
 
 /**
  * Global class names defined in app.css that can be used across components.
@@ -22,6 +23,19 @@ export type AppElementId =
 export type AppClassName = "app-doc" | "app-font-monospace" | "app-scrollable" | "app-scrollable-fits";
 
 export type AppDataTestId = "";
+
+/**
+ * Attributes the agent's screen snapshot (`view_snapshot`, `src/lib/view-snapshot.ts`) reads.
+ *
+ * - `data-agent-ignore`: leave this element and its subtree out, like the chat panels.
+ * - `data-agent-secret`: print `[secret hidden]` instead of the text, like a key shown once.
+ * - `data-agent-region`: the Files tree, which the snapshot shortens to the open file.
+ */
+export type AppAgentSnapshot_CustomAttributes = {
+	"data-agent-ignore": "";
+	"data-agent-secret": "";
+	"data-agent-region": "files_tree";
+};
 
 export class dom_TypedAttributeAccessor<CustomAttributes extends Record<string, string>> {
 	get<AttributeName extends keyof CustomAttributes & string>(

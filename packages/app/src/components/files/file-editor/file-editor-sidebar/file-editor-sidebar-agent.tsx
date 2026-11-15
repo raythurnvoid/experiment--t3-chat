@@ -65,7 +65,7 @@ import {
 	ai_chat_thread_is_unread,
 	ai_chat_get_unread_dot_delay_ms,
 } from "@/lib/ai-chat.ts";
-import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
+import type { AppAgentSnapshot_CustomAttributes, AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_local_storage_get_value,
@@ -1158,7 +1158,11 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 	});
 
 	return (
-		<div className={cn("FileEditorSidebarAgent" satisfies FileEditorSidebarAgent_ClassNames)}>
+		// The agent's screen snapshot leaves the chat out: the agent already has the chat.
+		<div
+			className={cn("FileEditorSidebarAgent" satisfies FileEditorSidebarAgent_ClassNames)}
+			{...({ "data-agent-ignore": "" } satisfies Partial<AppAgentSnapshot_CustomAttributes>)}
+		>
 			<MyTabs selectedId={selectedChatTabId} setSelectedId={handleChatTabChange}>
 				<FileEditorSidebarAgentHeader
 					controller={controller}

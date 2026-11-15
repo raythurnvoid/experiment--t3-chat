@@ -1555,6 +1555,115 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
+	 * One chat tool call that the member's open browser tab must answer: a `view_snapshot` of the
+	 * screen, or a plugin page tool call.
+	 *
+	 * The chat runs on the server and cannot reach the browser. So the tool writes this doc, the tab
+	 * that sent the chat message reads it, answers, and writes the result here. The waiting tool then
+	 * reads the result and deletes the doc. A scheduled delete removes a doc that nobody deleted, so
+	 * each doc lives at most a few minutes.
+	 */
+	ai_chat_ui_calls: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		threadId: v.id("ai_chat_threads"),
+		/**
+		 * The random id of the browser tab that sent the chat message. Only that tab answers, so a
+		 * second open tab never takes the call.
+		 */
+		uiInstanceId: v.string(),
+		toolCallId: v.string(),
+		request: v.union(
+			v.object({
+				kind: v.literal("view_snapshot"),
+				region: v.union(v.literal("screen"), v.literal("files_tree")),
+				ref: v.union(v.string(), v.null()),
+			}),
+			v.object({
+				kind: v.literal("page_tool"),
+				installationId: v.id("plugins_workspace_installations"),
+				pluginName: v.string(),
+				pageId: v.string(),
+				/**
+				 * The tool name from the manifest, without the `page__` prefix.
+				 */
+				toolName: v.string(),
+				inputJson: v.string(),
+			}),
+			v.object({
+				kind: v.literal("view_screenshot"),
+				/**
+				 * Why the agent wants a picture, in the model's words (at most 200 characters). The card
+				 * shows it as plain text.
+				 */
+				reason: v.string(),
+			}),
+		),
+		/**
+		 * `pending` until the tab takes it, `claimed` while the tab answers, `done` with a result.
+		 */
+		status: v.union(v.literal("pending"), v.literal("claimed"), v.literal("done")),
+		result: v.union(
+			v.object({
+				ok: v.literal(true),
+				/**
+				 * The page tool's answer as JSON text, or the snapshot text.
+				 */
+				output: v.string(),
+				/**
+				 * Facts about a snapshot. Null for a page tool answer.
+				 */
+				snapshot: v.union(
+					v.object({
+						truncated: v.boolean(),
+						buildMs: v.number(),
+						plugins: v.array(v.object({ name: v.string(), answered: v.boolean() })),
+					}),
+					v.null(),
+				),
+			}),
+			v.object({ ok: v.literal(false), error: v.string() }),
+			/**
+			 * One picture of the member's tab, for `view_screenshot`. The chat tool reads it once and
+			 * deletes the doc, so the pixels stay here only for seconds.
+			 */
+			v.object({
+				ok: v.literal(true),
+				image: v.object({
+					mediaType: v.union(v.literal("image/jpeg"), v.literal("image/png"), v.literal("image/webp")),
+					base64: v.string(),
+					width: v.number(),
+					height: v.number(),
+				}),
+			}),
+			/**
+			 * Why no picture was sent. A fixed code, never text from the tab.
+			 */
+			v.object({
+				ok: v.literal(false),
+				reason: v.union(
+					v.literal("declined"),
+					v.literal("denied"),
+					v.literal("unsupported"),
+					v.literal("wrong_surface"),
+					v.literal("failed"),
+					v.literal("too_large"),
+				),
+			}),
+			v.null(),
+		),
+		/**
+		 * The last moment the tab can take the call. A screenshot call gives the member time to answer
+		 * the card, then the chat tool waits a little longer for the picture.
+		 */
+		expiresAt: v.number(),
+	})
+		.index("by_user_instance_workspace_status", ["userId", "uiInstanceId", "workspaceId", "status"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_thread", ["threadId"]),
+
+	/**
 	 * The full text of one tool result that was too large to keep inline, stored in R2. The doc is
 	 * also the quota hold: it holds its bytes and one object on the three chat output counters from
 	 * the reservation until its R2 deletion job settles. Owner docs decide who may read it.
@@ -9330,58 +9439,6 @@ const app_convex_schema = defineSchema({
 		.index("by_startedAt", ["startedAt"])
 		.index("by_thread", ["threadId"]),
 	// #endregion plugins mcp
-
-	// #region plugins page tools
-	/**
-	 * One chat agent call of a plugin page tool, on its way to the member's open page and back.
-	 *
-	 * The chat runs on the server and cannot reach the browser. So the tool writes this doc, the
-	 * member's open page reads it, runs the tool in the plugin frame, and writes the result here. The
-	 * waiting tool then reads the result and deletes the doc. A scheduled delete removes a doc that
-	 * nobody deleted, so each doc lives at most a few minutes.
-	 */
-	plugins_page_tool_calls: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		threadId: v.id("ai_chat_threads"),
-		installationId: v.id("plugins_workspace_installations"),
-		pageId: v.string(),
-		/**
-		 * The random id of the browser tab that sent the chat message. Only that tab runs the call,
-		 * so a second open tab or a broken one never takes it.
-		 */
-		pageInstanceId: v.string(),
-		toolCallId: v.string(),
-		/**
-		 * The tool name from the manifest, without the `page__` prefix.
-		 */
-		toolName: v.string(),
-		inputJson: v.string(),
-		/**
-		 * `pending` until one open page takes it, `claimed` while the frame runs it, `done` with a result.
-		 */
-		status: v.union(v.literal("pending"), v.literal("claimed"), v.literal("done")),
-		result: v.union(
-			v.object({ ok: v.literal(true), outputJson: v.string() }),
-			v.object({ ok: v.literal(false), error: v.string() }),
-			v.null(),
-		),
-		/**
-		 * When the chat tool stops waiting. The page cannot take the call after this time.
-		 */
-		expiresAt: v.number(),
-	})
-		.index("by_user_installation_page_instance_status", [
-			"userId",
-			"installationId",
-			"pageId",
-			"pageInstanceId",
-			"status",
-		])
-		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
-		.index("by_thread", ["threadId"]),
-	// #endregion plugins page tools
 
 	// #region activities
 	/**

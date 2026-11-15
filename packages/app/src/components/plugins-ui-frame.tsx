@@ -2,6 +2,7 @@ import "./plugins-ui-frame.css";
 
 import { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
+import { AiChatUiCallResponder } from "@/components/ai-chat/ai-chat-ui-call-responder.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import {
 	app_convex,
@@ -596,7 +597,9 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			return true;
 		};
 
-		readAgentViewContextRef.current = async () => {
+		// `detail` says why the host asks: "summary" before a chat message, "snapshot" when the agent
+		// reads the screen. `ref` names one part of an earlier snapshot answer.
+		const request_agent_view_context = async (detail: "summary" | "snapshot", ref: string | null) => {
 			// Without the `agent.view-context` consent nothing the page sent reaches the chat.
 			if (!hasAgentViewContextRef.current || !frameReady || !initMessage) {
 				return null;
@@ -618,9 +621,22 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 					contextWaiters.delete(requestId);
 					resolve(context);
 				});
-				post_to_iframe({ type: "bonobo:context-request", nonce, requestId });
+				post_to_iframe({ type: "bonobo:context-request", nonce, requestId, detail, ref });
 			});
 		};
+
+		readAgentViewContextRef.current = () => request_agent_view_context("summary", null);
+
+		// Let the agent's screen snapshot ask this frame what it shows.
+		const unregisterSnapshotFrame = AiChatUiCallResponder.registerSnapshotFrame(iframeNode, {
+			label: `Plugin: ${pluginName}`,
+			describe: async (ref) => {
+				const context = await request_agent_view_context("snapshot", ref);
+				// The snapshot shows only the text blocks. structuredContent is for the plugin's own tools.
+				const lines = context?.content.map((block) => block.text) ?? [];
+				return lines.length > 0 ? lines.join("\n") : null;
+			},
+		});
 
 		const token_error = (requestId: string, message: string): RefreshResponse => ({
 			type: "bonobo:token-error",
@@ -1040,6 +1056,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			postThemeRef.current = null;
 			postAgentToolCallRef.current = null;
 			readAgentViewContextRef.current = null;
+			unregisterSnapshotFrame();
 			// A send that waits for this page must not wait for the timeout after the page is gone.
 			for (const resolve of contextWaiters.values()) {
 				resolve(null);

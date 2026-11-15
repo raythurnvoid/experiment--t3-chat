@@ -163,6 +163,8 @@ Use cursor purpose `ai_chat_transcript`. Bind its encryption scope to the known 
 
 Both routes use existing auth/principal rate buckets, one request per page, and `Cache-Control: no-store` on successes and errors. Common statuses are 400 bad input/cursor, 401 dead credential/membership, 403 scope/kind/binding, 404 private/unavailable target, 409 changed reply, 429 rate limit, and 503 output storage failure. Preserve historical text and metadata; shape quotes and `data-ui-context` screen info like the UI and clear unreadable file pointers and the ids of channels the reader can no longer open. Other file references grant no fresh file access. Do not resolve fresh names, bytes, or signed URLs. No in-app transcript tool, short AI grant, or gateway expansion is added.
 
+A `tool-view_snapshot` part keeps the screen text the member's tab sent, as stored. It is that member's own past screen, with secret-shaped text already replaced by `[secret]`, and the transcript is for personal keys only. It can still hold text other people wrote, such as a channel message that was on screen. Do not re-check it against current access: like a quote, it is history.
+
 ## Organize routes
 
 Follow the [Files delete words](../files-explorer-tree/SKILL.md#trash-view-and-delete-permanently).

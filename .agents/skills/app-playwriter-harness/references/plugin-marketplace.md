@@ -680,7 +680,7 @@ Chat check (Agent mode, in the page's right panel): open an email, then ask the 
 reply draft. The chat shows a `Page tool: Mail: create_draft` card.
 Open **Drafts**: the row has an `Agent` mark, and the open draft shows `Edited by the agent`. Its
 inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
-`innerText` does not show them). `plugins_page_tool_calls` in Bonobo Senate is empty again about 2 minutes
+`innerText` does not show them). `ai_chat_ui_calls` in Bonobo Senate is empty again about 2 minutes
 after the run: each call doc deletes itself 120 seconds after it is created. That is expected.
 
 ### View sharing check (Gmail 0.5.0, verified 2026-11-15)

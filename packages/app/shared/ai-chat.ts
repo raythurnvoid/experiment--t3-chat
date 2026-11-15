@@ -17,7 +17,11 @@ import type {
 	ai_chat_tool_create_file_stored_ToolOutput,
 } from "../server/server-ai-tools.ts";
 import type { GeneratedIdPrefix } from "./generated-ids.ts";
-import type { ai_chat_McpAuthNeededData } from "./ai-chat-files.ts";
+import type {
+	ai_chat_McpAuthNeededData,
+	ai_chat_ViewSnapshotInput,
+	ai_chat_ViewSnapshotOutput,
+} from "./ai-chat-files.ts";
 import type { browser_Intent } from "./browser-intent.ts";
 import { file_quotes_part_schema, file_quotes_serialize_draft, type file_quotes_Quote } from "./file-quotes.ts";
 import type { ai_chat_UiContext } from "./ai-chat-ui-context.ts";
@@ -170,6 +174,20 @@ export type ai_chat_UiTools = {
 	 * hands the model those targets again. Resolve their paths with Bash before a fresh read.
 	 */
 	view_image: {
+		input: ai_chat_tool_create_file_stored_ToolInput;
+		output: ai_chat_tool_create_file_stored_ToolOutput;
+	};
+	/**
+	 * The screen text the user's tab sent. Only the server writes this part.
+	 */
+	view_snapshot: {
+		input: ai_chat_ViewSnapshotInput;
+		output: ai_chat_ViewSnapshotOutput;
+	};
+	/**
+	 * Only the safe status is stored. The picture stays in the turn that took it.
+	 */
+	view_screenshot: {
 		input: ai_chat_tool_create_file_stored_ToolInput;
 		output: ai_chat_tool_create_file_stored_ToolOutput;
 	};

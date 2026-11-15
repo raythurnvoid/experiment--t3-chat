@@ -1520,10 +1520,15 @@ describe("client.agent", () => {
 		expect(sent("bonobo:update-model-context"), "a view that never stops changing still sends").toHaveLength(3);
 		vi.useRealTimers();
 
-		client.agent.setContextProvider(() => ({ content: [{ type: "text", text: "Inbox" }] }));
+		const provider = vi.fn(() => ({ content: [{ type: "text" as const, text: "Inbox" }] }));
+		client.agent.setContextProvider(provider);
 		post_from_host({ data: { type: "bonobo:context-request", nonce: "other-nonce", requestId: "r0" } });
 		post_from_host({ data: { type: "bonobo:context-request", nonce: CONTEXT_NONCE, requestId: "r1" } });
 		await vi.waitFor(() => expect(sent("bonobo:context-result")).toHaveLength(1));
+		expect(provider, "an older host's request reads as a summary").toHaveBeenLastCalledWith({
+			detail: "summary",
+			ref: null,
+		});
 		expect(sent("bonobo:context-result")).toEqual([
 			{
 				type: "bonobo:context-result",
@@ -1533,5 +1538,14 @@ describe("client.agent", () => {
 				context: { content: [{ type: "text", text: "Inbox" }] },
 			},
 		]);
+
+		post_from_host({
+			data: { type: "bonobo:context-request", nonce: CONTEXT_NONCE, requestId: "r2", detail: "snapshot", ref: "e3" },
+		});
+		await vi.waitFor(() => expect(sent("bonobo:context-result")).toHaveLength(2));
+		expect(provider, "the agent's screen read reaches the provider with its ref").toHaveBeenLastCalledWith({
+			detail: "snapshot",
+			ref: "e3",
+		});
 	});
 });

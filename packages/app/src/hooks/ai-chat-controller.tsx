@@ -27,6 +27,7 @@ import { browser_intent_schema, type browser_Intent } from "../../shared/browser
 import { file_quotes_parse_draft } from "../../shared/file-quotes.ts";
 import type { ai_chat_UiContext } from "../../shared/ai-chat-ui-context.ts";
 import { ai_chat_ui_context_get_shown, ai_chat_ui_context_read_plugin_context } from "@/lib/ai-chat-ui-context.ts";
+import { ai_chat_ui_instance_get_id } from "@/lib/ai-chat-ui-instance.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
@@ -259,11 +260,10 @@ const SelectionContext = createContext<SelectionContextValue | null>(null);
 export type AiChatController_Props = {
 	storageKey: AiChatControllerStorageKey;
 	/**
-	 * The plugin page open next to this chat, with the random id of this tab. Every send names it, so
-	 * the agent gets that page's tools and only this tab runs them. Null when the chat is not beside a
-	 * plugin page.
+	 * The plugin page open next to this chat. Every send names it, so the agent gets that page's tools.
+	 * Null when the chat is not beside a plugin page.
 	 */
-	pluginPage: { pluginName: string; pageId: string; pageInstanceId: string } | null;
+	pluginPage: { pluginName: string; pageId: string } | null;
 	initialSelectedThreadId?: string | null;
 	children?: ReactNode;
 };
@@ -1386,6 +1386,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				// Read it from the send call, not from this hook. A thread keeps the Chat of the panel that
 				// opened it first, so this hook can be another panel than the one that sends.
 				pluginPage: (options.body?.pluginPage ?? null) as AiChatController_Props["pluginPage"],
+				uiInstanceId: ai_chat_ui_instance_get_id(),
 				pluginContext: await get_request_plugin_context(options.messages),
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
@@ -2042,6 +2043,7 @@ const useThreadRuntimeController = () => {
 				// Read it from the send call, not from this hook. A thread keeps the Chat of the panel that
 				// opened it first, so this hook can be another panel than the one that sends.
 				pluginPage: (options.body?.pluginPage ?? null) as AiChatController_Props["pluginPage"],
+				uiInstanceId: ai_chat_ui_instance_get_id(),
 				pluginContext: await get_request_plugin_context(options.messages),
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 

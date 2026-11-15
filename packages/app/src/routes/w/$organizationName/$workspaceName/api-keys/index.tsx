@@ -67,7 +67,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import type { AppClassName } from "@/lib/dom-utils.ts";
+import type { AppAgentSnapshot_CustomAttributes, AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
 import {
@@ -1413,7 +1413,11 @@ const RouteApiKeysRevealModal = memo(function RouteApiKeysRevealModal(props: Rou
 								? "The old key has been revoked. Copy this replacement now and update every script that uses it."
 								: "Copy this key now and store it somewhere safe."}
 						</div>
-						<div className={"RouteApiKeysRevealModal-secret" satisfies RouteApiKeysRevealModal_ClassNames}>
+						{/* The key is not an input, so mark it: the agent's screen snapshot then prints `[secret hidden]`. */}
+						<div
+							className={"RouteApiKeysRevealModal-secret" satisfies RouteApiKeysRevealModal_ClassNames}
+							{...({ "data-agent-secret": "" } satisfies Partial<AppAgentSnapshot_CustomAttributes>)}
+						>
 							<TextMonospaceBlock text={reveal?.credential} aria-label="New API key" maxHeight="6lh" />
 							<CopyIconButton
 								variant="outline"

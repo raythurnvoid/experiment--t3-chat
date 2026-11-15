@@ -20,6 +20,7 @@ import { AiChatThreads, type AiChatThreadsHeader_ClassNames } from "@/components
 import {
 	dom_find_first_element_overflowing_element,
 	dom_TypedAttributeAccessor,
+	type AppAgentSnapshot_CustomAttributes,
 	type AppClassName,
 } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
@@ -1387,7 +1388,14 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 	}, [controller.selectedThreadId, setUrlThreadId, urlThreadId]);
 
 	return (
-		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
+		// The agent's screen snapshot leaves the chat out: the agent already has the chat.
+		<div
+			ref={ref}
+			id={id}
+			className={cn("AiChat" satisfies AiChat_ClassNames, className)}
+			{...({ "data-agent-ignore": "" } satisfies Partial<AppAgentSnapshot_CustomAttributes>)}
+			{...rest}
+		>
 			<AiChatThreads
 				ref={threadsRef}
 				className={"AiChat-threads" satisfies AiChat_ClassNames}

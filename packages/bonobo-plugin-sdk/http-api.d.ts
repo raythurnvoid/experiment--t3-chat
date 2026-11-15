@@ -691,7 +691,7 @@ export type BonoboHttpApi = {
 						})[];
 						jobs: ({
 							kind: "copy" | "move" | "restore" | "delete";
-							status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+							status: "running" | "stopping" | "partial" | "failed" | "succeeded" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 							errorMessage: string | null;
 							progress: {
 								failed: number;
@@ -722,7 +722,7 @@ export type BonoboHttpApi = {
 							hasMoreItems: boolean;
 						} | {
 							kind: "restore";
-							status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+							status: "running" | "stopping" | "partial" | "failed" | "succeeded" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 							errorMessage: string | null;
 							progress: {
 								failed: number;
@@ -1124,7 +1124,7 @@ export type BonoboHttpApi = {
 					body: {
 						jobId: import("convex/values").GenericId<"activities">;
 						kind: "copy" | "move";
-						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+						status: "running" | "stopping" | "partial" | "failed" | "succeeded" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 						progress: {
 							failed: number;
 							canceled: number;
@@ -1149,7 +1149,7 @@ export type BonoboHttpApi = {
 					} | {
 						jobId: import("convex/values").GenericId<"activities">;
 						kind: "restore" | "delete";
-						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+						status: "running" | "stopping" | "partial" | "failed" | "succeeded" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 						progress: {
 							failed: number;
 							canceled: number;
@@ -1175,7 +1175,7 @@ export type BonoboHttpApi = {
 						refusedCursor: string | null;
 						jobId: import("convex/values").GenericId<"activities">;
 						kind: "restore";
-						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+						status: "running" | "stopping" | "partial" | "failed" | "succeeded" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 						progress: {
 							failed: number;
 							canceled: number;
@@ -1313,7 +1313,7 @@ export type BonoboHttpApi = {
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							contentType: string | null;
 							updatedAt: number;
-							status: "ready" | "pending" | null;
+							status: "pending" | "ready" | null;
 							size: number | null;
 							locked: boolean;
 							readOnly: boolean | null;
@@ -1570,6 +1570,7 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							createdAt: number;
 							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
@@ -1578,7 +1579,6 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -2188,6 +2188,7 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							createdAt: number;
 							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
@@ -2196,7 +2197,6 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -2320,6 +2320,7 @@ export type BonoboHttpApi = {
 							_creationTime: number;
 							organizationId: import("convex/values").GenericId<"organizations">;
 							workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
+							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							createdAt: number;
 							path: string;
 							writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
@@ -2328,7 +2329,6 @@ export type BonoboHttpApi = {
 							sequence: number;
 							contentRevision: string | null;
 							nodeId: import("convex/values").GenericId<"files_nodes">;
-							installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 							operation: "fence" | "archive" | "read_only" | "write";
 							fingerprint: string;
 						};
@@ -2593,6 +2593,7 @@ export type BonoboHttpApi = {
 						_creationTime: number;
 						organizationId: import("convex/values").GenericId<"organizations">;
 						workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
+						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						createdAt: number;
 						path: string;
 						writerId: import("convex/values").GenericId<"plugins_external_file_writers">;
@@ -2601,7 +2602,6 @@ export type BonoboHttpApi = {
 						sequence: number;
 						contentRevision: string | null;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
-						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						operation: "fence" | "archive" | "read_only" | "write";
 						fingerprint: string;
 					};

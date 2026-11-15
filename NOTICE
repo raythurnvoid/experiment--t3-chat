@@ -3,3 +3,8 @@ Bonobo Senate
 Copyright 2026 Daniele Loreto
 
 This product includes software developed by Daniele Loreto and contributors.
+
+This product includes software from Playwright (https://github.com/microsoft/playwright), Copyright (c) Microsoft
+Corporation, licensed under Apache-2.0. Playwright contains code derived from the Puppeteer project, licensed under
+Apache-2.0. The adapted files are packages/app/src/lib/view-snapshot-aria.ts and
+packages/app/src/lib/view-snapshot-role-utils.ts.

@@ -98,10 +98,12 @@ import {
 	ai_chat_mcp_auth_needed_data_schema,
 	ai_chat_mcp_tool_output_schema,
 	ai_chat_page_tool_output_schema,
+	ai_chat_view_snapshot_output_schema,
 	type ai_chat_McpSource,
 	type ai_chat_ToolOutputRef,
 } from "../../../shared/ai-chat-files.ts";
 import { McpConnect } from "@/components/mcp-connect.tsx";
+import { AiChatUiCallResponder } from "@/components/ai-chat/ai-chat-ui-call-responder.tsx";
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
@@ -864,6 +866,9 @@ function file_result_status_text(metadata: z.infer<typeof ai_chat_file_result_sc
 					iframe_unsupported: "This frame is not supported by the browser.",
 					needs_human: "The browser needs your help.",
 					sensitive_input: "Type this value in your browser.",
+					declined: "You declined to share your screen.",
+					browser_unsupported: "This browser cannot share only this tab. Use Chrome or Edge on a computer.",
+					wrong_surface: "Another tab or screen was picked, so nothing was sent.",
 				}[metadata.reason];
 	return reason ? `${outcome} ${reason}` : outcome;
 }
@@ -1131,6 +1136,192 @@ const AiChatMessagePartToolPage = memo(function AiChatMessagePartToolPage(props:
 	);
 });
 // #endregion tool page
+
+// #region tool view snapshot
+type AiChatMessagePartToolViewSnapshot_ClassNames = "AiChatMessagePartToolViewSnapshot";
+
+type AiChatMessagePartToolViewSnapshot_Props = {
+	input: unknown;
+	result: unknown;
+	toolState: ToolUIPart["state"];
+	errorText: string | undefined;
+	isChatRunning: boolean;
+};
+
+/**
+ * A `view_snapshot` call: the agent read the user's screen as text. The card shows that text, so the
+ * user sees what the agent saw.
+ */
+const AiChatMessagePartToolViewSnapshot = memo(function AiChatMessagePartToolViewSnapshot(
+	props: AiChatMessagePartToolViewSnapshot_Props,
+) {
+	const { input, result, toolState, errorText, isChatRunning } = props;
+
+	// A stored part is saved data. Use the output only when it matches the snapshot output schema.
+	const parsed = ai_chat_view_snapshot_output_schema.safeParse(result);
+	const output = parsed.success ? parsed.data : null;
+	const isError = output !== null && output.metadata.status !== "ok";
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={"AiChatMessagePartToolViewSnapshot" satisfies AiChatMessagePartToolViewSnapshot_ClassNames}
+		>
+			<AiChatMessagePartDisclosureButton
+				title="Read your screen"
+				text={output?.metadata.truncated ? "cut at 32 KiB" : undefined}
+				state={isError ? "output-error" : toolState}
+				isChatRunning={isChatRunning}
+			/>
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(input ?? {}, null, "\t")} />
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{/* Screen text can come from other people and plugins, so show it as plain text. */}
+				{output && (
+					<AiChatMessagePartToolTextAreaSection
+						label={isError ? "Error" : "Screen text"}
+						code={output.output}
+						state={isError ? "error" : undefined}
+						maxHeight="16lh"
+					/>
+				)}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool view snapshot
+
+// #region tool screenshot
+type AiChatMessagePartToolScreenshot_ClassNames =
+	| "AiChatMessagePartToolScreenshot"
+	| "AiChatMessagePartToolScreenshot-reason"
+	| "AiChatMessagePartToolScreenshot-actions"
+	| "AiChatMessagePartToolScreenshot-status";
+
+type AiChatMessagePartToolScreenshot_CustomAttributes = {
+	"data-screenshot-state": "asking" | "sharing" | "declining" | "ended" | "waiting" | "done";
+};
+
+type AiChatMessagePartToolScreenshot_Props = {
+	toolCallId: string;
+	result: unknown;
+	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
+};
+
+/**
+ * A `view_screenshot` call. While it runs, the tab that sent the message shows the agent's reason
+ * with Share and Decline. The tab takes the picture only after Share, and the card never shows it.
+ */
+const AiChatMessagePartToolScreenshot = memo(function AiChatMessagePartToolScreenshot(
+	props: AiChatMessagePartToolScreenshot_Props,
+) {
+	const { toolCallId, result, toolState, isChatRunning } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const call = AiChatUiCallResponder.useScreenshotCall(toolCallId);
+	const [phase, setPhase] = useState<"idle" | "sharing" | "declining" | "ended">("idle");
+	const statusRef = useRef<HTMLParagraphElement>(null);
+
+	// The server rewrites the result into one exact shape, like the other file tools. Anything else is
+	// old or untrusted, so show no status from it. A screenshot never has files or debug text.
+	const parsed = ai_chat_file_result_schema.safeParse(result);
+	const expected = parsed.success
+		? ai_chat_file_result({ title: "Screenshot", status: parsed.data.metadata.status, reason: parsed.data.metadata.reason })
+		: null;
+	const output =
+		parsed.success &&
+		parsed.data.title === expected?.title &&
+		parsed.data.output === expected?.output &&
+		parsed.data.metadata.files.length === 0 &&
+		parsed.data.metadata.debug === undefined
+			? parsed.data
+			: null;
+
+	const isRunning = toolState === "input-streaming" || toolState === "input-available";
+	const screenshotState: AiChatMessagePartToolScreenshot_CustomAttributes["data-screenshot-state"] = !isRunning
+		? "done"
+		: phase !== "idle"
+			? phase
+			: call
+				? "asking"
+				: "waiting";
+	const isFailure = output !== null && (output.metadata.status === "errored" || output.metadata.status === "timed_out");
+	const status = {
+		asking: "Nothing is sent before you choose.",
+		sharing: "Pick this tab in the browser prompt.",
+		declining: "Declining…",
+		ended: "This request already ended, so nothing was sent.",
+		waiting: "Waiting for an answer in the tab that sent this message.",
+		done:
+			(output ? file_result_status_text(output.metadata, "Screenshot") : null) ??
+			(toolState === "output-error" || toolState === "output-denied"
+				? "The request could not finish."
+				: "Output is no longer available."),
+	}[screenshotState];
+
+	const handleAnswer = (share: boolean) => {
+		if (!call) return;
+
+		setPhase(share ? "sharing" : "declining");
+		// The buttons go away now. Move focus to the status line so it does not fall back to the page.
+		statusRef.current?.focus();
+		// Call this in the click itself: the browser prompt needs the click's user activation.
+		AiChatUiCallResponder.answerScreenshotCall({ membershipId, callId: call.callId, share })
+			.then((answered) => {
+				if (!answered) {
+					setPhase("ended");
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[AiChatMessagePartToolScreenshot.handleAnswer] Unexpected answer error", { error, toolCallId });
+				setPhase("ended");
+			});
+	};
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={"AiChatMessagePartToolScreenshot" satisfies AiChatMessagePartToolScreenshot_ClassNames}
+			{...({ "data-screenshot-state": screenshotState } satisfies AiChatMessagePartToolScreenshot_CustomAttributes)}
+			// Open the part while it asks, so the member sees the buttons. Keep it open after the click, so
+			// the focused status line stays visible.
+			open={screenshotState === "asking" || phase !== "idle" || undefined}
+		>
+			<AiChatMessagePartDisclosureButton
+				title="Screenshot"
+				state={isFailure ? "output-error" : toolState}
+				isChatRunning={isChatRunning}
+			/>
+			<AiChatMessagePartToolBody>
+				{screenshotState === "asking" && call && (
+					<>
+						{/* The reason is model text, so show it as plain text. */}
+						<p className={"AiChatMessagePartToolScreenshot-reason" satisfies AiChatMessagePartToolScreenshot_ClassNames}>
+							The agent asks for one picture of this tab: {call.reason}
+						</p>
+						<div
+							className={"AiChatMessagePartToolScreenshot-actions" satisfies AiChatMessagePartToolScreenshot_ClassNames}
+						>
+							<MyButton variant="accent" onClick={() => handleAnswer(true)}>
+								Share this tab
+							</MyButton>
+							<MyButton variant="outline" onClick={() => handleAnswer(false)}>
+								Decline
+							</MyButton>
+						</div>
+					</>
+				)}
+				<p
+					ref={statusRef}
+					role="status"
+					tabIndex={-1}
+					className={"AiChatMessagePartToolScreenshot-status" satisfies AiChatMessagePartToolScreenshot_ClassNames}
+				>
+					{status}
+				</p>
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool screenshot
 
 // #region mcp auth needed
 type AiChatMessageMcpAuthNeeded_ClassNames =
@@ -1543,6 +1734,29 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 			return (
 				<AiChatMessagePartToolBrowser
 					toolName={toolName}
+					result={part.output}
+					toolState={part.state}
+					isChatRunning={isChatRunning}
+				/>
+			);
+		}
+
+		if (toolName === "view_snapshot") {
+			return (
+				<AiChatMessagePartToolViewSnapshot
+					input={part.input}
+					result={part.output}
+					toolState={part.state}
+					errorText={part.errorText}
+					isChatRunning={isChatRunning}
+				/>
+			);
+		}
+
+		if (toolName === "view_screenshot") {
+			return (
+				<AiChatMessagePartToolScreenshot
+					toolCallId={part.toolCallId}
 					result={part.output}
 					toolState={part.state}
 					isChatRunning={isChatRunning}

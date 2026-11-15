@@ -6,6 +6,7 @@ import { Puzzle } from "lucide-react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import type { RefObject } from "react";
 
+import { AiChatUiCallResponder } from "@/components/ai-chat/ai-chat-ui-call-responder.tsx";
 import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
@@ -20,7 +21,6 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useAiChatUiContextPluginSource, useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
-import type { Id } from "../../../../../../convex/_generated/dataModel.ts";
 
 // #region root
 type RoutePluginsPluginPage_ClassNames =
@@ -55,9 +55,6 @@ function RoutePluginsPluginPage() {
 	const missingMessageId = `RoutePluginsPluginPage-${useId()}-description`;
 	// Incremented by Retry. It is part of the frame key below, so each attempt gets a fresh frame.
 	const [attempt, setAttempt] = useState(0);
-	// A random id for this tab. The chat sends it, and only the frame of this tab runs the agent's
-	// page tool calls. Retry keeps it, so the new frame takes the calls of the same chat.
-	const [pageInstanceId] = useState(() => crypto.randomUUID());
 
 	const plugin = uiPages?.find((item) => item.pluginName === pluginName) ?? null;
 	const page = plugin?.pages.find((item) => item.id === pageId) ?? null;
@@ -186,7 +183,6 @@ function RoutePluginsPluginPage() {
 			entry={page.entry}
 			hasAgent={page.hasAgent}
 			hasAgentViewContext={plugin.hasAgentViewContext}
-			pageInstanceId={pageInstanceId}
 			onRetry={handleRetry}
 		/>
 	);
@@ -217,7 +213,7 @@ function RoutePluginsPluginPage() {
 							className={"RoutePluginsPluginPage-agent" satisfies RoutePluginsPluginPage_ClassNames}
 							aria-label="Agent"
 						>
-							<FileEditorSidebarAgent isActive pluginPage={{ pluginName, pageId, pageInstanceId }} />
+							<FileEditorSidebarAgent isActive pluginPage={{ pluginName, pageId }} />
 						</section>
 					</MyPanel>
 				</MyPanelGroup>
@@ -260,10 +256,6 @@ type RoutePluginsPluginPageFrame_Props = {
 	 * says it shows.
 	 */
 	hasAgentViewContext: boolean;
-	/**
-	 * This tab's random id. The frame takes only the calls the chat of this tab sent.
-	 */
-	pageInstanceId: string;
 	onRetry: () => void;
 };
 
@@ -272,51 +264,6 @@ type RoutePluginsPluginPageFrame_Props = {
  * little longer, so the page's error reaches the model instead of a server timeout.
  */
 const AGENT_TOOL_FRAME_TIMEOUT_MS = 25_000;
-
-/**
- * Take one agent tool call for this tab, run it in the plugin frame, and save the answer.
- *
- * A refused claim means the call already ended or was taken, so there is nothing to do.
- */
-async function relay_agent_tool_call(args: {
-	membershipId: Id<"organizations_workspaces_users">;
-	call: { callId: Id<"plugins_page_tool_calls">; toolName: string; inputJson: string };
-	runInFrame: (call: { callId: string; toolName: string; input: unknown }) => Promise<PluginsUiFrame_AgentToolResult>;
-}) {
-	const { membershipId, call, runInFrame } = args;
-
-	const claimed = await app_convex.mutation(app_convex_api.plugins_page_tools.claim_call, {
-		membershipId,
-		callId: call.callId,
-	});
-	if (claimed._nay) {
-		return;
-	}
-
-	const answer = await runInFrame({ callId: call.callId, toolName: call.toolName, input: JSON.parse(call.inputJson) });
-	let result: { ok: true; outputJson: string } | { ok: false; error: string };
-	if (answer.ok) {
-		try {
-			result = { ok: true, outputJson: JSON.stringify(answer.output ?? null) };
-		} catch {
-			result = { ok: false, error: "The page answered with a value that is not JSON" };
-		}
-	} else {
-		result = { ok: false, error: answer.error };
-	}
-
-	const completed = await app_convex.mutation(app_convex_api.plugins_page_tools.complete_call, {
-		membershipId,
-		callId: call.callId,
-		result,
-	});
-	if (completed._nay) {
-		console.error("[RoutePluginsPluginPageFrame.relay_agent_tool_call] Failed to save the page answer", {
-			error: completed._nay,
-			callId: call.callId,
-		});
-	}
-}
 
 /**
  * One plugin frame and the two things the member sees around it: the alert when the frame fails,
@@ -328,24 +275,11 @@ async function relay_agent_tool_call(args: {
 const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 	props: RoutePluginsPluginPageFrame_Props,
 ) {
-	const {
-		regionRef,
-		pluginName,
-		pluginVersionId,
-		pageId,
-		pageTitle,
-		entry,
-		hasAgent,
-		hasAgentViewContext,
-		pageInstanceId,
-		onRetry,
-	} = props;
+	const { regionRef, pluginName, pluginVersionId, pageId, pageTitle, entry, hasAgent, hasAgentViewContext, onRetry } =
+		props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
 	const frameRef = useRef<PluginsUiFrame_Ref | null>(null);
-	// Calls this tab already tried to claim. The live query can list a call again before its claim
-	// lands, and a second claim from the same tab would only be refused.
-	const seenCallIdsRef = useRef(new Set<string>());
 	// The waiting call for each answer the frame sends back, by call id.
 	const agentToolWaitersRef = useRef(new Map<string, (result: PluginsUiFrame_AgentToolResult) => void>());
 	// Names the message inside the alert, so the Retry button can point at it and say what failed.
@@ -364,12 +298,9 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 			: "Starting the plugin page..."
 		: "";
 
-	// Only a running frame takes calls. Until the frame starts, the calls stay pending. A frame that
-	// failed takes none, so Retry's new frame can take them.
-	const pendingAgentToolCalls = useQuery(
-		app_convex_api.plugins_page_tools.list_pending,
-		hasAgent && isFrameStarted && sessionError === null ? { membershipId, pluginName, pageId, pageInstanceId } : "skip",
-	);
+	// Only a running frame takes calls. A call that arrives before the frame starts, or after it
+	// failed, is refused at once and the model reads why.
+	const canRunAgentTools = hasAgent && isFrameStarted && sessionError === null;
 
 	const mintSession = useFn(() =>
 		app_convex.action(app_convex_api.plugins_ui.mint_page_session, {
@@ -411,22 +342,11 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 			}),
 	);
 
-	// The server writes a call doc for each agent tool call. Run each new one here.
+	// The tab's call responder takes the agent's page tool calls and hands them to this frame.
 	useEffect(() => {
-		for (const call of pendingAgentToolCalls ?? []) {
-			if (seenCallIdsRef.current.has(call.callId)) {
-				continue;
-			}
-			seenCallIdsRef.current.add(call.callId);
-
-			relay_agent_tool_call({ membershipId, call, runInFrame: runAgentToolCallInFrame }).catch((error: unknown) => {
-				console.error("[RoutePluginsPluginPageFrame] Unexpected agent tool call error", {
-					error,
-					callId: call.callId,
-				});
-			});
-		}
-	}, [pendingAgentToolCalls, membershipId, runAgentToolCallInFrame]);
+		if (!canRunAgentTools) return;
+		return AiChatUiCallResponder.registerPageToolRunner({ pluginName, pageId, run: runAgentToolCallInFrame });
+	}, [canRunAgentTools, pluginName, pageId, runAgentToolCallInFrame]);
 
 	// The error replaces the iframe, and any focus that was inside it, so move focus to the one
 	// available action. The move is not unconditional. The error can appear on a timer nobody is

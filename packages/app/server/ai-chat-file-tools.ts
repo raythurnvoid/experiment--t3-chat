@@ -17,7 +17,7 @@ import {
  * Before each model step, check the exact source again. Chat history never rebuilds this map.
  */
 export type ai_chat_Observation = {
-	toolName: "view_image";
+	toolName: "view_image" | "view_screenshot";
 	output: ToolResultPart["output"];
 	isCurrent: () => Promise<boolean>;
 };
@@ -218,7 +218,14 @@ export function ai_chat_tool_create_view_image(
 						type: "content",
 						value: [
 							{ type: "text", text: `Image bytes supplied for inspection: ${workspace}:${file.path}` },
-							{ type: "image-data", data: files_ingestion_encode_base64(bytes), mediaType: header.mediaType },
+							{
+								type: "image-data",
+								data: files_ingestion_encode_base64(bytes),
+								mediaType: header.mediaType,
+								// Set the detail on purpose. Without it OpenAI picks "auto", which on newer models can
+								// mean the original size (up to 8192 px here) and many more tokens.
+								providerOptions: { openai: { imageDetail: "high" } },
+							},
 						],
 					},
 				});
