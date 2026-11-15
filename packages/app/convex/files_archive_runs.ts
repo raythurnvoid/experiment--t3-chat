@@ -14,7 +14,7 @@
 // that passed, then the active children of each stamped folder, the first named item's folder
 // first. A child that somebody moved out, or archived on their own, is not reached or keeps its own
 // stamp. Restore lands only the selected roots, then the items inside them that were moved to Trash with them.
-// Other items of the operation and items from other deletes stay frozen in Trash.
+// Other items of the operation and items from other deletes stay in Trash.
 //
 // A fast archive skips the check. The request first reads a few indexes for each named item
 // (`files_archive_runs_db_check_fast`). When they prove that the check would pass for every named item,
@@ -98,7 +98,7 @@ import {
 	files_subtree_op_paths_db_replace,
 } from "./files_subtree_op_paths_db.ts";
 import { files_subtree_op_paths_tree_find_blocked } from "./files_subtree_op_paths_tree.ts";
-import { files_nodes_db_rebuild_node } from "./files_subtree_ops_rebuild.ts";
+import { files_nodes_db_rebuild_node, files_subtree_ops_db_start_rebuild } from "./files_subtree_ops_rebuild.ts";
 import { files_purge_db_drain_node_batch } from "./files_purge_db.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import {
@@ -1668,7 +1668,7 @@ function add_discover_tree_path(run: Pick<RunFields, "discoverTreePaths">, treeP
 
 /**
  * Reserve the selected roots and their Restore destinations before checking access or writing nodes.
- * Trash paths stay frozen while the job waits.
+ * Trash paths do not change while the job waits.
  */
 async function db_discover_restore(ctx: MutationCtx, args: StepArgs): Promise<StepOutcome> {
 	const { run } = args;
@@ -2279,7 +2279,33 @@ async function db_restore_top(
 			: null);
 	if (refusal) return refusal;
 
-	return await db_land_node({ ctx, ...previousArgs, node, landing });
+	const outcome = await db_land_node({ ctx, ...previousArgs, node, landing });
+	if (outcome || node.kind !== "folder") return outcome;
+
+	// This walk gives the folder's new scope only to the items of its own delete. Older Trash items
+	// inside the folder must follow it too, so a folder that landed in another scope starts a scope job.
+	//
+	// The job also writes the items of this delete that the Restore has not landed yet, so they are
+	// written twice. This is rare: a folder lands in another scope only when its old place is gone, or
+	// when no scope job reached it yet.
+	const landedNode = (await ctx.db.get("files_nodes", node._id))!;
+	if (
+		landedNode.archiveOperationId === null &&
+		(landedNode.restrictedScopeNodeId !== node.restrictedScopeNodeId ||
+			landedNode.extendedScopeNodeId !== node.extendedScopeNodeId)
+	) {
+		await files_subtree_ops_db_start_rebuild(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			userId: args.userAuth.id,
+			membership: args.membership,
+			roots: [landedNode],
+			budget: { nodes: 0, hasPaginated: false },
+			deferWalk: true,
+			now: args.now,
+		});
+	}
+	return null;
 }
 
 /**
@@ -2612,7 +2638,7 @@ export async function files_archive_runs_db_find_saved_restore_left_node(
  * Pull the selected roots' unfinished items, at most one page at a time, and land each one. Walk each
  * folder's children of the operation. A child comes back when its folder is active, or joins its
  * folder's archive when the folder was skipped. A name clash in an active folder asks, like a clash of
- * a top item. Trash items of other deletes keep the path and scope they had at delete time.
+ * a top item. Trash items of other deletes stay in Trash and keep their delete-time path.
  *
  * The walk ends when no matching item is left inside any selected root.
  */
@@ -2700,7 +2726,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 
 		// Read the folder again. The top item above may have just landed it.
 		const folder = (await ctx.db.get("files_nodes", node._id))!;
-		// Read only this delete's children. Trash items of other deletes stay as they were at delete time.
+		// Read only this delete's children. Trash items of other deletes stay in Trash.
 		const next = await files_subtree_ops_db_next_children(ctx, {
 			row,
 			folder,
@@ -2771,7 +2797,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 						savedScope: "follow",
 						trashEntry: false,
 					});
-					await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder });
+					await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder, keepPath: false });
 					progress.skipped += 1;
 				}
 				// Count only the items the step writes, not the ones it reads.
@@ -2780,7 +2806,7 @@ async function db_apply_restore(ctx: MutationCtx, args: StepArgs): Promise<StepO
 			}
 			// A selected top item follows its folder here, then lands from its own row. A folder that kept its
 			// path keeps the paths inside too. Skip its walk.
-			else if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
+			else if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder, keepPath: false })) {
 				args.budget.nodes -= 1;
 				args.writeState.isWritten = true;
 			} else {
@@ -2861,7 +2887,8 @@ async function db_end_restore(
 			await ctx.db.delete("files_subtree_op_nodes", row._id);
 			continue;
 		}
-		// Only this delete's items can owe a repair. Other Trash items keep their delete-time path and scope.
+		// Only this delete's items can owe a repair. Other Trash items keep their delete-time path, and a
+		// scope job gives them the scope of their folder.
 		const next = await files_subtree_ops_db_next_children(ctx, {
 			row,
 			folder,
@@ -2880,7 +2907,7 @@ async function db_end_restore(
 
 			// Change only the path and scope. A folder that kept them keeps the paths inside too, so skip
 			// its walk, like the apply.
-			if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder })) {
+			if (await files_nodes_db_rebuild_node(ctx, { node: child, parent: folder, keepPath: false })) {
 				args.budget.nodes -= 1;
 				args.writeState.isWritten = true;
 				if (child.kind === "folder") folderIds.push(child._id);

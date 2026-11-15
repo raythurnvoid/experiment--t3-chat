@@ -9911,6 +9911,26 @@ const app_convex_schema = defineSchema({
 		.index("by_dueAt", ["dueAt"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
+	/**
+	 * An access change of one file rechecks the members, inbox items and followers of its comment
+	 * channel. It is not part of the sidebar job, because that job runs on every file comment and must
+	 * stay cheap.
+	 */
+	channels_access_jobs: defineTable({
+		channelId: v.id("channels"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		phase: v.union(v.literal("members"), v.literal("inbox"), v.literal("followers")),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_channel", ["channelId"])
+		.index("by_dueAt", ["dueAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	channels_thread_jobs: defineTable({
 		threadId: v.id("channels_threads"),
 		channelId: v.id("channels"),
@@ -9970,6 +9990,23 @@ const app_convex_schema = defineSchema({
 		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
 	})
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_dueAt", ["dueAt"]),
+
+	/**
+	 * A change to one user's organization role repairs every summary of that user in the organization.
+	 * The role is stored on the default workspace and applies in each workspace of the user.
+	 */
+	channels_member_authority_jobs: defineTable({
+		organizationId: v.id("organizations"),
+		userId: v.id("users"),
+		requestedRevision: v.number(),
+		passRevision: v.number(),
+		cursor: v.union(v.string(), v.null()),
+		dueAt: v.number(),
+		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
+	})
+		.index("by_organization_user", ["organizationId", "userId"])
+		.index("by_user", ["userId"])
 		.index("by_dueAt", ["dueAt"]),
 
 	channels_uploads: defineTable({

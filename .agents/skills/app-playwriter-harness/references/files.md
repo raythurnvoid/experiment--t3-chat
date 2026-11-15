@@ -343,7 +343,8 @@ replaces a Read-only file" row in the qa-data catalog. Verified 2026-11-01.
   `New folder`, fill the dialog's `Name` input, and press Enter. This creates inside the open folder.
 - Pending row controls inherit disabled state from their fieldsets. Use `locator.isDisabled()` or `element.matches(":disabled")`; `button.disabled` only reads the button's own attribute. Check focus after a focused action becomes pending, then check menu and arrow access again after it finishes.
 - Restore a deleted item from `More options` → `Open Trash`. Scope its `More actions for <name>` button to the Trash entry, then choose `Restore`. The normal tree has no deleted rows or Restore action.
-- Trash items are frozen at delete time (2026-11-10). `F2` on a Trash row opens no rename field (focus stays on the row), and the Trash view menu has only `Restore`, `Delete permanently…` and `Copy path`. To check the freeze, rename the live folder above a Trash item, then read the Trash view row: it keeps the old folder path. Verified 2026-11-10 in `chitchat-qa/copy-qa-0922`.
+- Trash items keep their delete-time path (2026-11-10). `F2` on a Trash row opens no rename field (focus stays on the row), and the Trash view menu has only `Restore`, `Delete permanently…` and `Copy path`. To check it, rename the live folder above a Trash item, then read the Trash view row: it keeps the old folder path. Verified 2026-11-10 in `chitchat-qa/copy-qa-0922`.
+- The access of a Trash item follows its folder (2026-11-15). Restrict the live folder of a Trash item: the row leaves the open Trash list and shows in the folder's Trash list. A second account that is not on the folder's list cannot open the item's direct link any more.
 - For sharing after a restricted folder is deleted, reuse the kept `shared` Trash fixture in the
   `qa-data` catalog. Its own Can view share lets `qa.perm.member` open the direct Files link in a
   scratch browser, even though its restricted folder is gone. The owner is not a refusal check.
@@ -352,7 +353,8 @@ replaces a Read-only file" row in the qa-data catalog. Verified 2026-11-01.
 - To check last-share or last-consent cleanup, start with a live empty folder. Add the share or
   plugin choice, wait for it to apply, then confirm Move to Trash. Read both extended-scope pointers
   before and after native Remove. Distinguish an absent parent pointer from null. Keep the archive
-  ID and path in the readback too. Removing access must not rewrite the frozen pointers.
+  ID and path in the readback too. Removing the last access from a root in Trash must not rewrite
+  its pointers.
   To prove plugin access ends, choose an item inside a restricted folder with no other applied
   choice covering it. Do not choose the restricted root itself: it needs no extended anchor.
 - A plugin's live file picker clears a selection when it enters Trash, so an online stale form

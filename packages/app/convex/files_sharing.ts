@@ -1230,9 +1230,9 @@ export const set_node_share_grant = mutation({
 		if (args.level === "manage" && node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: access_control_ADDED_PEOPLE_LEVEL_MESSAGE } });
 		}
-		// A first person on an open Trash item would make it an extended root. A Trash item keeps its
-		// delete-time access fields, and the job below would not reach its Trash children. A Trash item that
-		// is already a root keeps a live list.
+		// A first person on an open Trash item would make it an extended root. An item in Trash follows
+		// the access of its folder, so it gets no new scope of its own. A Trash item that is already a root
+		// keeps a live list.
 		if (
 			node.archiveOperationId !== null &&
 			node.restrictedScopeNodeId !== node._id &&
@@ -1474,7 +1474,7 @@ export const remove_node_share_grant = mutation({
 			});
 		}
 
-		// The people list is live, but a Trash item keeps its saved inheritance pointers.
+		// The people list is live, but a root in Trash that lost its last person stays a root.
 		if (node.archiveOperationId === null && node.parentExtendedScopeNodeId !== undefined) {
 			// Read after the delete above. A mutation sees its own writes.
 			if (!(await files_nodes_db_has_extended_grants(ctx, { nodeId: node._id }))) {
@@ -1516,7 +1516,7 @@ async function db_restrict_node(
 ) {
 	const { userAuth, membership, node, organization, defaultWorkspaceId } = args;
 
-	// A Trash item keeps the area of its delete time, so its restriction cannot change. Its people list can.
+	// A Trash item follows the area of its folder, so its own restriction cannot change. Its people list can.
 	if (node.archiveOperationId !== null) {
 		return Result({ _nay: { message: "This item is in Trash. Restore it before you change who can open it." } });
 	}

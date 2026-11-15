@@ -1407,6 +1407,19 @@ export async function channels_db_drain_member_batch(
 	).take(100);
 	for (const item of inbox) await channels_notifications_db_delete_source(ctx, item);
 	if (inbox.length) return { drainedAny: true };
+	const memberJobs = await (
+		args.organizationId
+			? ctx.db
+					.query("channels_member_authority_jobs")
+					.withIndex("by_organization_user", (q) =>
+						q.eq("organizationId", args.organizationId!).eq("userId", args.userId),
+					)
+			: ctx.db.query("channels_member_authority_jobs").withIndex("by_user", (q) => q.eq("userId", args.userId))
+	).take(100);
+	if (memberJobs.length) {
+		await Promise.all(memberJobs.map((job) => ctx.db.delete("channels_member_authority_jobs", job._id)));
+		return { drainedAny: true };
+	}
 	const summaries = await (
 		args.organizationId
 			? ctx.db
@@ -1448,6 +1461,7 @@ export async function channels_db_purge_workspace_batch(
 		"channels_messages",
 		"channels_read_states",
 		"channels_sidebar_jobs",
+		"channels_access_jobs",
 		"channels_thread_jobs",
 		"channels_inbox_jobs",
 		"channels_summary_jobs",
@@ -1579,6 +1593,7 @@ export async function channels_db_purge_channel_batch(
 	for (const table of [
 		"channels_read_states",
 		"channels_sidebar_jobs",
+		"channels_access_jobs",
 		"channels_thread_jobs",
 		"channels_inbox_jobs",
 	] as const) {

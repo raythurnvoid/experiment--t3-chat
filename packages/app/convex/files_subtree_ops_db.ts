@@ -251,9 +251,9 @@ type ChildCursor = Doc<"files_subtree_op_nodes">["cursor"];
 
 /**
  * Which children a walk reads: `"all"`, the live children (`null`), or the children of one delete. A
- * scope job reads the live children and a Restore reads its own delete's children. So Trash items of
- * other deletes stay as they were at delete time. A purge reads all children, because the Trash folder
- * it deletes can hold items of older deletes.
+ * Restore reads its own delete's children. A scope job reads all children, because Trash items follow
+ * the access of their folder. A purge reads all children, because the Trash folder it deletes can hold
+ * items of older deletes.
  */
 type ChildrenOf = "all" | { archiveOperationId: string | null };
 

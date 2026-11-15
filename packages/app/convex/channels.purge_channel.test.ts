@@ -33,6 +33,7 @@ const CHANNEL_TABLES = [
 	"channels_inbox",
 	"channels_uploads",
 	"channels_sidebar_jobs",
+	"channels_access_jobs",
 	"channels_thread_jobs",
 	"channels_inbox_jobs",
 ] as const;
@@ -174,7 +175,16 @@ describe("channels_db_purge_channel_batch", () => {
 				return rows;
 			});
 
+		// A sharing change on the file queues the channel's access job.
+		expect(
+			await as(f.owner).mutation(api.files_sharing.restrict_node, {
+				membershipId: f.owner.membershipId,
+				nodeId: fileNodeId!,
+			}),
+		).toEqual({ _yay: null });
+
 		const before = await channel_rows(channelId!);
+		expect(before.channels_access_jobs, "the fixture must hold a queued access job").toHaveLength(1);
 		expect(before.channels_messages, "the fixture must hold more messages than one batch").toHaveLength(4);
 		expect(before.channels_threads).toHaveLength(2);
 		expect(before.channels_reactions).toHaveLength(3);

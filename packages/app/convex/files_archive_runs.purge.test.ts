@@ -536,7 +536,9 @@ describe("files_nodes.purge_nodes", () => {
 			await test_finish_saved_scope_jobs(f.t);
 		}
 		expect(await archive(f, [itemId])).toEqual({ _yay: null });
-		// The live folder leaves `/r` without its Trash item. Then `/r` is empty and goes for good.
+		// The live folder leaves `/r`, and its scope job gives the Trash item the open area too. Put the
+		// item back as it is before that job reaches it: it still points at `/r`. Then `/r` is empty and
+		// goes for good.
 		expect(
 			await test_move_nodes(f.t, f.asOwner, {
 				membershipId: f.db.membershipId,
@@ -544,6 +546,14 @@ describe("files_nodes.purge_nodes", () => {
 				targetParentId: outsideId,
 			}),
 		).toEqual({ _yay: null });
+		await f.t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", itemId, { restrictedScopeNodeId: restrictedId });
+			const entry = await ctx.db
+				.query("files_trash_entries")
+				.withIndex("by_node", (q) => q.eq("nodeId", itemId))
+				.unique();
+			await ctx.db.patch("files_trash_entries", entry!._id, { area: restrictedId });
+		});
 		expect(await archive(f, [restrictedId])).toEqual({ _yay: null });
 		const started = await purge(f, [restrictedId]);
 		if (started.runId) expect((await step_to_end(f, await purge_job(f, started.runId))).status).toBe("succeeded");

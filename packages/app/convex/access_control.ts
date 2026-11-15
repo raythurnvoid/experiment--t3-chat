@@ -644,7 +644,7 @@ export async function access_control_db_set_service_account_grant(
 			node.restrictedScopeNodeId !== node._id &&
 			node.parentExtendedScopeNodeId === undefined
 		) {
-			// A Trash item keeps its delete-time access fields, and the job would not reach its Trash children.
+			// An item in Trash follows the access of its folder, so it gets no new scope of its own.
 			if (node.archiveOperationId !== null) {
 				return Result({
 					_nay: { message: "This item is in Trash. Restore it before you change who can open it." },
@@ -994,8 +994,8 @@ const DEAD_SCOPE_MAX_HOPS = 8;
  * folder above it, or to `null` when nothing above is restricted. Reading a dead pointer as open
  * would show the node to every member until the job reaches it.
  *
- * A Trash item keeps its delete-time pointer, because scope jobs skip Trash items. So its dead pointer
- * stays. Access then goes through the opened folder.
+ * A Trash item can keep a dead pointer until a scope job reaches it. Access then goes through the
+ * opened folder.
  *
  * A folder above can be opened too before its own job reaches the dead folder, so the chain can be
  * longer than one hop. Past `DEAD_SCOPE_MAX_HOPS`, keep the node's stored scope. The unrestrict
@@ -1077,12 +1077,13 @@ export async function access_control_db_resolve_trash_entry_area(
  * area. The node's normal access still works then. Only its added people wait for the job. Each hop
  * must go up, so a bad pointer can never loop.
  *
- * A Trash item keeps the pointer it had at delete time, but its folders may have moved since. So its
+ * A Trash item keeps the path it had at delete time, but its folders may have moved since. So its
  * first root is trusted without a path check. Each later root must still be above the root before it.
  *
- * A Trash item also keeps its area pointer, while an unrestrict above gives its live roots the outer
- * area. So for a Trash item compare the live areas (`access_control_db_resolve_live_restricted_scope`).
- * A live item compares the stored pointers: a scope job that has not reached it yet stops its chain.
+ * A Trash item follows the access of its folder, but its area pointer is old until a scope job reaches
+ * it. An unrestrict above gives its live roots the outer area first. So for a Trash item compare the
+ * live areas (`access_control_db_resolve_live_restricted_scope`). A live item compares the stored
+ * pointers: a scope job that has not reached it yet stops its chain.
  */
 export async function access_control_db_extended_chain_allows(
 	ctx: QueryCtx | MutationCtx,
@@ -1370,11 +1371,11 @@ export function access_control_create_file_checker(
 	 * An item in Trash is matched by its path too, like Dropbox matches deleted files. Trash can hold
 	 * several items with the same path, from different deletes, and a choice reaches all of them. A Trash
 	 * item keeps its delete-time path, so a choice reaches it while that path is inside the chosen folder's
-	 * current path. A Move of the folder does not take its Trash items along. A Restore that is still
-	 * running gives an item of its own delete its new path when it reaches it. Until then the item keeps
-	 * the access of its old path. A Restore checks an item inside a folder it already brought back against
-	 * that folder, because Keep both may have renamed it (`db_check_writable_nodes` in
-	 * `files_archive_runs.ts`).
+	 * current path. A Move of the folder does not change the path of its Trash items, so a choice stops
+	 * reaching them. A Restore that is still running gives an item of its own delete its new path when it
+	 * reaches it. Until then the item keeps the access of its old path. A Restore checks an item inside a
+	 * folder it already brought back against that folder, because Keep both may have renamed it
+	 * (`db_check_writable_nodes` in `files_archive_runs.ts`).
 	 *
 	 * A chosen folder reaches only the items inside its path. Another item with the folder's own path,
 	 * such as an older folder of the same name in Trash, is not inside it. Without this rule a choice on
@@ -1405,8 +1406,8 @@ export function access_control_create_file_checker(
 				// A file's `treePath` has no trailing `/`, so only a folder can be above the node.
 				(root._id === node._id ||
 					(root.kind === "folder" && full.treePath !== root.treePath && full.treePath.startsWith(root.treePath))) &&
-				// A Trash item keeps its delete-time area pointer, so compare live areas, like the "Add people"
-				// chain does.
+				// A Trash item's area pointer can be old until a scope job reaches it. So compare live areas,
+				// like the "Add people" chain does.
 				(full.archiveOperationId === null
 					? root.restrictedScopeNodeId === node.restrictedScopeNodeId
 					: (await live_scope(tenant, root.restrictedScopeNodeId)) ===

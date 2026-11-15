@@ -19,6 +19,7 @@ import {
 } from "../server/files-write-policy.ts";
 import { files_write_policy_db_has_write_context_permission } from "./files_write_policy_db.ts";
 import { files_subtree_ops_db_find_repair, files_subtree_ops_db_recover } from "./files_subtree_ops_db.ts";
+import { files_subtree_ops_db_start_rebuild } from "./files_subtree_ops_rebuild.ts";
 import { files_move_reservations_db_take_waiters } from "../server/files-move-reservations.ts";
 import {
 	files_pending_overlay_db_can_join_step,
@@ -113,8 +114,11 @@ import {
 } from "./files_pending_updates_db.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_index_db_finish_move, files_index_db_prepare_move, files_index_db_release_ticket, files_index_db_ticket } from "../server/files-index.ts";
-import { files_access_version_messages_file_changed } from "../server/files-access-version.ts";
-import { channels_notifications_db_advance_authority } from "../server/channels-notifications.ts";
+import { files_access_version_messages_route } from "../server/files-access-version.ts";
+import {
+	channels_notifications_db_advance_authority,
+	channels_notifications_db_enqueue_access,
+} from "../server/channels-notifications.ts";
 
 // Reuse loaded modules. Keep each request's state inside its handler.
 export const experimental_reuseContext = true;
@@ -190,6 +194,7 @@ async function db_read_membership(
 }
 
 type MembershipReads = { docs?: Awaited<ReturnType<typeof db_read_membership>> };
+type MessagesReset = { done: boolean };
 
 async function db_get_membership(
 	ctx: QueryCtx | MutationCtx,
@@ -2253,74 +2258,9 @@ async function db_validate(
 	return Result({ _yay: { done: true } });
 }
 
-function messages_proof_matches(proof: Doc<"channels_move_authority_proofs">, cohort: Doc<"files_move_cohorts">) {
-	return (
-		proof.proofEpoch === cohort.proofEpoch &&
-		proof.fence === cohort.fence &&
-		proof.attemptFence === cohort.attemptFence &&
-		JSON.stringify(proof.clockPins) === JSON.stringify(cohort.clockPins)
-	);
-}
-
-async function db_prepare_messages_authority(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
-	let proof = await ctx.db
-		.query("channels_move_authority_proofs")
-		.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
-		.unique();
-	if (!proof || !messages_proof_matches(proof, cohort)) {
-		const fields = {
-			cohortId: cohort._id,
-			organizationId: cohort.organizationId,
-			workspaceId: cohort.workspaceId,
-			proofEpoch: cohort.proofEpoch,
-			fence: cohort.fence,
-			attemptFence: cohort.attemptFence,
-			clockPins: cohort.clockPins,
-			lastOrder: null,
-			changed: false,
-			complete: false,
-		};
-		const id = proof?._id ?? (await ctx.db.insert("channels_move_authority_proofs", fields));
-		if (proof) await ctx.db.replace("channels_move_authority_proofs", id, fields);
-		proof = (await ctx.db.get("channels_move_authority_proofs", id))!;
-	}
-	if (proof.complete) return true;
-	const lastOrder = proof.lastOrder;
-	const record = await ctx.db
-		.query("files_move_cohort_nodes")
-		.withIndex("by_cohort_order", (q) =>
-			lastOrder === null ? q.eq("cohortId", cohort._id) : q.eq("cohortId", cohort._id).gt("order", lastOrder),
-		)
-		.first();
-	if (!record) {
-		await ctx.db.patch("channels_move_authority_proofs", proof._id, { complete: true });
-		return true;
-	}
-	if (record.validatedEpoch !== cohort.proofEpoch)
-		throw should_never_happen("Move authority proof reached an unvalidated node", { cohortId: cohort._id, recordId: record._id });
-	const [before, after] = await Promise.all([
-		record.beforePlaceId ? ctx.db.get("files_saved_places", record.beforePlaceId) : null,
-		record.afterPlaceId ? ctx.db.get("files_saved_places", record.afterPlaceId) : null,
-	]);
-	if ((record.beforePlaceId && !before) || (record.afterPlaceId && !after))
-		throw should_never_happen("Move authority proof is missing a saved place", { cohortId: cohort._id, recordId: record._id });
-	// A new file has no old conversation. Existing files can lose or change their access.
-	await ctx.db.patch("channels_move_authority_proofs", proof._id, {
-		lastOrder: record.order,
-		changed: proof.changed || (before !== null && files_access_version_messages_file_changed(before, after)),
-	});
-	return false;
-}
-
 async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, organization: Doc<"organizations">) {
 	if (cohort.validatedItemCount !== cohort.itemCount || cohort.pendingWorkCount !== 0)
 		throw should_never_happen("Move has unfinished work at publication", { cohortId: cohort._id });
-	const proof = await ctx.db
-		.query("channels_move_authority_proofs")
-		.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
-		.unique();
-	if (!proof?.complete || !messages_proof_matches(proof, cohort))
-		throw should_never_happen("Move has no current Messages authority proof", { cohortId: cohort._id });
 	if (billing_pick_billed_user_id({ userId: cohort.userId, organization }) !== cohort.billedUserId)
 		return Result({ _nay: { name: "needs_review", message: "Billing changed. Review these changes again." } });
 	if (cohort.contentCostCents > 0) {
@@ -2355,11 +2295,6 @@ async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, o
 	if (slot?.cohortId !== cohort._id || slot.generation !== cohort.slotGeneration)
 		throw should_never_happen("Move lost its workspace slot", { cohortId: cohort._id });
 	await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after", migrationDirection: "to_normal" });
-	if (proof.changed)
-		await channels_notifications_db_advance_authority(ctx, {
-			organizationId: cohort.organizationId,
-			workspaceId: cohort.workspaceId,
-		});
 	await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	await files_media_validation_db_advance_version(ctx, cohort);
 	if (cohort.origin.kind === "review")
@@ -2368,7 +2303,7 @@ async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, o
 	return Result({ _yay: { done: true } });
 }
 
-async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
+async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, messagesReset: MessagesReset) {
 	const record = await ctx.db
 		.query("files_move_cohort_nodes")
 		.withIndex("by_cohort_order", (q) =>
@@ -2413,6 +2348,18 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 		});
 	} else await ctx.db.delete("files_nodes", record.nodeId);
 	const finalNode = await ctx.db.get("files_nodes", record.nodeId);
+	// The Messages wrapper skips writes to a node that a Move holds, like the write above. Publication may
+	// have changed who can open this item, so update Messages totals here. A new item has no old comments.
+	if (finish && record.beforePlaceId) {
+		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
+		const route = files_access_version_messages_route(before, place, record.nodeId);
+		// One workspace reset covers every record that this transaction cleans.
+		if (route === "workspace" && !messagesReset.done) {
+			messagesReset.done = true;
+			await channels_notifications_db_advance_authority(ctx, cohort);
+		} else if (route === "file")
+			await channels_notifications_db_enqueue_access(ctx, { ...cohort, fileNodeId: record.nodeId });
+	}
 	// A share change while the node was held wrote tagged rows only. Rebuild the rows from the final node.
 	await files_share_rows_db_sync_node(ctx.db, { ...cohort, nodeId: record.nodeId, node: finalNode });
 	// These raw writes skip the overlay flush, so keep the node's Trash entry true here.
@@ -2456,6 +2403,36 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 			// Materialization skips overlay marks. Repair the reused chunks' path cache after release.
 			if (chunk) await files_pending_overlay_db_schedule_saved_scope(ctx, { ...cohort, _id: record.nodeId });
 		}
+	}
+	// A Move reads live items only. The older Trash items inside a moved folder still have the scope of
+	// the old place, but they must follow their folder. So a selected folder that changed scope starts a
+	// scope job. The job waits until this Move lets go of the workspace.
+	//
+	// No index says whether a folder has Trash items inside. So the job starts for every such folder
+	// and reads all items inside it again.
+	if (
+		finish &&
+		item?.nodeRecordId === record._id &&
+		record.beforePlaceId &&
+		finalNode?.kind === "folder" &&
+		finalNode.archiveOperationId === null
+	) {
+		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
+		if (
+			before &&
+			(before.restrictedScopeNodeId !== finalNode.restrictedScopeNodeId ||
+				before.extendedScopeNodeId !== finalNode.extendedScopeNodeId)
+		)
+			await files_subtree_ops_db_start_rebuild(ctx, {
+				organizationId: cohort.organizationId,
+				workspaceId: cohort.workspaceId,
+				userId: cohort.userId,
+				membership: null,
+				roots: [finalNode],
+				budget: { nodes: 0, hasPaginated: false },
+				deferWalk: true,
+				now: Date.now(),
+			});
 	}
 	if (item && item.nodeRecordId === record._id) {
 		if (item.pendingUpdateId) {
@@ -2558,7 +2535,7 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 }
 
 async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
-	// One budget covers the claims and authority proofs. A short take() read the whole range.
+	// One budget covers the claims and reservations. A short take() read the whole range.
 	let budget = 8;
 	const released = await files_move_content_db_release_claims(ctx, {
 		cohortId: cohort._id,
@@ -2585,12 +2562,6 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		}
 		if (budget === 0) return false;
 	}
-	const proofs = await ctx.db
-		.query("channels_move_authority_proofs")
-		.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id))
-		.take(budget);
-	for (const proof of proofs) await ctx.db.delete("channels_move_authority_proofs", proof._id);
-	if (proofs.length === budget) return false;
 	const slot = await ctx.db
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) =>
@@ -2790,6 +2761,7 @@ async function db_advance_step(
 	args: { cohortId: Id<"files_move_cohorts">; step: number; runGeneration: number | null; stage?: StageRequest },
 	limitFactor: 4 | 16,
 	membershipReads: MembershipReads,
+	messagesReset: MessagesReset,
 	stageContent?: typeof files_move_content_db_stage,
 ) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
@@ -3054,9 +3026,7 @@ async function db_advance_step(
 		result = await db_validate(ctx, cohort, actor!);
 		next = "publish";
 	} else if (cohort.workPhase === "publish") {
-		result = (await db_prepare_messages_authority(ctx, cohort))
-			? await db_publish(ctx, cohort, organization!)
-			: Result({ _yay: { done: false } });
+		result = await db_publish(ctx, cohort, organization!);
 		next = "finish_content";
 	} else if (cohort.workPhase === "finish_content" || cohort.workPhase === "abort_content") {
 		const content = await ctx.db
@@ -3096,7 +3066,7 @@ async function db_advance_step(
 		result = Result({ _yay: await db_cleanup_sides(ctx, cohort) });
 		next = cohort.publishedAt === null ? "abort_nodes" : "finish_nodes";
 	} else if (cohort.workPhase === "finish_nodes" || cohort.workPhase === "abort_nodes") {
-		result = Result({ _yay: { done: await db_cleanup_nodes(ctx, cohort) } });
+		result = Result({ _yay: { done: await db_cleanup_nodes(ctx, cohort, messagesReset) } });
 		next = "release";
 	} else if (cohort.workPhase === "release") {
 		if (await db_release(ctx, cohort)) return { kind: "complete" as const };
@@ -3127,8 +3097,7 @@ async function db_advance_step(
 		0,
 		false,
 	);
-	// Commit the new view before doing physical repair, so only the real publication ends this transaction.
-	// A Messages proof step does not change the view yet, so the next step can join it.
+	// Commit the new view before doing physical repair, so the publication ends this transaction.
 	return {
 		kind: "next" as const,
 		step: cohort.step + 1,
@@ -3154,9 +3123,18 @@ export async function files_move_cohorts_db_advance(
 	let step = args.step;
 	// Move steps do not edit these actor docs. The next transaction reads them again.
 	const membershipReads: MembershipReads = {};
+	// Cleanup steps joined in this transaction reset the workspace Messages totals at most once.
+	const messagesReset: MessagesReset = { done: false };
 	while (true) {
 		// Nested joins use this transaction's budget too.
-		const result = await db_advance_step(ctx, { ...args, step }, limitFactor, membershipReads, stageContent);
+		const result = await db_advance_step(
+			ctx,
+			{ ...args, step },
+			limitFactor,
+			membershipReads,
+			messagesReset,
+			stageContent,
+		);
 		if (result?.kind !== "next") return result;
 		step = result.step;
 		if (!args.join) {
@@ -3474,6 +3452,21 @@ export const retry_now = internalMutation({
 		const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 		if (cohort) await files_move_cohorts_db_retry_repair_now(ctx, cohort);
 		return null;
+	},
+});
+
+/**
+ * Temporary, for ops: delete the old Messages proofs of Moves, 100 per call. Run it until `done` is
+ * true. No code writes these rows any more. Remove this mutation together with the
+ * `channels_move_authority_proofs` table.
+ */
+export const erase_move_authority_proofs_batch = internalMutation({
+	args: {},
+	returns: v.object({ done: v.boolean() }),
+	handler: async (ctx) => {
+		const proofs = await ctx.db.query("channels_move_authority_proofs").take(100);
+		for (const proof of proofs) await ctx.db.delete("channels_move_authority_proofs", proof._id);
+		return { done: proofs.length < 100 };
 	},
 });
 

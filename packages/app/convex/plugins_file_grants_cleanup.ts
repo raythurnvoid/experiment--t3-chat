@@ -14,7 +14,7 @@ export async function plugins_file_grants_db_retire_anchor(
 ) {
 	const node = await files_saved_placement_db_get_node(ctx.db, args.nodeId);
 	if (!node?.workspaceId || node.purgeRunId || node.parentExtendedScopeNodeId === undefined) return;
-	// Removing consent gives no access, but a Trash item keeps its saved inheritance pointers.
+	// Removing consent gives no access. A root in Trash that lost its last choice stays a root.
 	if (node.archiveOperationId !== null) return;
 	const workspaceId = ctx.db.normalizeId("organizations_workspaces", node.workspaceId);
 	if (!workspaceId) return;

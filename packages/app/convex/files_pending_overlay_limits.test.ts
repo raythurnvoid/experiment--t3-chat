@@ -901,7 +901,11 @@ describe("content save", () => {
 
 		const cost = await test_run_with_flush(t, async (ctx) => {
 			const before = await ctx.meta.getTransactionMetrics();
-			await files_nodes_db_rebuild_node(ctx, { node: (await ctx.db.get("files_nodes", shared._id))!, parent: renamed });
+			await files_nodes_db_rebuild_node(ctx, {
+				node: (await ctx.db.get("files_nodes", shared._id))!,
+				parent: renamed,
+				keepPath: false,
+			});
 			await files_pending_overlay_db_flush(ctx);
 			return transaction_cost(before, await ctx.meta.getTransactionMetrics());
 		});

@@ -312,11 +312,22 @@ and generation must match before an old contribution can be subtracted. Concurre
 the current generation, so a later baseline visit cannot count them twice.
 
 `server/channels-notifications.ts` owns count writes, Messages authority clocks and durable job enqueue.
-`convex/channels_notifications.ts` owns worker doors and the summary query. Scope access changes bump
-Messages clocks and page actual summaries; private/direct member changes advance the member's own
-authority revision. File content, names and Trash changes do not bump these access clocks. Move
-publication requires a complete bounded semantic access proof before advancing a clock. Summary
+`convex/channels_notifications.ts` owns worker doors and the summary query. An access change takes
+the smallest reset that stays correct. The rules are in
+[Messages authority](../access-control/SKILL.md#messages-authority).
+
+- A file change rechecks only that file's comment channel (`channels_access_jobs`).
+- A role, a share with one person or a returning membership repairs only that member. An
+  organization role repairs the user in every workspace (`channels_member_authority_jobs`).
+- Wider changes bump the Messages clocks and page actual summaries.
+- Private/direct member changes advance the member's own authority revision.
+
+File content, names and Trash changes do not reset Messages totals. A Move sends each published item through
+these rules in its cleanup, so totals can be late for a short time after a Move. Summary
 readiness checks clock doc ids and revisions plus the stored member authority repair target.
+
+Known limit, accepted for now: a folder share with a role or with Everyone resets the totals of
+the whole workspace, so every member sees Updating until their repair finishes.
 
 Sidebar and follower fan-out use stable source indexes with coalesced pass revisions. Read changes
 queue exact receipt intervals. Workers recompute current predicates instead of applying old numeric
@@ -382,7 +393,7 @@ This copy uses browser memory for the downloaded blob.
 Organization removal and user finalization drain members, reads, followers, inbox, summaries and
 their member jobs. Cleanup must not recreate derived state for a deleted user. Keep messages,
 reactions, and channel uploads as workspace content. Member deletion lowers `memberCount` in
-the same transaction. Workspace purge also drains authority clocks, Move proofs and all durable
+the same transaction. Workspace purge also drains authority clocks and all durable
 Messages jobs before deleting parents through tenant indexes.
 See [Data deletion](../data-deletion/SKILL.md) and [Tenancy](../organizations-tenancy/SKILL.md).
 

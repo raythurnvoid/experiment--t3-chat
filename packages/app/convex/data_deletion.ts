@@ -2011,6 +2011,16 @@ async function db_delete_organization_batch(
 		return { done: false, deletedCount: notifications.length };
 	}
 
+	// A member's Messages repair covers the whole organization, so no workspace purge removes it.
+	const memberAuthorityJobs = await ctx.db
+		.query("channels_member_authority_jobs")
+		.withIndex("by_organization_user", (q) => q.eq("organizationId", args.organizationId))
+		.take(args.batchSize);
+	if (memberAuthorityJobs.length > 0) {
+		await Promise.all(memberAuthorityJobs.map((doc) => ctx.db.delete("channels_member_authority_jobs", doc._id)));
+		return { done: false, deletedCount: memberAuthorityJobs.length };
+	}
+
 	const roleAssignments = await ctx.db
 		.query("access_control_role_assignments")
 		.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", args.organizationId))

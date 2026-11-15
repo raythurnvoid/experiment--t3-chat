@@ -216,8 +216,8 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
   - Restore from the Trash view: click the row button `More actions for <name>`; the menu has `Restore`, `Delete permanently…` and `Copy path`. A folder's `Restore` item also reads `With the items inside it from the same delete`. A file comes back alone, and a folder brings back only the items inside it that were moved to Trash in the same delete; everything else stays in the list. To set it up without the dialog, run the `press-api` helper `rm` twice (one item first, then several paths in one call, which share one delete), and read the result with the helper `trash` (`archiveOperationId`, `top`). Verified 2026-11-01 with `/g4-a` and `/g4-b`.
   - Overlapping-path regression: use kept Trash entries whose paths overlap. Open Trash and
     check both node ids, including later pages. Read both ids to confirm their saved paths and
-    delete ids. Do not rename a deleted folder to build this fixture: Trash names and paths are
-    frozen. To check two deletes at the same path, delete an item, create another at that path,
+    delete ids. Do not rename a deleted folder to build this fixture: Trash names and paths do
+    not change. To check two deletes at the same path, delete an item, create another at that path,
     then delete the new item. Both ids must remain in Trash.
 
 ## File Sharing Dialog

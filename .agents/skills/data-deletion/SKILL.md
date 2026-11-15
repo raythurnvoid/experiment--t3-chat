@@ -39,7 +39,7 @@ Load each companion skill that owns the affected boundary:
 - Human Messages personal state belongs to an exact workspace membership. User and organization
   member cleanup drain its joins, reads, followers, inbox receipts, summaries and member jobs.
   Cleanup subtracts stamped count contributions before deleting sources and never creates new
-  summaries. Workspace purge drains all Messages content, jobs, clocks and Move proof sidecars
+  summaries. Workspace purge drains all Messages content, jobs and clocks
   through exact tenant indexes. It runs again before each workspace structure batch, because later
   membership or grant deletion can advance a clock. The organization-wide Messages clock and
   dispatch job have a null workspace id; delete them beside the organization doc in the final

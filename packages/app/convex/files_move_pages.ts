@@ -29,7 +29,8 @@ export const descendants = internalQuery({
 	returns: paginationResultValidator(
 		v.union(doc(app_convex_schema, "files_saved_places"), doc(app_convex_schema, "files_nodes")),
 	),
-	// Read live children only. Trash items stay frozen where they were deleted, so a Move never carries them.
+	// Read live children only. Trash items keep their delete-time path, so a Move never carries them.
+	// A scope job gives them the folder's new scope later (`db_cleanup_nodes`).
 	handler: async (ctx, args) => {
 		return args.source === "before"
 			? await ctx.db

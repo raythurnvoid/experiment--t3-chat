@@ -380,16 +380,16 @@ test("a chosen folder keeps its Trash items after the restricted folder above it
 	await consent(f, pairId, chosen.folderId, "write");
 	await archive(f, goneId);
 
-	// The live chosen folder moves to the open area. The Trash file keeps its pointer at the opened folder.
+	// The live chosen folder and its Trash file move to the open area.
 	await restrict(f, outer.folderId, false);
 	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", chosen.folderId))).toMatchObject({
 		restrictedScopeNodeId: null,
 	});
 	expect(await f.t.run((ctx) => ctx.db.get("files_nodes", goneId))).toMatchObject({
-		restrictedScopeNodeId: outer.folderId,
+		restrictedScopeNodeId: null,
 	});
 
-	expect(await levels(f, pairId, goneId), "the choice compares the live areas of a Trash item").toEqual(write);
+	expect(await levels(f, pairId, goneId), "the Trash file keeps the choice in the new area").toEqual(write);
 });
 
 test("a separately selected child survives ended parent consent", async () => {

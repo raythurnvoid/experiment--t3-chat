@@ -207,6 +207,47 @@ export async function channels_notifications_db_advance_authority(ctx: WriteCont
 }
 
 /**
+ * Repair every summary of one user in one organization, after a change to their organization role.
+ * Other members keep their totals.
+ */
+export async function channels_notifications_db_enqueue_member_authority(
+	ctx: WriteContext,
+	args: { organizationId: Id<"organizations">; userId: Id<"users"> },
+) {
+	// Organization deletion removes role assignments after the summaries. Do not leave a job behind.
+	const summary = await ctx.db
+		.query("channels_summaries")
+		.withIndex("by_organization_user", (q) => q.eq("organizationId", args.organizationId).eq("userId", args.userId))
+		.first();
+	if (!summary) return;
+	const existing = await ctx.db
+		.query("channels_member_authority_jobs")
+		.withIndex("by_organization_user", (q) => q.eq("organizationId", args.organizationId).eq("userId", args.userId))
+		.unique();
+	if (existing) {
+		await ctx.db.patch("channels_member_authority_jobs", existing._id, {
+			requestedRevision: existing.requestedRevision + 1,
+		});
+		return;
+	}
+	const jobId = await ctx.db.insert("channels_member_authority_jobs", {
+		organizationId: args.organizationId,
+		userId: args.userId,
+		requestedRevision: 1,
+		passRevision: 1,
+		cursor: null,
+		dueAt: Date.now() + channels_notifications_JOB_WATCHDOG_MS,
+		scheduledId: null,
+	});
+	const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_member_authority_job, {
+		jobId,
+		expectedCursor: null,
+		expectedRevision: 1,
+	});
+	await ctx.db.patch("channels_member_authority_jobs", jobId, { scheduledId });
+}
+
+/**
  * Replace one source's contribution. Old generations were zeroed by their repair.
  */
 export async function channels_notifications_db_apply(ctx: WriteContext, source: CountSource, next: boolean) {
@@ -281,6 +322,53 @@ export async function channels_notifications_db_enqueue_sidebar(ctx: WriteContex
 		expectedRevision: 1,
 	});
 	await ctx.db.patch("channels_sidebar_jobs", jobId, { scheduledId });
+}
+
+/**
+ * Recheck the comment channel of one file after its access changed. A file without comments has no
+ * channel and nothing to recheck.
+ */
+export async function channels_notifications_db_enqueue_access(
+	ctx: WriteContext,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		fileNodeId: Id<"files_nodes">;
+	},
+) {
+	const channel = await ctx.db
+		.query("channels")
+		.withIndex("by_organization_workspace_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.fileNodeId),
+		)
+		.first();
+	if (!channel) return;
+	const existing = await ctx.db
+		.query("channels_access_jobs")
+		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+		.unique();
+	if (existing) {
+		await ctx.db.patch("channels_access_jobs", existing._id, { requestedRevision: existing.requestedRevision + 1 });
+		return;
+	}
+	const jobId = await ctx.db.insert("channels_access_jobs", {
+		channelId: channel._id,
+		organizationId: channel.organizationId,
+		workspaceId: channel.workspaceId,
+		requestedRevision: 1,
+		passRevision: 1,
+		phase: "members",
+		cursor: null,
+		dueAt: Date.now() + channels_notifications_JOB_WATCHDOG_MS,
+		scheduledId: null,
+	});
+	const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_access_job, {
+		jobId,
+		expectedCursor: null,
+		expectedPhase: "members",
+		expectedRevision: 1,
+	});
+	await ctx.db.patch("channels_access_jobs", jobId, { scheduledId });
 }
 
 export async function channels_notifications_db_enqueue_thread(ctx: WriteContext, thread: Doc<"channels_threads">) {

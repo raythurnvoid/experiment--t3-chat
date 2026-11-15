@@ -119,19 +119,36 @@ The summary pins both document IDs and revisions. A changed pin hides totals unt
 bounded repair finishes. Ordinary queued messages keep the same delayed-count notice. They must
 not reveal hidden work through an Updating state.
 
-`server/files-access-version.ts` captures these scopes beside the existing Files clocks, in the
-same mutation. Tenant, human read grant, role and membership changes use the existing field set.
+`server/files-access-version.ts` captures access changes beside the existing Files clocks, in the
+same mutation. Each change takes the smallest reset that stays correct (decided 2026-11-14):
+
+- A file, or a share on a file: only that file's comment channel is rechecked
+  (`channels_access_jobs`). Other members keep their totals.
+- A role assignment, a share with one person, or a returning membership: only that member is
+  repaired. An organization role is stored on the default workspace, so it repairs that user in
+  every workspace (`channels_member_authority_jobs`).
+- A share with a role or with "Everyone in this workspace", a role's permissions, the owner and
+  tenant changes: the workspace or organization clock advances, and every member's totals are
+  built again.
+- A folder that other items read access through: the workspace clock advances. That is a
+  restricted root, a former root whose scope job still runs, or an "Add people" root. A plain
+  folder does nothing, because a scope job writes each item inside, Trash items included.
+- Past 100 changed files and members in one mutation, each further change resets its workspace
+  or organization instead. This keeps big batches inside the Convex limits.
+
+Known limit, accepted for now: a folder share with a role or with Everyone still resets the totals
+of the whole workspace.
+
 For files, Messages compares existence, tenant, kind and the restricted/extended scope pointers.
-Names, paths, Trash state, content, sizes and dates do not change this clock. New file identities have
+Names, paths, Trash state, content, sizes and dates do not reset Messages totals. New file identities have
 no old conversation to invalidate. Inserting or deleting saved Move places is preparation or
 cleanup, not an access change.
 
-A held physical file is not the current access source. Sharing writes to its selected saved place
-invalidate immediately. Move publication instead uses `channels_move_authority_proofs`: a bounded
-pass compares each validated node's before/after access fields. Publication requires the complete
-proof for the current cohort epoch, fences and access/review pins. It advances Messages authority
-in the same transaction as the selected view only when access changes. Rename-only Move, staging,
-abort and physical cleanup keep it unchanged. Release drains the proof without deleting Files work.
+A held physical file is not the current access source. A sharing write to its selected saved
+place resets Messages totals at once. A Move does not reset them when it publishes. Its cleanup sends each published
+item through the same rules, right after it writes the final node (`db_cleanup_nodes` in
+`files_move_cohorts.ts`). So totals can be late for a short time after a Move. A short lag is
+accepted. Rename-only Move, staging and abort reset nothing.
 
 The small `server/channels-notifications.ts` leaf owns clock changes and durable dispatch. It must
 not import registered Convex handlers. Private channel member changes use that member's own
@@ -223,7 +240,8 @@ and a selection reaches all of them, like Dropbox matches deleted files by path.
 path reads only the pair's few choices, so a check costs the same for a deep tree as for a flat
 one, and a running Restore locks nothing. A Trash item keeps its delete-time path, so a
 selection reaches it while that path is inside the selected folder's current path. A Move of
-the folder does not take its Trash items along (see
+the folder does not change the path of its Trash items, so the selection stops reaching them.
+Their area and added people still follow the folder (see
 [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). A Restore that is still running gives an item of its
 own delete its new path when it reaches it. Until then the item keeps the access of its old
 path ("One simple rule beats an exact patch" in `CLAUDE.md`). One exception:
@@ -869,7 +887,7 @@ product decision, so record the answer here before changing the behaviour. An en
   question, and `content.permissions.manage` guards that in Move and `unarchive_nodes`.
   The separate Trash view lists recoverable entries through `list_trash_entries` and offers
   Restore. Normal tree and shared-item lists show live items only. A readable Trash item still
-  opens as a preview. Its scope pointers stay frozen; see
+  opens as a preview. Its access follows its folder; see
   [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore).
 - **Decided: Delete permanently needs `content.permissions.manage`.** Moving to Trash can be undone, so it
   stays at `content.write`. A permanent delete cannot, so it needs manage: on the workspace for the
@@ -1201,14 +1219,15 @@ The model:
   the same id. `restrict_node` and `unrestrict_node` refuse an item in Trash (see
   [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). They set the node's own scope
   now, then start a scope job with `files_subtree_ops_db_start_rebuild` (kind `scope`). Plugins never
-  restrict a node: a folder a plugin creates gets its parent's access. The job walks live children by
-  `parentId` and
-  writes each child's `restrictedScopeNodeId` from its live parent. A child that is its own
+  restrict a node: a folder a plugin creates gets its parent's access. The job walks all children by
+  `parentId`, live and in Trash, and writes each child's `restrictedScopeNodeId` from its parent. A
+  child that is its own
   restricted folder keeps its own scope. The first step runs inside the request, so a small folder
   is done at once, unless a Move holds the workspace: then every step, the first one too, waits for
   the Move. A bigger one leaves a hidden Activity ("Restrict files", `feedVisible: false`) only so
-  the recover cron finds the op. A Move does not use this walk: it publishes its items with their
-  new scope (see below).
+  the recover cron finds the op. A Move does not use this walk for its items: it publishes them with
+  their new scope (see below). Only a selected folder whose scope changed starts a deferred scope
+  job, for its Trash items (see [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)).
 - Until a scope job writes a child, the child keeps its stored scope. Every permission check, for
   reads and writes, trusts that stored scope. So a child of a newly restricted folder keeps its old
   access until the job rewrites it. This per-file timing is the chosen design: each file follows its
@@ -1308,9 +1327,11 @@ inside it. Everybody who had access before keeps it: added people only add acces
   no depth cap. The checker caches each root's answer per request. Cost tests in
   `files_sharing.extended.test.ts` use 64 nested folders, following the
   [Files depth test rule](../../../AGENTS.md#reads-must-scale-no-scans).
-- A Trash item keeps its delete-time pointers, because scope jobs do not rewrite Trash items
-  ([Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). So the chain trusts its first
-  root without the path check, and compares live areas
+- A Trash item follows the access of its folder: scope jobs give it the pointers its parent implies,
+  and it keeps its delete-time path
+  ([Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). Its path can differ from its
+  folder's path, so the chain trusts its first root without the path check. Until a scope job reaches
+  it, its pointers can be old. So the chain compares live areas
   (`access_control_db_resolve_live_restricted_scope`) instead of raw pointers. A plugin pair's choice
   of a restricted folder compares Trash areas the same way.
 - Known limit: a list whose rows sit under many separate deep chains of shared folders pays a

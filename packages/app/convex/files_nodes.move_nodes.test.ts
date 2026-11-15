@@ -211,12 +211,12 @@ describe("reviewed Move graph", () => {
 					path: target.path + "/" + anchor.name + "/new/shared/" + source.name,
 					restrictedScopeNodeId: target._id,
 				});
-			// A Trash item stays where it was deleted, with its old scope.
+			// A Trash item keeps its delete-time path, and follows its folder into the new scope.
 			expect(await ctx.db.get("files_nodes", archivedChild._id)).toMatchObject({
 				archiveOperationId: "old-archive",
 				path: archivedChild.path,
 				treePath: archivedChild.treePath,
-				restrictedScopeNodeId: archivedChild.restrictedScopeNodeId,
+				restrictedScopeNodeId: target._id,
 			});
 		});
 	});
@@ -961,7 +961,7 @@ describe("paged folder moves and scope jobs", () => {
 		expect(pagedMoves.count, "the folder needs more than one Move page").toBeGreaterThan(1);
 	});
 
-	test("a Move and a Rename leave Trash items as they were at delete time", async () => {
+	test("a Move and a Rename leave Trash items at their delete-time path, and give them the folder's new scope", async () => {
 		vi.useFakeTimers();
 		const f = await fixture();
 		// 36 Trash files and 4 live files in one folder: more Trash items than one Move page of 32.
@@ -1016,7 +1016,17 @@ describe("paged folder moves and scope jobs", () => {
 				path: expect.stringMatching(/^\/other\/renamed\//),
 				restrictedScopeNodeId: otherId,
 			});
-		expect(await read_trash(), "Trash items and their side docs keep every field").toEqual(before);
+		// The Move into the restricted folder starts a scope job. It changes only the scope of the Trash
+		// items and of their metadata docs, so their paths and text chunks stay.
+		const after = await read_trash();
+		expect(after.nodes, "Trash items keep every field but the scope").toEqual(
+			before.nodes.map((node) => ({ ...node, restrictedScopeNodeId: otherId })),
+		);
+		expect(after.metadataDocs).toEqual(before.metadataDocs.map((doc) => ({ ...doc, restrictedScopeNodeId: otherId })));
+		expect(after.entries, "the Trash entries list in the folder's new area").toEqual(
+			before.entries.map((entry) => ({ ...entry, area: otherId })),
+		);
+		expect(after.chunks).toEqual(before.chunks);
 		expect(
 			trashIds.filter((id) => collected.has(id)),
 			"the Move reads live children only",
@@ -1037,9 +1047,9 @@ describe("paged folder moves and scope jobs", () => {
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		// `child-0` below keeps its own scope, but the step still writes its new parent scope. One more
-		// live child than a step writes leaves work for the job. The last child is in Trash. The job skips
-		// it, so it keeps the scope of its delete time.
-		const childCount = files_subtree_ops_STEP_MAX_NODES + 2;
+		// child than a step writes leaves work for the job. The last child is in Trash. It follows its
+		// folder, so the job gives it the new scope too.
+		const childCount = files_subtree_ops_STEP_MAX_NODES + 1;
 		const trashName = `child-${childCount - 1}`;
 		const { source } = await seed_wide_source({ t, db, childCount, metadataPerNode: 0 });
 		// A restricted child keeps its own scope. The walk still goes inside it.
@@ -1073,7 +1083,7 @@ describe("paged folder moves and scope jobs", () => {
 		const activity = await t.run((ctx) => ctx.db.query("activities").first());
 		expect(activity).toMatchObject({ source: { kind: "files_subtree_op" }, feedVisible: false });
 		expect(
-			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && name !== trashName && scope !== source._id),
+			[...(await scopes())].filter(([name, scope]) => name !== "child-0" && scope !== source._id),
 			"the first step leaves one child for the job",
 		).toHaveLength(1);
 
@@ -1081,10 +1091,8 @@ describe("paged folder moves and scope jobs", () => {
 		expect(await t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 		const restricted = await scopes();
 		expect(restricted.size).toBe(childCount);
-		expect(
-			[...restricted].filter(([name, scope]) => name !== "child-0" && name !== trashName && scope !== source._id),
-		).toEqual([]);
-		expect(restricted.get(trashName), "the Trash child keeps the scope of its delete time").toBe(null);
+		expect([...restricted].filter(([name, scope]) => name !== "child-0" && scope !== source._id)).toEqual([]);
+		expect(restricted.get(trashName), "the Trash child follows its folder").toBe(source._id);
 		expect(restricted.get("child-0")).toBe(nested._id);
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", nested._id)))?.parentScopeNodeId).toBe(source._id);
 

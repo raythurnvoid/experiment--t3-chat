@@ -1709,7 +1709,7 @@ export async function files_tree_db_list_trash_entries(
 	// the running Move can differ, so this drops few rows.
 	//
 	// Do not compare the node's area with `args.area`. After an unrestrict, the entry lists in the new
-	// area while the node keeps its delete-time pointer. The list rows check each node's access.
+	// area while the node can still have its old pointer. The list rows check each node's access.
 	const nodes = await Promise.all(result.page.map((entry) => files_saved_placement_db_get_node(ctx.db, entry.nodeId)));
 	const rows = await files_tree_db_get_list_rows(ctx, {
 		userAuth,

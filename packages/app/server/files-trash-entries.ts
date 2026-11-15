@@ -7,9 +7,12 @@
 //
 // The overlay flush (`server/files-pending-overlay.ts`) and Move cleanup keep each entry true for its
 // own node: the entry goes away when the node leaves Trash or is deleted, and its delete id follows the
-// node. A node in Trash has one delete id, so it has at most one entry. The scope job of an unrestrict,
-// and Delete permanently of a restricted folder, move the entries of that folder's area to the area the
-// folder lists in (`files_trash_entries_db_set_area`).
+// node. A node in Trash has one delete id, so it has at most one entry.
+//
+// A Trash item follows its folder. When a scope job gives the item a new area, it moves the item's
+// entry too (`files_trash_entries_db_set_node_area`). The scope job of an unrestrict, and Delete
+// permanently of a restricted folder, also move the entries that still list in that folder's area to
+// the area the folder lists in (`files_trash_entries_db_set_area`).
 //
 // Leaf module: import only `convex/_generated`, `shared/`, `common/` and other leaf modules (see
 // `server/files-visible-resolve.ts`). So callers resolve the live area themselves
@@ -82,9 +85,9 @@ export async function files_trash_entries_db_delete(ctx: MutationCtx, nodeId: Do
  * Trash. Follow the node's delete id. Never insert: only producers decide that.
  *
  * Keep the entry's area. A new delete id (a Restore that skips the item, or finds its path too long)
- * leaves the item where it was in Trash. A Trash item keeps its delete-time scope fields, and only
- * `files_trash_entries_db_set_area` moves its entry, so the fields can name an old or dead area. A later
- * write of the node, for example a purge mark, must not move the entry back.
+ * leaves the item where it was in Trash. Only the scope job and `files_trash_entries_db_set_area` move
+ * an entry. The scope fields of a Trash item can name an old or dead area until a scope job reaches
+ * the item. So a later write of the node, for example a purge mark, must not move the entry back.
  */
 export async function files_trash_entries_db_sync(
 	ctx: MutationCtx,
@@ -131,6 +134,21 @@ export async function files_trash_entries_db_sync_draft_areas(
 	for (const draft of drafts)
 		if (draft.pendingArchive && draft.pendingArchive.area !== area)
 			await ctx.db.patch("files_pending_updates", draft._id, { pendingArchive: { ...draft.pendingArchive, area } });
+}
+
+/**
+ * Move the entry of one Trash item to the live `area` of its pointer, after a scope job gave the item
+ * the scope of its folder. An item that went to Trash with its folder has no entry, so nothing moves.
+ */
+export async function files_trash_entries_db_set_node_area(
+	ctx: MutationCtx,
+	args: { nodeId: Id<"files_nodes">; area: Id<"files_nodes"> | null },
+) {
+	const entry = await ctx.db
+		.query("files_trash_entries")
+		.withIndex("by_node", (q) => q.eq("nodeId", args.nodeId))
+		.unique();
+	if (entry && entry.area !== args.area) await ctx.db.patch("files_trash_entries", entry._id, { area: args.area });
 }
 
 /**

@@ -12,6 +12,7 @@ import {
 	channels_notifications_db_get_scope,
 	channels_notifications_db_get_authority_pins,
 	channels_notifications_db_has_sources,
+	channels_notifications_db_advance_member_authority,
 	channels_notifications_db_ensure_summary,
 	channels_notifications_db_start_repair,
 } from "../server/channels-notifications.ts";
@@ -108,6 +109,87 @@ export const drain_sidebar_job = internalMutation({
 			_test_batchSize: args._test_batchSize,
 		});
 		await ctx.db.patch("channels_sidebar_jobs", job._id, {
+			cursor,
+			passRevision,
+			scheduledId,
+			dueAt: Date.now() + channels_notifications_JOB_WATCHDOG_MS,
+		});
+		return null;
+	},
+});
+
+export const drain_access_job = internalMutation({
+	args: {
+		jobId: v.id("channels_access_jobs"),
+		expectedCursor: v.optional(v.union(v.string(), v.null())),
+		expectedPhase: v.optional(v.union(v.literal("members"), v.literal("inbox"), v.literal("followers"))),
+		expectedRevision: v.optional(v.number()),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const job = await ctx.db.get("channels_access_jobs", args.jobId);
+		if (
+			!job ||
+			(args.expectedCursor !== undefined && job.cursor !== args.expectedCursor) ||
+			(args.expectedPhase !== undefined && job.phase !== args.expectedPhase) ||
+			(args.expectedRevision !== undefined && job.passRevision !== args.expectedRevision)
+		)
+			return null;
+		// A file write can queue a job after the channel purge deleted the old one. Then the channel can
+		// be gone before the job runs, so delete the job.
+		if (!(await ctx.db.get("channels", job.channelId))) {
+			await ctx.db.delete("channels_access_jobs", job._id);
+			return null;
+		}
+		const options = { cursor: job.cursor, numItems: args._test_batchSize ?? BATCH_SIZE };
+		let page: { isDone: boolean; continueCursor: string };
+		if (job.phase === "members") {
+			const members = await ctx.db
+				.query("channels_members")
+				.withIndex("by_channel_user", (q) => q.eq("channelId", job.channelId))
+				.paginate(options);
+			for (const member of members.page) await channels_db_reconcile_member(ctx, member);
+			page = members;
+		} else if (job.phase === "inbox") {
+			const inbox = await ctx.db
+				.query("channels_inbox")
+				.withIndex("by_channel", (q) => q.eq("channelId", job.channelId))
+				.paginate(options);
+			for (const item of inbox.page) await channels_messages_db_reconcile_inbox(ctx, item);
+			page = inbox;
+		} else {
+			const followers = await ctx.db
+				.query("channels_thread_followers")
+				.withIndex("by_channel", (q) => q.eq("channelId", job.channelId))
+				.paginate(options);
+			for (const follower of followers.page) await channels_messages_db_reconcile_follower(ctx, follower);
+			page = followers;
+		}
+		const passDone = page.isDone && job.phase === "followers";
+		if (passDone && job.requestedRevision === job.passRevision) {
+			await ctx.db.delete("channels_access_jobs", job._id);
+			return null;
+		}
+		// A change during the pass may come after items it already checked, so start one more pass.
+		const phase = page.isDone
+			? job.phase === "members"
+				? "inbox"
+				: job.phase === "inbox"
+					? "followers"
+					: "members"
+			: job.phase;
+		const cursor = page.isDone ? null : page.continueCursor;
+		const passRevision = passDone ? job.requestedRevision : job.passRevision;
+		const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_access_job, {
+			jobId: job._id,
+			expectedCursor: cursor,
+			expectedPhase: phase,
+			expectedRevision: passRevision,
+			_test_batchSize: args._test_batchSize,
+		});
+		await ctx.db.patch("channels_access_jobs", job._id, {
+			phase,
 			cursor,
 			passRevision,
 			scheduledId,
@@ -349,14 +431,64 @@ export const drain_authority_job = internalMutation({
 	},
 });
 
+export const drain_member_authority_job = internalMutation({
+	args: {
+		jobId: v.id("channels_member_authority_jobs"),
+		expectedCursor: v.optional(v.union(v.string(), v.null())),
+		expectedRevision: v.optional(v.number()),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const job = await ctx.db.get("channels_member_authority_jobs", args.jobId);
+		if (
+			!job ||
+			(args.expectedCursor !== undefined && job.cursor !== args.expectedCursor) ||
+			(args.expectedRevision !== undefined && job.passRevision !== args.expectedRevision)
+		)
+			return null;
+		const page = await ctx.db
+			.query("channels_summaries")
+			.withIndex("by_organization_user", (q) => q.eq("organizationId", job.organizationId).eq("userId", job.userId))
+			.paginate({ cursor: job.cursor, numItems: args._test_batchSize ?? BATCH_SIZE });
+		for (const summary of page.page) {
+			const membership = await ctx.db.get("organizations_workspaces_users", summary.workspaceMembershipId);
+			const user = membership ? await ctx.db.get("users", membership.userId) : null;
+			if (membership?.active && user && user.deletedAt == null)
+				await channels_notifications_db_advance_member_authority(ctx, membership);
+		}
+		if (page.isDone && job.requestedRevision === job.passRevision)
+			await ctx.db.delete("channels_member_authority_jobs", job._id);
+		else {
+			const cursor = page.isDone ? null : page.continueCursor;
+			const passRevision = page.isDone ? job.requestedRevision : job.passRevision;
+			const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_member_authority_job, {
+				jobId: job._id,
+				expectedCursor: cursor,
+				expectedRevision: passRevision,
+				_test_batchSize: args._test_batchSize,
+			});
+			await ctx.db.patch("channels_member_authority_jobs", job._id, {
+				cursor,
+				passRevision,
+				scheduledId,
+				dueAt: Date.now() + channels_notifications_JOB_WATCHDOG_MS,
+			});
+		}
+		return null;
+	},
+});
+
 const job_kind_validator = v.union(
 	v.literal("sidebar"),
 	v.literal("thread"),
 	v.literal("inbox"),
 	v.literal("summary"),
 	v.literal("authority"),
+	v.literal("access"),
+	v.literal("member_authority"),
 );
-const JOB_KINDS = ["sidebar", "thread", "inbox", "summary", "authority"] as const;
+const JOB_KINDS = ["sidebar", "thread", "inbox", "summary", "authority", "access", "member_authority"] as const;
 
 export const retry_due_jobs = internalMutation({
 	args: {},
@@ -404,6 +536,23 @@ async function retry_job(ctx: MutationCtx, kind: (typeof JOB_KINDS)[number], id:
 			expectedPhase: job.phase,
 		});
 		await ctx.db.patch("channels_summary_jobs", job._id, { scheduledId, dueAt });
+	} else if (kind === "access") {
+		const job = (await ctx.db.get("channels_access_jobs", id as Id<"channels_access_jobs">))!;
+		const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_access_job, {
+			jobId: job._id,
+			expectedCursor: job.cursor,
+			expectedPhase: job.phase,
+			expectedRevision: job.passRevision,
+		});
+		await ctx.db.patch("channels_access_jobs", job._id, { scheduledId, dueAt });
+	} else if (kind === "member_authority") {
+		const job = (await ctx.db.get("channels_member_authority_jobs", id as Id<"channels_member_authority_jobs">))!;
+		const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_member_authority_job, {
+			jobId: job._id,
+			expectedCursor: job.cursor,
+			expectedRevision: job.passRevision,
+		});
+		await ctx.db.patch("channels_member_authority_jobs", job._id, { scheduledId, dueAt });
 	} else {
 		const job = (await ctx.db.get("channels_authority_jobs", id as Id<"channels_authority_jobs">))!;
 		const scheduledId = await ctx.scheduler.runAfter(0, internal.channels_notifications.drain_authority_job, {
@@ -437,7 +586,8 @@ export const recover_jobs_page = internalMutation({
 					kind: args.kind,
 					jobId: job._id,
 					organizationId: job.organizationId,
-					workspaceId: job.workspaceId,
+					// A member job covers one user in the whole organization, so it has no workspace.
+					workspaceId: "workspaceId" in job ? job.workspaceId : null,
 					phase: "phase" in job ? job.phase : null,
 					hasCursor: job.cursor !== null,
 					error: "Scheduled mutation failed",

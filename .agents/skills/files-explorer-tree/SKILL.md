@@ -982,7 +982,7 @@ Backend rules, limits, billing, cleanup, and Activity privacy are in
 - Move to Trash stores `archivedPathLength` only when its first trashed path is longer than 1,024.
   A missing value means the normal 1,024 limit. A trashed child keeps its value or absence when
   its folder moves or restores. Restore clears the field. A child trashed on its own keeps its
-  delete-time path when its folder moves or comes back (see the frozen Trash principle in
+  delete-time path when its folder moves or comes back (see the Trash design principle in
   [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)), and its own Restore uses its
   original allowance. Move and Save select this allowance with the saved before or after placement.
 - An item whose path gets too long while it lands, for example after it joins another restore,
@@ -1151,7 +1151,7 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   saved view. While a Move runs, a row whose node the view already shows out of Trash is left out
   until the Move cleanup fixes its entry. There is no pause and no repair job. The list does not
   compare the node's area with the entry's: after an unrestrict or Delete permanently of the area,
-  the entry lists in the area above while the node keeps its delete-time pointer, and each row
+  the entry lists in the area above, even when the node still has its old pointer, and each row
   checks the node's own access. When that area above is deleted for good too, the entry lists in the
   open area (`access_control_db_resolve_trash_entry_area`).
 - Design principle: **the step that decides an entry writes it.** An entry is a fact, never derived
@@ -1163,8 +1163,10 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
   true for its own node: delete it when the node leaves Trash or is deleted, and follow the node's
   delete id. They keep its area: a Restore Skip leaves the item where it was in Trash. So a parent
   change never needs a repair of its children. A new entry gets the live area of its item's pointer.
-  The only other writers move the entries of a restricted folder's area to the area the folder is in
-  now: the scope job of an unrestrict, and Delete permanently of that folder (see
+  The only other writers follow an access change. A scope job moves the entry of each Trash item it
+  gives a new area, because a Trash item follows the access of its folder. The scope job of an
+  unrestrict, and Delete permanently of a restricted folder, also move the entries left in that
+  folder's area to the area the folder is in now (see
   [Trash and Restore](../files-read-only/SKILL.md#trash-and-restore)). A restore or forced
   delete that ends early (Stop, timeout, a step that keeps failing, a lost membership, user
   deletion) first runs steps that give entries to the items it left in Trash (`run.ending`, Activity

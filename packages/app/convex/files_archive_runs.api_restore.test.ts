@@ -1491,9 +1491,9 @@ describe("files/trash/list", () => {
 		expect(await archive(f, [itemId])).toEqual({ _yay: null });
 		expect(await listed(restrictedId)).toEqual(["/r/x"]);
 
-		// The Trash item keeps its delete-time area. Its entry moves to the area above.
+		// The Trash item follows its folder to the area above, and its entry moves with it.
 		await set_restricted(false);
-		expect((await read_node(f, itemId)).restrictedScopeNodeId).toBe(restrictedId);
+		expect((await read_node(f, itemId)).restrictedScopeNodeId).toBeNull();
 		expect(await listed(null), "after the unrestrict, the area above lists the Trash item").toEqual(["/r/x"]);
 	});
 });

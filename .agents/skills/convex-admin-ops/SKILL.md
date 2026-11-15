@@ -289,7 +289,7 @@ Use an old-schema reset revision before deploying strict new Messages fields:
 6. Drain Messages children before parents in bounded batches. Keep the fence through the empty-table
    audit. Confirm R2 deletion after each late-PUT window; empty upload tables alone do not prove it.
 7. Compare preserved IDs, counts and hashes. Then deploy the strict schema and new producers. New
-   authority clocks or Move proofs are valid derived work; check that old source IDs do not return.
+   authority clocks or Messages jobs are valid derived work; check that old source IDs do not return.
 8. Remove the temporary reset functions, tables and indexes after the audit. Save receipts outside
    the repo. Clear only Messages draft/last-open browser keys in owned QA tabs.
 

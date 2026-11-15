@@ -2274,6 +2274,9 @@ describe("init_user_deletion", () => {
 			return after.databaseQueries.used - before.databaseQueries.used;
 		});
 		console.info("init_user_deletion, 2 organizations x 1,050 file grants", { ranges });
+		// These grants are deleted at once. Without a count before each read, the Messages capture reads
+		// one node per grant, and this mutation ends near the limit of 4,096.
+		expect(ranges, "the Messages capture must stop its node reads at its own limit").toBeLessThan(3_500);
 
 		// One batch of 1,000 file grants went in total: the public grant and 999 user grants of the first
 		// organization. The public and workspace grants went at once. The other 51 + 1,050 user grants

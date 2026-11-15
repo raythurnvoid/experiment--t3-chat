@@ -167,22 +167,8 @@ async function ready_content_review(indexBeforeReview = false) {
 			runGeneration: cohort.runJob?.generation ?? null,
 			join: false,
 		};
-		// The Messages proof reads one node per step before publication. Return the step that publishes:
-		// the proof has passed every node, so the next step completes it and publishes.
-		const proven = await t.run(async (ctx) => {
-			const proof = await ctx.db
-				.query("channels_move_authority_proofs")
-				.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
-				.unique();
-			const lastOrder = proof?.lastOrder ?? null;
-			if (lastOrder === null) return false;
-			const next = await ctx.db
-				.query("files_move_cohort_nodes")
-				.withIndex("by_cohort_order", (q) => q.eq("cohortId", cohort._id).gt("order", lastOrder))
-				.first();
-			return next === null;
-		});
-		if (cohort.phase === "ready" && proven) {
+		// A ready Move publishes in its next step. Return that step.
+		if (cohort.phase === "ready") {
 			const content = (await t.run((ctx) =>
 				ctx.db
 					.query("files_move_cohort_content")

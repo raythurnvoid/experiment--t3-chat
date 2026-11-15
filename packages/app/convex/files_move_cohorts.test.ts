@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { r2_create_asset_key } from "./r2_assets.ts";
 import { test_create_saved_placement_fixture as fixture } from "../server/files-saved-placement.test-fixtures.ts";
-import { test_convex, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
+import { test_convex, test_create_saved_text_file, test_mocks_fill_db_with, test_spy_handler } from "./setup.test.ts";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	files_saved_placement_db_get_search_generation,
@@ -20,6 +20,7 @@ import { files_ancestor_ids, files_archive_operation_id_new, files_PATH_MAX_LENG
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { channels_notifications_db_get_authority_pins } from "../server/channels-notifications.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -351,62 +352,22 @@ describe("Move cohort publication", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_move_source_reservations").collect())).toEqual([]);
 		expect(await f.t.run((ctx) => ctx.db.query("files_saved_places").collect())).toEqual([]);
-		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
 	}, 120_000);
 
-	test("rebuilds a missing Messages proof before publishing an existing cohort", async () => {
-		const f = await native_rotation(3);
-		let removed = false;
-		let checked = false;
-		const finished = await finish_cohort(f, async (cohort) => {
-			const proof = await f.t.run((ctx) => ctx.db
-				.query("channels_move_authority_proofs")
-				.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
-				.unique());
-			if (!removed && cohort.workPhase === "publish" && proof && proof.lastOrder !== null) {
-				await f.t.run((ctx) => ctx.db.delete("channels_move_authority_proofs", proof._id));
-				removed = true;
-			} else if (cohort.workPhase === "finish_content") {
-				expect(proof, "publication rebuilt a complete current proof after loss").toMatchObject({
-					complete: true,
-					changed: false,
-					proofEpoch: cohort.proofEpoch,
-					fence: cohort.fence,
-					attemptFence: cohort.attemptFence,
-					clockPins: cohort.clockPins,
-				});
-				checked = true;
-			}
-		});
-		expect(removed).toBe(true);
-		expect(checked).toBe(true);
-		expect(finished.publishedAt).not.toBeNull();
-		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
-	}, 120_000);
-
-	test("a sharing change during the Messages proof stops stale publication", async () => {
+	test("a sharing change right before publication stops the Move", async () => {
 		const f = await native_rotation(3);
 		let restricted = false;
 		const finished = await finish_cohort(f, async (cohort) => {
 			if (restricted || cohort.workPhase !== "publish") return;
-			const proof = await f.t.run((ctx) => ctx.db
-				.query("channels_move_authority_proofs")
-				.withIndex("by_cohort_epoch", (q) => q.eq("cohortId", cohort._id).eq("proofEpoch", cohort.proofEpoch))
-				.unique());
-			if (!proof || proof.lastOrder === null) return;
-			const before = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope));
 			expect(await f.asUser.mutation(api.files_sharing.restrict_node, {
 				membershipId: f.db.membershipId,
 				nodeId: f.nodes[0]!,
 			})).toEqual({ _yay: null });
-			const after = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.scope));
-			expect(after.workspaceAuthorityPin?.revision).toBe((before.workspaceAuthorityPin?.revision ?? 0) + 1);
 			restricted = true;
 		});
 		expect(restricted).toBe(true);
-		expect(finished.publishedAt, "a false proof cannot survive a selected-place sharing change").toBeNull();
+		expect(finished.publishedAt, "a selected-place sharing change cannot publish the old plan").toBeNull();
 		expect(finished.errorCode).toBe("needs_review");
-		expect(await f.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
 	}, 120_000);
 
 	test("Stop before publication keeps all old names and proposals", async () => {
@@ -791,41 +752,119 @@ async function transfer_workspace() {
 	return { t, db, asUser, folder, node, move, finish };
 }
 
+async function add_reader(w: Awaited<ReturnType<typeof transfer_workspace>>) {
+	return await w.t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: "move-reader" });
+		const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: w.db.organizationId,
+			workspaceId: w.db.workspaceId,
+			userId,
+			active: true,
+			pendingOrganizationRemoval: false,
+			updatedAt: Date.now(),
+			displayName: "",
+			sortDisplayName: "",
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: w.db.organizationId,
+			workspaceId: w.db.workspaceId,
+			userId,
+			role: "member",
+			now: Date.now(),
+		});
+		return { userId, membershipId };
+	});
+}
+
 describe("Move cohort and folder-wide jobs", () => {
-	test("Messages access changes at Move publication and stays fixed through cleanup", async () => {
+	test("a Move into a restricted folder rechecks the moved file's comments after publication", async () => {
 		const w = await transfer_workspace();
 		// The raw membership fixture has no lifetime yet. Intake must not create that authority fact here.
 		await w.t.run(async (ctx) => organizations_membership_lifetimes_db_ensure(
 			ctx, (await ctx.db.get("organizations_workspaces_users", w.db.membershipId))!,
 		));
-		const source = await w.folder("/source");
-		for (let index = 0; index < 64; index++) await w.folder(`/source/child-${index}`);
+		const file = await test_create_saved_text_file(w.t, { membershipId: w.db.membershipId, path: "/plan.md" });
 		const target = await w.folder("/restricted");
 		expect(await w.asUser.mutation(api.files_sharing.restrict_node, {
 			membershipId: w.db.membershipId,
 			nodeId: target,
 		})).toEqual({ _yay: null });
-		await w.finish();
-		const before = await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db));
-		const cohortId = await w.move(source, target, async () => !!(await w.node(source))?.moveCohortId);
-		for (let pass = 0; pass < 500; pass++) {
-			const cohort = (await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!;
-			if (cohort.publishedAt !== null) break;
-			expect(await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db)),
-				"staging and partial proof leave the old access clock intact").toEqual(before);
-			await w.t.mutation(internal.files_move_cohorts.advance, {
-				cohortId,
-				step: cohort.step,
-				runGeneration: cohort.runJob?.generation ?? null,
-				join: false,
+		const reader = await add_reader(w);
+		const asReader = w.t.withIdentity({ issuer: "https://clerk.test", external_id: reader.userId });
+		// Each comment makes its author a member of the file's channel, so both people have counts.
+		for (const [as, membershipId, mentionUserIds] of [
+			[asReader, reader.membershipId, []],
+			[w.asUser, w.db.membershipId, [reader.userId]],
+		] as const) {
+			vi.setSystemTime(Date.now() + 1_001);
+			const sent = await as.mutation(api.channels_messages.send_message, {
+				membershipId,
+				target: { kind: "file_comment", fileNodeId: file, anchorExcerpt: null },
+				clientMessageId: crypto.randomUUID(),
+				body: "Hello",
+				mentionUserIds: [...mentionUserIds],
+				fileMentionIds: [],
+				fileQuotes: [],
+				replyTo: null,
+				attachments: [],
+				alsoInChannel: false,
+				title: null,
 			});
+			if (sent._nay) throw new Error(sent._nay.message);
 		}
-		expect((await w.t.run((ctx) => ctx.db.get("files_move_cohorts", cohortId)))!.publishedAt).not.toBeNull();
-		const published = await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db));
-		expect(published.workspaceAuthorityPin?.revision, "publication invalidates old Messages counts atomically").toBe(before.workspaceAuthorityPin!.revision + 1);
 		await w.finish();
-		expect(await w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db))).toEqual(published);
-		expect(await w.t.run((ctx) => ctx.db.query("channels_move_authority_proofs").collect())).toEqual([]);
+		const totals = (as: typeof asReader, membershipId: Id<"organizations_workspaces_users">) =>
+			as.query(api.channels_notifications.get_summary, { membershipId });
+		const readerBefore = await totals(asReader, reader.membershipId);
+		expect(readerBefore).toMatchObject({ state: "delayed", mentionChannels: 1 });
+		const ownerBefore = await totals(w.asUser, w.db.membershipId);
+		expect(ownerBefore).toMatchObject({ state: "delayed" });
+		await w.move(file, target, async () => !!(await w.node(file))?.moveCohortId);
+		await w.finish();
+		expect((await w.node(file))?.parentId).toBe(target);
+		// The scope key holds the workspace clock, so any reset during the Move would change it.
+		expect(await totals(w.asUser, w.db.membershipId), "a file Move never resets other members' totals").toEqual(
+			ownerBefore,
+		);
+		const readerAfter = await totals(asReader, reader.membershipId);
+		expect(readerAfter, "the reader lost the moved file and its mention").toMatchObject({
+			state: "delayed",
+			mentionChannels: 0,
+		});
+	}, 120_000);
+
+	test('a Move of an "Add people" folder into a restricted folder resets the workspace totals', async () => {
+		const w = await transfer_workspace();
+		const reader = await add_reader(w);
+		const shared = await w.folder("/shared");
+		await test_create_saved_text_file(w.t, { membershipId: w.db.membershipId, path: "/shared/plan.md" });
+		expect(
+			await w.asUser.mutation(api.files_sharing.set_node_share_grant, {
+				membershipId: w.db.membershipId,
+				nodeId: shared,
+				principal: { kind: "user", userId: reader.userId },
+				level: "read",
+			}),
+		).toEqual({ _yay: null });
+		const target = await w.folder("/restricted");
+		expect(
+			await w.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: w.db.membershipId,
+				nodeId: target,
+			}),
+		).toEqual({ _yay: null });
+		await w.finish();
+		expect((await w.node(shared))?.extendedScopeNodeId, 'the share made the folder an "Add people" root').toBe(shared);
+		const pins = () => w.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, w.db));
+		const before = (await pins()).workspaceAuthorityPin?.revision ?? 0;
+		await w.move(shared, target, async () => !!(await w.node(shared))?.moveCohortId);
+		await w.finish();
+		expect((await w.node(shared))?.parentId).toBe(target);
+		// The file inside keeps its pointer at the moved root, so it gets no write of its own.
+		expect(
+			(await pins()).workspaceAuthorityPin?.revision ?? 0,
+			"the items inside the moved root changed access without a write of their own",
+		).toBeGreaterThan(before);
 	}, 120_000);
 
 	test("a cleaned child stays out of the Trash list while its parent still uses the published Move view", async () => {

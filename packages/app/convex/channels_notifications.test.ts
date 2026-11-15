@@ -486,6 +486,74 @@ describe("Messages access and identity", () => {
 		await send(f, { kind: "thread", rootMessageId: root.rootMessageId }, { alsoInChannel: true });
 		expect((await state())!.member!.hidden).toBe(false);
 	});
+
+	test("restricting a file rechecks only its comment channel", async () => {
+		const f = await fixture();
+		const fileNodeId = await test_run_with_flush(f.t, (ctx) =>
+			ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: f.organizationId,
+				workspaceId: f.workspaceId,
+				kind: "file",
+				name: "plan.md",
+				path: "/plan.md",
+				treePath: "/plan.md",
+				textKind: "rich_text",
+				createdBy: f.owner.userId,
+				updatedBy: f.owner.userId,
+			}),
+		);
+		// The reader's own comment makes them a member, so the mention also counts as a mention channel.
+		await send(f, { kind: "file_comment", fileNodeId, anchorExcerpt: null }, {}, f.reader);
+		await send(f, { kind: "file_comment", fileNodeId, anchorExcerpt: null }, { mentionUserIds: [f.reader.userId] });
+		const channelId = await create(f);
+		await send(f, { kind: "channel", channelId }, { mentionUserIds: [f.sender.userId] }, f.reader);
+		await settle(f);
+		const senderBefore = await summary(f, f.sender);
+		expect(await summary(f)).toMatchObject({ state: "delayed", mentionChannels: 1, unreadInbox: 1 });
+		const restricted = await f
+			.as(f.owner)
+			.mutation(api.files_sharing.restrict_node, { membershipId: f.owner.membershipId, nodeId: fileNodeId });
+		expect(restricted).toEqual({ _yay: null });
+		expect(await summary(f, f.sender), "other members keep their totals while one file is rechecked").toEqual(
+			senderBefore,
+		);
+		await settle(f);
+		expect(await summary(f), "the reader lost the file and its mention").toMatchObject({
+			state: "delayed",
+			mentionChannels: 0,
+			unreadInbox: 0,
+		});
+	});
+
+	test("an organization role change repairs only that member", async () => {
+		const f = await fixture();
+		// Two channels, so neither person's own post marks the other mention read.
+		const channelId = await create(f);
+		const otherChannelId = await create(f, "public", "other");
+		await send(f, { kind: "channel", channelId }, { mentionUserIds: [f.reader.userId] });
+		await send(f, { kind: "channel", channelId: otherChannelId }, { mentionUserIds: [f.sender.userId] }, f.reader);
+		await settle(f);
+		const senderBefore = await summary(f, f.sender);
+		const readerBefore = await summary(f);
+		expect(senderBefore).toMatchObject({ state: "delayed", unreadInbox: 1 });
+		expect(readerBefore).toMatchObject({ state: "delayed", unreadInbox: 1 });
+		// The fixture workspace is the default workspace, so this is the reader's organization role.
+		const changed = await f.as(f.owner).mutation(api.access_control.set_user_role, {
+			organizationId: f.organizationId,
+			workspaceId: f.workspaceId,
+			userId: f.reader.userId,
+			role: "viewer",
+		});
+		expect(changed).toEqual({ _yay: null });
+		expect(await summary(f, f.sender), "other members keep their totals while one member is repaired").toEqual(
+			senderBefore,
+		);
+		await settle(f);
+		const readerAfter = await summary(f);
+		expect(readerAfter, "a viewer still reads the public mention").toMatchObject({ state: "delayed", unreadInbox: 1 });
+		expect(readerAfter!.accessScopeKey, "the reader's totals were rebuilt").not.toBe(readerBefore!.accessScopeKey);
+	});
 });
 
 describe("Messages paging", () => {

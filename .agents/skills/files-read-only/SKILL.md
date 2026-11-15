@@ -277,20 +277,34 @@ Trash saves the path in `archivedPath` at the first stamp. A later stamp, rename
 item does not change it, and Restore clears it. Decided 2026-11-01: following the old parent folder
 gave too many edge cases, for example a parent that is in Trash too.
 
-Design principle (decided 2026-11-10): Trash items stay as they were at delete time, like in the
-Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore simple.
+Design principle (decided 2026-11-10, access part changed 2026-11-15): a Trash item keeps its
+delete-time path. This keeps Move, Rename and Restore simple. Its access follows its folder, like
+deleted files in Dropbox and in Google shared drives. The folder of a Trash item is its parent by
+id, not by path.
+
+Why access follows the folder: before 2026-11-15 a Trash item kept its delete-time access pointers.
+But the access check still read live folders through them. So an unrestrict opened a folder's Trash
+items, a restrict did not lock them, and nothing updated the Messages totals.
 
 - A Move or a Rename reads live children only (archive operation `null`), so it never takes Trash
-  items along. They keep their path, `treePath`, ancestors and access pointers of delete time.
+  items along. They keep their path and `treePath` of delete time, and their parent id.
+- When a Move gives a selected folder another restricted area or another "Add people" chain, its
+  cleanup starts a scope job on that folder (`db_cleanup_nodes` in `files_move_cohorts.ts`). The job
+  gives the folder's older Trash items the new scope. The job waits until the Move lets go of the
+  workspace, so the Trash items keep the old access for that short time.
 - A Rename of an item in Trash is refused: `This item is in Trash. Restore it before you rename it.`
   The Trash view does not offer Rename. Normal Files lists do not show Trash items.
 - A Restore reads only the items of its own delete. Trash items of other deletes inside a restored
-  folder stay as they are.
-- Access checks trust a Trash item's frozen pointers. The "Add people" chain trusts the item's first
-  root without the path check. The chain and a plugin choice of a restricted folder compare the live
-  areas of the pointers (`access_control_db_resolve_live_restricted_scope`), not the raw pointers. So
-  an unrestrict above a Trash item keeps its added people and plugin choices (see the
-  `access-control` skill). A plugin's choice of an open folder still matches by path.
+  folder stay in Trash with their path. When a top folder lands with another restricted area or
+  "Add people" chain than it had in Trash, the Restore starts a scope job on it (`db_restore_top` in
+  `files_archive_runs.ts`), so those older Trash items follow the folder. They keep the old access
+  until the job reaches them.
+- A Trash item's path can differ from its folder's path. So the "Add people" chain trusts the item's
+  first root without the path check. The chain and a plugin choice of a restricted folder compare the
+  live areas of the pointers (`access_control_db_resolve_live_restricted_scope`), not the raw
+  pointers. This keeps the added people and plugin choices of a Trash item right until the scope job
+  reaches it (see the `access-control` skill). A plugin's choice of an open folder still matches by
+  path.
 - A pointer at a node that was deleted for good gives no access through that restricted folder or
   workspace roles. The owner still gets in. Existing added people may still get in through the
   item's saved extended chain. Only a Trash item can hold such a pointer, because a restricted
@@ -302,23 +316,39 @@ Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore sim
   Restore of that folder would come back without them (index `by_node` of `files_subtree_op_nodes`).
   Two purges can reach the same older Trash item. One deletes it, the other finds it gone, and both
   end.
-- Scope jobs (restrict, unrestrict, Add people, plugin anchors and their cleanup) read live children
-  only. A Trash item keeps the area and "Add people" pointers of its delete time. So a restrict does
-  not lock older Trash items inside the folder: they keep the access they had when they were deleted,
-  like files in the Windows Recycle Bin.
-- An unrestrict of folder R, or Delete permanently of R, moves the Trash entries of area R to the
-  area R is in now, as paged work (`files_trash_entries_db_set_area`). The unrestrict does it at the
-  end of its scope job (`db_set_trash_entries_area` in `files_subtree_ops_rebuild.ts`), the purge
-  before it deletes R (`files_purge_db_drain_node_batch`). The Trash nodes keep their pointer at R.
-  Access follows that pointer through an opened R to its live area, and stays closed when R is gone.
-  A new Trash entry gets the live area of its item's pointer
+- Scope jobs (restrict, unrestrict, Add people, plugin anchors and their cleanup) read all children,
+  live and in Trash, and go into folders in Trash (`files_subtree_ops_db_rebuild_walk`). A Trash
+  item gets the area and "Add people" pointers that its parent implies, and keeps its path
+  (`keepPath` in `files_nodes_db_rebuild_node`). So a restrict locks the Trash items inside the
+  folder, an unrestrict opens them, and added people reach them. Like a live item, a Trash item
+  changes when the job reaches it.
+- Cost: a scope job reads the folder's Trash items too, in each pass. Its time grows with the Trash
+  history of the folder. A Restore, a Delete permanently and a Copy on the same paths wait for it.
+- Cost of the Move job, accepted 2026-11-15: no index says whether a folder has Trash items inside.
+  So every selected folder that changes scope in a Move starts the job, and the job reads all items
+  inside the folder again, live and in Trash. While it runs, the next Move item and a review in the
+  same workspace wait, like they wait for any scope job. For a small folder that is one step.
+- Cost of the Restore job, accepted 2026-11-15: the job can reach items of the Restore's own delete
+  before the Restore lands them. Those items are then written twice. The result is the same. A folder
+  lands in another scope only when its old place is gone or no scope job reached it yet, so this is
+  rare.
+- The scope job moves the Trash entry of each Trash item it writes to the item's new live area
+  (`files_trash_entries_db_set_node_area`). So a restrict moves the folder's entries into the
+  folder's Trash list, and an unrestrict moves them to the area above.
+- An unrestrict of folder R, or Delete permanently of R, also moves the entries that still list in
+  area R to the area R is in now, as paged work (`files_trash_entries_db_set_area`). The unrestrict
+  does it at the end of its scope job (`db_set_trash_entries_area` in
+  `files_subtree_ops_rebuild.ts`), the purge before it deletes R
+  (`files_purge_db_drain_node_batch`). This covers a Trash item that still points at R but is not
+  inside R by parent id. Access follows that pointer through an opened R to its live area, and stays
+  closed when R is gone. A new Trash entry gets the live area of its item's pointer
   (`access_control_db_resolve_trash_entry_area`). A later write of the node does not move it back.
 - A restrict or an unrestrict of an item in Trash is refused: `This item is in Trash. Restore it
   before you change who can open it.` This also covers turning on "Everyone in this workspace can
   view" for an open Trash item, because that restricts it. A first added person or service account
-  on an open Trash item is refused with the same text, because it would make the item a shared root
-  and change its children. More people on a Trash item that already has some, and every removal,
-  stay allowed: the people list is live, not frozen. The share dialog keeps refused actions disabled
+  on an open Trash item is refused with the same text, because a Trash item follows its folder and
+  gets no scope of its own. More people on a Trash item that already has some, and every removal,
+  stay allowed: the people list is live. The share dialog keeps refused actions disabled
   and explains that the person must restore the item first. A new plugin choice of an item in Trash
   is refused too. Existing choices keep working in Trash while applied consent allows them.
 - Removing the last person, service account or plugin choice from a Trash root leaves its saved
@@ -326,9 +356,6 @@ Windows Recycle Bin and the macOS Trash. This keeps Move, Rename and Restore sim
 
 Accepted as designed (reviewed 2026-11-10):
 
-- A later restrict of R does not move its old entries back to R. They stay in the area above as
-  locked rows ("Locked, not hidden"), with name, path, type, size and dates, for people who cannot
-  open R. R's people do not find them in R's Trash list.
 - A plugin's folder choice matches Trash items by their delete-time path. After a Move of the chosen
   folder, a new folder at the old path reaches those Trash items, and the moved folder does not.
   Path-limited API keys work the same way.
@@ -342,7 +369,8 @@ its new path or area, then walks the items of its delete inside it in later step
 job's queue can still hold folders whose items keep the old path and area. The ending walks each such
 folder by parent id, like the apply, and skips a folder whose path and area did not change. Each item
 of this delete gets its folder's path and area. Each item left in Trash alone gets its Trash entry.
-Items of other deletes keep their delete-time path and area.
+Items of other deletes keep their delete-time path. The scope job that a landing started gives
+them the folder's area.
 The ending brings back nothing more and keeps every delete stamp and the Restore counts. It keeps
 its op until this ends, so queued jobs still wait. A refusal inside a page first saves that page,
 so folders the page already changed keep their queue rows. The same rule holds for app, key and
