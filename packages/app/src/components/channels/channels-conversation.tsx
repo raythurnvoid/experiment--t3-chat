@@ -75,8 +75,10 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	onDialog: (kind: ChannelsDialogKind) => void;
 }) {
 	const { channel, state, search, onNavigate, onDialog } = props;
-	const opener = useRef<HTMLElement | null>(null);
 	const layout = useContext(ChannelsLayoutContext);
+	const localOpener = useRef<HTMLElement | null>(null);
+	// Share the opener with the panel Back button, which can close the thread too.
+	const opener = layout?.panelOpener ?? localOpener;
 	const narrow = layout?.narrow ?? false;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
@@ -117,17 +119,20 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 		opener.current =
 			globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
 		onNavigate(document._id, { thread: id });
+		layout?.showThread();
 	});
 	const closeThread = useFn(() => {
 		onNavigate(document._id);
 		requestAnimationFrame(() => opener.current?.focus({ preventScroll: true }));
 	});
 	const jump = useFn(
-		(messageId: app_convex_Id<"channels_messages">, threadRootId: app_convex_Id<"channels_messages"> | null) =>
+		(messageId: app_convex_Id<"channels_messages">, threadRootId: app_convex_Id<"channels_messages"> | null) => {
 			onNavigate(document._id, {
 				...(threadRootId ? { thread: threadRootId } : {}),
 				message: messageId,
-			}),
+			});
+			if (threadRootId) layout?.showThread();
+		},
 	);
 
 	const header = (
@@ -267,7 +272,7 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 			} satisfies ChannelsConversation_CustomAttributes)}
 		>
 			{main}
-			{/* Render the thread into the Thread tab of the Messages panel. This component still owns it, for the
+			{/* Render the thread into the Thread tab of the right panel. This component still owns it, for the
 			    opener focus, the jump target and the notice. */}
 			{rootId &&
 				layout?.threadHost &&

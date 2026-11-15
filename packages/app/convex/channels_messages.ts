@@ -1368,7 +1368,9 @@ export const agent_read = internalQuery({
 		since: v.optional(v.number()),
 		until: v.optional(v.number()),
 		rootMessageId: v.optional(v.string()),
-		/** Read newest first. Callers do not combine it with `since` or `until`. */
+		/**
+		 * Read newest first. Callers do not combine it with `since` or `until`.
+		 */
 		latest: v.optional(v.boolean()),
 		paginationOpts: paginationOptsValidator,
 	},
@@ -1403,26 +1405,23 @@ export const agent_read = internalQuery({
 		// thread's replies. Each page is returned in time order. The root is older than every reply, so it
 		// goes in front of the last page.
 		if (args.latest) {
-			const rows = await (
-				rootMessageId
-					? ctx.db
-							.query("channels_messages")
-							.withIndex("by_threadRoot_listed_threadSequence", (q) =>
-								q.eq("threadRootId", rootMessageId).eq("listed", true),
-							)
-					: ctx.db
-							.query("channels_messages")
-							.withIndex("by_channel_listed_mainSequence", (q) =>
-								q.eq("channelId", channelId).eq("listed", true).gt("mainSequence", null),
-							)
-			)
-				.order("desc")
-				.paginate({
-					...args.paginationOpts,
-					numItems,
-					maximumRowsRead: numItems,
-					maximumBytesRead: channels_LIMITS.pageBytes,
-				});
+			const query = rootMessageId
+				? ctx.db
+						.query("channels_messages")
+						.withIndex("by_threadRoot_listed_threadSequence", (q) =>
+							q.eq("threadRootId", rootMessageId).eq("listed", true),
+						)
+				: ctx.db
+						.query("channels_messages")
+						.withIndex("by_channel_listed_mainSequence", (q) =>
+							q.eq("channelId", channelId).eq("listed", true).gt("mainSequence", null),
+						);
+			const rows = await query.order("desc").paginate({
+				...args.paginationOpts,
+				numItems,
+				maximumRowsRead: numItems,
+				maximumBytesRead: channels_LIMITS.pageBytes,
+			});
 			const messages = [...(rows.isDone && rootMessage ? [rootMessage] : []), ...rows.page.toReversed()];
 			const shaped = await Promise.all(messages.map((message) => shape_message(ctx, { ...context._yay, message })));
 			return Result({

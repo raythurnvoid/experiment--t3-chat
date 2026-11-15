@@ -37,9 +37,9 @@ type ChannelsContent_ClassNames =
 	| "ChannelsContent-empty"
 	| "ChannelsContent-status"
 	| "ChannelsContent-panel-toolbar"
-	| "ChannelsContent-panel-tabs"
-	| "ChannelsContent-panel-tab"
-	| "ChannelsContent-panel-thread";
+	| "ChannelsContent-panel-tabs-panels"
+	| "ChannelsContent-panel-tabs-panel"
+	| "ChannelsContent-thread-host";
 type ChannelsContent_CustomAttributes = { "data-channel-access": "allowed" | "missing" | "none" };
 
 export const Channels = memo(function Channels(props: ComponentProps<typeof ChannelsContent>) {
@@ -96,7 +96,7 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	const [collapsed, setCollapsed] = useState<string[]>([]);
 	const [sidebarOpen, setSidebarOpen] = useAppLocalStorageStateValue("app_state::sidebar::channels_open");
 	const [sidebarWidth, setSidebarWidth] = useAppLocalStorageStateValue("app_state::channels_sidebar_width");
-	const [panelWidth, setPanelWidth] = useAppLocalStorageStateValue("app_state::channels_thread_width");
+	const [panelWidth, setPanelWidth] = useAppLocalStorageStateValue("app_state::channels_panel_width");
 	const region = useRef<HTMLDivElement>(null);
 	const sidebarFocus = useRef<{ element: HTMLElement; memberId: string | null } | null>(null);
 	const sidebarPanel = useRef<ImperativePanelHandle>(null);
@@ -107,28 +107,34 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	const [width, setWidth] = useState(0);
 	const [threadHost, setThreadHost] = useState<HTMLDivElement | null>(null);
 	const [narrowPanel, setNarrowPanel] = useState(false);
-	const [tabChoice, setTabChoice] = useState<{ tab: "thread" | "agent"; rootId: string | null }>({
-		tab: "agent",
-		rootId: null,
-	});
+	// Only a loaded conversation renders the thread. Without one, the Thread tab would stay blank.
 	const hasThread =
 		view === "messages" &&
+		!!channel &&
+		!!state &&
 		!!(
 			search.thread ||
 			(search.message &&
-				channel &&
 				(channel.channel.kind === "file" ||
 					((channel.channel.kind === "public" || channel.channel.kind === "private") &&
 						channel.channel.layout === "posts")))
 		);
 	const rootId = hasThread ? (search.thread ?? search.message ?? null) : null;
-	// A tab the user picked holds while the same thread stays open. A new thread selects Thread, and no thread
-	// falls back to Agent. Work it out in render, so the thread composer can take focus in the same render.
-	const tab = tabChoice.rootId === rootId ? tabChoice.tab : rootId ? "thread" : "agent";
+	const [tab, setTab] = useState<"thread" | "agent">(rootId ? "thread" : "agent");
+	const [tabRootId, setTabRootId] = useState(rootId);
+	// A tab the user picked holds while the same thread stays open. Another thread selects Thread, and no
+	// thread falls back to Agent. Reset it during render, so the new thread never shows on the old tab.
+	if (tabRootId !== rootId) {
+		setTabRootId(rootId);
+		setTab(rootId ? "thread" : "agent");
+	}
 
 	// Like Files: from 820px the right panel is always a column, and the channel list follows the user's own
 	// open flag. The list shows as a column only when list 220 + conversation 360 + panel 360 fit.
 	const narrow = width < 820;
+	// The panel opened from the Agent button covers the conversation only while narrow. Forget it when the
+	// window gets wider, so it does not cover the conversation again later by itself.
+	if (!narrow && narrowPanel) setNarrowPanel(false);
 	const panelVisible = !narrow || !!rootId || narrowPanel;
 	const sidebarFits = width >= 944;
 	const sidebarVisible = sidebarOpen && sidebarFits;
@@ -144,8 +150,11 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 	});
 	const openPanel = useFn((opener: HTMLElement) => {
 		panelOpener.current = opener;
-		setTabChoice({ tab: "agent", rootId });
+		setTab("agent");
 		setNarrowPanel(true);
+		// The panel hides the button that opened it. Move focus into the panel, so the keyboard does not start
+		// again from the top of the page.
+		requestAnimationFrame(() => document.getElementById(CHANNELS_PANEL_TAB_ID_AGENT)?.focus({ preventScroll: true }));
 	});
 	const closePanel = useFn(() => {
 		setNarrowPanel(false);
@@ -153,8 +162,9 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 		if (rootId && selectedId) open(selectedId);
 		requestAnimationFrame(() => panelOpener.current?.focus({ preventScroll: true }));
 	});
+	const showThread = useFn(() => setTab("thread"));
 	const changeTab = useFn((id: string | null | undefined) => {
-		if (id) setTabChoice({ tab: id === CHANNELS_PANEL_TAB_ID_THREAD ? "thread" : "agent", rootId });
+		if (id) setTab(id === CHANNELS_PANEL_TAB_ID_THREAD ? "thread" : "agent");
 	});
 	const sidebar = (
 		<ChannelsSidebar
@@ -290,10 +300,26 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 					narrow,
 					threadHost,
 					openPanel: narrow ? openPanel : null,
+					panelOpener,
+					showThread,
 				}}
 			>
 				<MyPanelGroup
 					direction="horizontal"
+					// Double-click on a resize handle goes back to the default widths in storage.ts.
+					defaultLayout={
+						narrow
+							? undefined
+							: [
+									sidebarVisible ? (240 / available) * 100 : 0,
+									100 - (((sidebarVisible ? 240 : 0) + 380) / available) * 100,
+									(380 / available) * 100,
+								]
+					}
+					onLayoutReset={() => {
+						setSidebarWidth(240);
+						setPanelWidth(380);
+					}}
 					onLayout={(layout) => {
 						sidebarLayout.current = layout[0]!;
 						rightLayout.current = layout[layout.length - 1]!;
@@ -388,14 +414,14 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 									<MyTabsTab id={CHANNELS_PANEL_TAB_ID_AGENT}>Agent</MyTabsTab>
 								</MyTabsList>
 							</div>
-							<MyTabsPanels className={"ChannelsContent-panel-tabs" satisfies ChannelsContent_ClassNames}>
+							<MyTabsPanels className={"ChannelsContent-panel-tabs-panels" satisfies ChannelsContent_ClassNames}>
 								<MyTabsPanel
-									className={"ChannelsContent-panel-tab" satisfies ChannelsContent_ClassNames}
+									className={"ChannelsContent-panel-tabs-panel" satisfies ChannelsContent_ClassNames}
 									tabId={CHANNELS_PANEL_TAB_ID_THREAD}
 								>
 									<div
 										ref={setThreadHost}
-										className={"ChannelsContent-panel-thread" satisfies ChannelsContent_ClassNames}
+										className={"ChannelsContent-thread-host" satisfies ChannelsContent_ClassNames}
 									></div>
 									{!rootId && (
 										<p className={"ChannelsContent-empty" satisfies ChannelsContent_ClassNames}>
@@ -404,7 +430,7 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 									)}
 								</MyTabsPanel>
 								<MyTabsPanel
-									className={"ChannelsContent-panel-tab" satisfies ChannelsContent_ClassNames}
+									className={"ChannelsContent-panel-tabs-panel" satisfies ChannelsContent_ClassNames}
 									tabId={CHANNELS_PANEL_TAB_ID_AGENT}
 								>
 									<FileEditorSidebarAgent isActive={panelVisible && tab === "agent"} pluginPage={null} />

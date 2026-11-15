@@ -17,6 +17,7 @@ export const ChannelsPaneHeader = memo(function ChannelsPaneHeader(props: {
 }) {
 	const { title, showSidebarToggle = true, onBack, backLabel = "Back to channel", children } = props;
 	const layout = useContext(ChannelsLayoutContext);
+	const openPanel = layout?.openPanel ?? null;
 	return (
 		<header className={"ChannelsPaneHeader" satisfies ChannelsPaneHeader_ClassNames}>
 			{onBack ? (
@@ -30,8 +31,8 @@ export const ChannelsPaneHeader = memo(function ChannelsPaneHeader(props: {
 			) : null}
 			<div className={"ChannelsPaneHeader-title" satisfies ChannelsPaneHeader_ClassNames}>{title}</div>
 			{children}
-			{showSidebarToggle && !onBack && layout?.openPanel ? (
-				<MyButton aria-expanded={false} onClick={(event) => layout.openPanel!(event.currentTarget)}>
+			{showSidebarToggle && !onBack && openPanel ? (
+				<MyButton aria-expanded={false} onClick={(event) => openPanel(event.currentTarget)}>
 					<Bot size={16} />
 					Agent
 				</MyButton>

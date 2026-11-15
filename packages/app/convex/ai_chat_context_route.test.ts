@@ -524,6 +524,56 @@ describe("/api/chat screen info", () => {
 		]);
 	});
 
+	test("keeps the screen info of a thread whose title is empty", async () => {
+		const args = await setup();
+		const general = await args.asUser.mutation(api.channels.create_channel, {
+			membershipId: args.membership.membershipId,
+			kind: "public",
+			name: "general",
+			topic: "",
+			layout: "messages",
+		});
+		const root = await args.asUser.mutation(api.channels_messages.send_message, {
+			membershipId: args.membership.membershipId,
+			target: { kind: "channel", channelId: general._yay!.channelId },
+			clientMessageId: "root",
+			body: "Root",
+			mentionUserIds: [],
+			fileMentionIds: [],
+			fileQuotes: [],
+			replyTo: null,
+			attachments: [],
+			alsoInChannel: false,
+			title: null,
+		});
+		// The UI never sends an empty title, but the public mutation accepts one.
+		await args.asUser.mutation(api.channels_messages.set_thread_title, {
+			membershipId: args.membership.membershipId,
+			rootMessageId: root._yay!.messageId,
+			title: "",
+		});
+
+		const response = await send(args, {
+			node: null,
+			view: null,
+			plugin: null,
+			channel: {
+				channelId: general._yay!.channelId,
+				kind: "public",
+				name: "#general",
+				threadRootId: root._yay!.messageId,
+				threadTitle: null,
+			},
+		});
+		expect(response.status, await response.text()).toBe(200);
+		const modelInput = JSON.stringify(
+			(model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages,
+		);
+		expect(modelInput, "an empty thread title must not hide the whole screen info").toContain(
+			`Open channel: \\"#general\\"`,
+		);
+	});
+
 	test("drops a channel of another team with the whole part", async () => {
 		const args = await setup();
 		const other = await args.t.run((ctx) =>

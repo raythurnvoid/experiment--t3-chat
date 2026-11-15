@@ -57,7 +57,7 @@ vi.mock("@/lib/storage.ts", async (importOriginal) => {
 					? true
 					: key.includes("sidebar_width")
 						? 240
-						: key.includes("thread_width")
+						: key.includes("panel_width")
 							? 380
 							: null,
 			),
@@ -414,6 +414,12 @@ test("the panel selects Thread for a new thread, keeps a picked tab, and covers 
 	await waitFor(() => expect(selected("Thread")).toBe("true"));
 	act(() => model.setSearch!({}));
 	await waitFor(() => expect(selected("Agent"), "closing the thread must fall back to Agent").toBe("true"));
+	await userEvent.click(screen.getByRole("tab", { name: "Thread" }));
+	act(() => model.setSearch!({ thread: "root-3" }));
+	act(() => model.setSearch!({}));
+	await waitFor(() =>
+		expect(selected("Agent"), "a tab picked with no thread must not come back after a thread closes").toBe("true"),
+	);
 
 	const shell = view.container.querySelector<HTMLElement>('[style*="1200px"]')!;
 	shell.style.width = "700px";
@@ -424,9 +430,20 @@ test("the panel selects Thread for a new thread, keeps a picked tab, and covers 
 		model.channelReady = false;
 		changed();
 	});
+	act(() => model.setSearch!({ thread: "root-4" }));
+	expect(
+		getComputedStyle(screen.getByText("Loading channel…").closest<HTMLElement>(".MyPanel")!).display,
+		"a thread link must not cover a channel that has not loaded",
+	).not.toBe("none");
+	act(() => model.setSearch!({}));
 	const toggle = await screen.findByRole("button", { name: "Agent" });
 	await userEvent.click(toggle);
 	await screen.findByText("Agent chat active");
+	await waitFor(() =>
+		expect(document.activeElement, "opening the panel must move focus into it").toBe(
+			screen.getByRole("tab", { name: "Agent" }),
+		),
+	);
 	expect(getComputedStyle(screen.getByText("Loading channel…").closest<HTMLElement>(".MyPanel")!).display).toBe("none");
 	await userEvent.click(screen.getByRole("button", { name: "Back to channel" }));
 	await screen.findByText("Agent chat hidden");

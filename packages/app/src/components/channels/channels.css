@@ -52,13 +52,13 @@
 		background: var(--color-base-1-03);
 		border-bottom: 1px solid var(--color-fg-02);
 	}
-	.ChannelsContent-panel-tabs {
+	.ChannelsContent-panel-tabs-panels {
 		display: flex;
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
 	}
-	.ChannelsContent-panel-tab {
+	.ChannelsContent-panel-tabs-panel {
 		display: flex;
 		flex: 1;
 		flex-direction: column;
@@ -67,7 +67,7 @@
 			display: none;
 		}
 	}
-	.ChannelsContent-panel-thread {
+	.ChannelsContent-thread-host {
 		display: flex;
 		flex-direction: column;
 		min-height: 0;

@@ -26,7 +26,7 @@ import {
 const USAGE =
 	"Usage: channels ls [--kind public|private|direct|file]\n" +
 	"Usage: channels members <reference>\n" +
-	"Usage: channels read <reference> [--latest | --since DATE --until DATE] [--thread ROOT_ID] [--format text|json]\n" +
+	"Usage: channels read <reference> [--latest] [--since DATE] [--until DATE] [--thread ROOT_ID] [--format text|json]\n" +
 	"Usage: channels search <words> [--in reference] [--from USER_ID] [--attachments true|false] [--since DATE] [--until DATE] [--format text|json]\n" +
 	"All commands: [--workspace current|home] [--limit 1..50] [--cursor CURSOR]\n";
 const date_schema = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
@@ -222,7 +222,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			: await bash_cursor_id_create(ctx, source.userId, JSON.stringify({ key, cursor: page.continueCursor }));
 		// Print the clamped `--limit`, so the next page does not repeat the over-max note.
 		const next = nextCursor
-			? `${options.latest ? "Older messages" : "Next page"}: channels ${[
+			? `Next page: channels ${[
 					...args
 						.filter(
 							(arg, index) =>

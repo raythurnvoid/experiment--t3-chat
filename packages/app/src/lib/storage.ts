@@ -146,7 +146,7 @@ const storage_local_schema = {
 		defaultValue: 240,
 	}),
 
-	"app_state::channels_thread_width": define_field<"app_state::channels_thread_width", number>({
+	"app_state::channels_panel_width": define_field<"app_state::channels_panel_width", number>({
 		parse: (raw) => (raw !== null && Number.isFinite(Number(raw)) ? Math.max(360, Math.min(480, Number(raw))) : 380),
 		serialize: (value) => String(value),
 		defaultValue: 380,

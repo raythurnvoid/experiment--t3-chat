@@ -88,7 +88,8 @@ async function get_readable_thread(
 		.unique();
 	// An unsaved anchored comment is visible only to its author, like in `channels_messages_db_is_visible`.
 	if (thread?.anchor && thread.anchor.confirmedAt === null && root.authorUserId !== membership.userId) return null;
-	return { threadRootId: root._id, threadTitle: thread?.title ?? null };
+	// Store an empty title as null. The schema refuses an empty string, and one bad part would hide the whole info.
+	return { threadRootId: root._id, threadTitle: thread?.title || null };
 }
 
 /**
@@ -117,7 +118,6 @@ export async function ai_chat_ui_context_db_rewrite_parts(
 		node = fileNode ? { fileNodeId: fileNode._id, path: fileNode.path, kind: fileNode.kind } : null;
 	}
 
-	// A thread root that is not a visible root of the same channel becomes null.
 	let channel: ai_chat_UiContext["channel"] = null;
 	const sentChannel = context._yay.channel;
 	const readable = sentChannel?.channelId

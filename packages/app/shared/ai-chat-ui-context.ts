@@ -1,5 +1,6 @@
 import z from "zod";
 import { Result } from "common/errors-as-values-utils.ts";
+import { channels_LIMITS } from "./channels.ts";
 import { files_STORED_PATH_MAX_LENGTH } from "./files.ts";
 
 /**
@@ -45,7 +46,7 @@ export const ai_chat_ui_context_schema = z
 				kind: z.enum(["public", "private", "direct", "file"]),
 				name: z.string().min(1).max(1000),
 				threadRootId: z.string().min(1).max(128).nullable(),
-				threadTitle: z.string().min(1).max(200).nullable(),
+				threadTitle: z.string().min(1).max(channels_LIMITS.title).nullable(),
 			})
 			.strict()
 			.nullable(),
@@ -81,17 +82,17 @@ export function ai_chat_ui_context_validate_parts(parts: unknown) {
 }
 
 /**
- * Write a value as one JSON string with `<` and `>` escaped. A plugin title or a file name could
- * hold a newline and `</ui_context>`. Without quoting, the text after it would read like the user's
- * own words.
+ * Write a value as one JSON string with `<` and `>` escaped. A plugin title, a file name, a channel
+ * name or a thread title could hold a newline and `</ui_context>`. Without quoting, the text after
+ * it would read like the user's own words.
  */
 function quote(value: string) {
 	return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
 }
 
 /**
- * The text the model reads. Plugin titles come from plugin manifests, so the system prompt tells
- * the model to treat this block as data.
+ * The text the model reads. Plugin titles come from plugin manifests, and other people write channel
+ * names and thread titles. So the system prompt tells the model to treat this block as data.
  */
 export function ai_chat_ui_context_to_model_text(context: ai_chat_UiContext) {
 	const lines = ["<ui_context>"];

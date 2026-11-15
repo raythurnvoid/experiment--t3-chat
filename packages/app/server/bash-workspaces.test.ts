@@ -223,10 +223,7 @@ describe("channels", () => {
 
 		const latest = await f.run("channels read '#general' --latest --limit 1", false);
 		expect(latest.stdout).toContain("Not in the thread");
-		expect(latest.stdout).toContain("Older messages: ");
-
-		const both = await f.run("channels read '#general' --latest --since 2026-01-01", false);
-		expect(both.stderr).toContain("Use --latest or --since/--until, not both");
+		expect(latest.stdout, "--latest must print Next page, the label that cut output keeps").toContain("Next page: ");
 	});
 	test("keeps a short cursor bound to its workspace and filters", async () => {
 		const f = await fixture();
@@ -343,6 +340,7 @@ describe("channels", () => {
 			"channels read '#general' --since 2026-02-30",
 			"channels read '#general' --until 2026-09",
 			"channels read '#general' --since 2026-10-03 --until 2026-10-02",
+			"channels read '#general' --latest --since 2026-01-01",
 			"channels ls --workspace third",
 			"channels ls --limit nope",
 			"channels ls --limit 1 --limit 2",

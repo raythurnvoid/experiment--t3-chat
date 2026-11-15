@@ -1,6 +1,6 @@
 import "@/app.css";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { useState, type ComponentProps } from "react";
+import { useRef, useState, type ComponentProps } from "react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
@@ -148,6 +148,7 @@ function fixture(): Pick<ComponentProps<typeof ChannelsConversation>, "channel" 
 function Conversation(props: { width: number; narrow: boolean }) {
 	const [search, setSearch] = useState<ChannelsSearch>({});
 	const [threadHost, setThreadHost] = useState<HTMLDivElement | null>(null);
+	const panelOpener = useRef<HTMLElement | null>(null);
 	const covered = props.narrow && !!search.thread;
 	return (
 		<ChannelsLayoutContext
@@ -158,6 +159,8 @@ function Conversation(props: { width: number; narrow: boolean }) {
 				narrow: props.narrow,
 				threadHost,
 				openPanel: null,
+				panelOpener,
+				showThread: () => {},
 			}}
 		>
 			<div style={{ display: "flex", width: props.width, height: 700 }}>

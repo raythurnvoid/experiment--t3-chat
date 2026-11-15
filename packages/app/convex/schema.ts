@@ -9748,7 +9748,7 @@ const app_convex_schema = defineSchema({
 		deletedAt: v.union(v.number(), v.null()),
 		/**
 		 * False when readers never see the message: deleted, and not a root that still has replies.
-		 * Message pages read only listed rows, so deleted messages cost nothing however many there are.
+		 * Message pages read only listed docs, so deleted messages cost nothing however many there are.
 		 */
 		listed: v.boolean(),
 	})
@@ -9756,7 +9756,7 @@ const app_convex_schema = defineSchema({
 		.index("by_threadRoot_listed_threadSequence", ["threadRootId", "listed", "threadSequence"])
 		// The agent reads one thread's replies in a time window. Convex adds `_creationTime` at the end.
 		.index("by_threadRoot_listed", ["threadRootId", "listed"])
-		// A purge reads every row of a channel with only `channelId`.
+		// A purge reads every doc of a channel with only `channelId`.
 		.index("by_channel_listed", ["channelId", "listed"])
 		.index("by_authorMembership_clientMessageId", ["authorWorkspaceMembershipId", "clientMessageId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
