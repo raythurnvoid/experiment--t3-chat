@@ -3958,3 +3958,41 @@ export async function public_api_files_organize_http_jobs_get(args: {
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
+
+/**
+ * Temporary, for one run: erase the refused items that API delete, restore, move and copy jobs saved
+ * before refused items had an `errorCode`. The next schema requires the code, so these items must go
+ * first. Delete this function after the run.
+ *
+ * It reads one page per call. It runs once in the background, and no user waits on it.
+ */
+export const erase_refused_without_error_code = internalMutation({
+	args: {
+		table: v.union(v.literal("files_archive_runs"), v.literal("files_transfer_runs")),
+		cursor: v.union(v.string(), v.null()),
+	},
+	returns: v.object({ erased: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		let erased = 0;
+
+		if (args.table === "files_archive_runs") {
+			const page = await ctx.db.query("files_archive_runs").paginate({ numItems: 100, cursor: args.cursor });
+			for (const run of page.page) {
+				if (run.apiRequest && run.apiRequest.refused.length > 0) {
+					erased += run.apiRequest.refused.length;
+					await ctx.db.patch(run._id, { apiRequest: { ...run.apiRequest, refused: [] } });
+				}
+			}
+			return { erased, continueCursor: page.continueCursor, isDone: page.isDone };
+		}
+
+		const page = await ctx.db.query("files_transfer_runs").paginate({ numItems: 100, cursor: args.cursor });
+		for (const run of page.page) {
+			if (run.origin.kind === "api" && run.origin.refused.length > 0) {
+				erased += run.origin.refused.length;
+				await ctx.db.patch(run._id, { origin: { ...run.origin, refused: [] } });
+			}
+		}
+		return { erased, continueCursor: page.continueCursor, isDone: page.isDone };
+	},
+});
