@@ -83,10 +83,10 @@ export function ai_chat_ui_context_validate_parts(parts: unknown) {
 
 /**
  * Write a value as one JSON string with `<` and `>` escaped. A plugin title, a file name, a channel
- * name or a thread title could hold a newline and `</ui_context>`. Without quoting, the text after
- * it would read like the user's own words.
+ * name, a thread title or quoted file text could hold a newline and `</ui_context>`. Without quoting,
+ * the text after it would read like the user's own words.
  */
-function quote(value: string) {
+export function ai_chat_ui_context_quote(value: string) {
 	return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
 }
 
@@ -96,11 +96,11 @@ function quote(value: string) {
  */
 export function ai_chat_ui_context_to_model_text(context: ai_chat_UiContext) {
 	const lines = ["<ui_context>"];
-	if (context.node) lines.push(`Open ${context.node.kind}: ${quote(context.node.path)}`);
-	if (context.view) lines.push(`View: ${quote(context.view)}`);
+	if (context.node) lines.push(`Open ${context.node.kind}: ${ai_chat_ui_context_quote(context.node.path)}`);
+	if (context.view) lines.push(`View: ${ai_chat_ui_context_quote(context.view)}`);
 	if (context.plugin) {
 		lines.push(
-			`${context.plugin.kind === "page" ? "Plugin page" : "Plugin view"}: ${quote(context.plugin.title)} (plugin ${quote(context.plugin.pluginName)})`,
+			`${context.plugin.kind === "page" ? "Plugin page" : "Plugin view"}: ${ai_chat_ui_context_quote(context.plugin.title)} (plugin ${ai_chat_ui_context_quote(context.plugin.pluginName)})`,
 		);
 	}
 	if (context.channel) {
@@ -109,11 +109,11 @@ export function ai_chat_ui_context_to_model_text(context: ai_chat_UiContext) {
 		const kind =
 			channel.kind === "file" ? "file comments" : channel.kind === "direct" ? "direct message" : channel.kind;
 		lines.push(
-			`Open channel: ${quote(channel.name)} (${kind}${channel.channelId ? `, id ${quote(channel.channelId)}` : ""})`,
+			`Open channel: ${ai_chat_ui_context_quote(channel.name)} (${kind}${channel.channelId ? `, id ${ai_chat_ui_context_quote(channel.channelId)}` : ""})`,
 		);
 		if (channel.threadRootId || channel.threadTitle) {
 			lines.push(
-				`Open thread${channel.threadTitle ? `: ${quote(channel.threadTitle)}` : ""}${channel.threadRootId ? ` (root message id ${quote(channel.threadRootId)})` : ""}`,
+				`Open thread${channel.threadTitle ? `: ${ai_chat_ui_context_quote(channel.threadTitle)}` : ""}${channel.threadRootId ? ` (root message id ${ai_chat_ui_context_quote(channel.threadRootId)})` : ""}`,
 			);
 		}
 	}

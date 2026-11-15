@@ -119,6 +119,16 @@ describe("thread_run_begin", () => {
 		const sent = await fx.t.mutation(internal.ai_chat.thread_run_begin, args);
 		expect(sent._nay).toBeUndefined();
 		await answer_turn({ fx, run: sent._yay!, text: "Answer" });
+		const readableHistory = await fx.t.query(internal.ai_chat_runs.history_page, {
+			threadId: fx.source.threadId,
+			fromId: sent._yay!.replyId,
+			usedBytes: 0,
+			maxBytes: 100_000,
+			hasUserMessage: false,
+		});
+		expect(JSON.stringify(readableHistory), "AI history must name a readable quoted file").toContain(
+			"private-quote.md",
+		);
 		await fx.t.run((ctx) => ctx.db.patch("files_nodes", fileNodeId, { archiveOperationId: "archived" }));
 		const branch = await fx.asUser.query(api.ai_chat_runs.branch_page, {
 			membershipId: fx.db.membershipId,

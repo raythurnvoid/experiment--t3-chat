@@ -294,7 +294,7 @@ describe("/api/chat tool call repair", () => {
 });
 
 describe("/api/chat file quotes", () => {
-	test("hands the model selected text and keeps file details out of model input", async () => {
+	test("hands the model the selected text and the file's current path, and stores no path", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const fileNodeId = await test_create_saved_text_file(t, {
 			membershipId: membership.membershipId,
@@ -332,7 +332,11 @@ describe("/api/chat file quotes", () => {
 			"These selected words",
 		);
 		expect(JSON.stringify(call.messages)).not.toContain(fileNodeId);
-		expect(JSON.stringify(call.messages)).not.toContain("protected-source.md");
+		expect(JSON.stringify(call.messages), "model input must name the quoted file").toContain(
+			'Quoted from \\"/protected-source.md\\"',
+		);
+		const stored = await t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
+		expect(JSON.stringify(stored), "the stored quote must not copy the path").not.toContain("protected-source.md");
 	});
 
 	test("rejects copied paths and bad quote fields before the model runs", async () => {

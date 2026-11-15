@@ -26,7 +26,7 @@ import { get_id_generator } from "../shared/generated-ids.ts";
 import { ai_chat_DEFAULT_MODEL_ID } from "../shared/ai-chat.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { file_quotes_part_schema } from "../shared/file-quotes.ts";
-import { file_quotes_db_shape } from "./file_quotes.ts";
+import { file_quotes_db_model_text, file_quotes_db_shape } from "./file_quotes.ts";
 import { ai_chat_ui_context_part_schema } from "../shared/ai-chat-ui-context.ts";
 import { ai_chat_ui_context_db_shape } from "./ai_chat_ui_context.ts";
 
@@ -216,11 +216,15 @@ async function db_is_on_branch(
 /**
  * The UI message of a node. A reply node has no `parts` in its content: it keeps them in its step
  * docs, in step order. A reply has at most 25 steps.
+ *
+ * For the model, a quote turns into text with the file's current path. The browser keeps the stored
+ * quote part and reads names from the current file query.
  */
 async function db_ui_message(
 	ctx: QueryCtx | MutationCtx,
 	node: Doc<"ai_chat_threads_messages_aisdk_5">,
 	membership: Doc<"organizations_workspaces_users"> | null,
+	target: "branch" | "model",
 ) {
 	const steps = Array.isArray(node.content.parts)
 		? []
@@ -244,6 +248,13 @@ async function db_ui_message(
 		}
 		const quote = file_quotes_part_schema.safeParse(part);
 		if (!quote.success) continue;
+		if (target === "model") {
+			shapedParts.push({
+				type: "text",
+				text: await file_quotes_db_model_text(ctx, { membership, quote: quote.data.data }),
+			});
+			continue;
+		}
 		const [data] = await file_quotes_db_shape(ctx, { membership, quotes: [quote.data.data] });
 		shapedParts.push({ type: "data-file-quote", data });
 	}
@@ -1206,7 +1217,7 @@ export const branch_page = query({
 				clientGeneratedMessageId: node.clientGeneratedMessageId,
 				status: node.status,
 				version: node.version,
-				content: await db_ui_message(ctx, node, membership),
+				content: await db_ui_message(ctx, node, membership, "branch"),
 				siblingIds,
 			});
 			bytes += node.bytes;
@@ -1311,7 +1322,7 @@ export const history_page = internalQuery({
 				id: node._id,
 				role: String(node.content.role),
 				bytes: node.bytes,
-				content: await db_ui_message(ctx, node, membership),
+				content: await db_ui_message(ctx, node, membership, "model"),
 			});
 			usedBytes += node.bytes;
 			nodeId = node.parentId;
