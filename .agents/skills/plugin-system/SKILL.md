@@ -1036,6 +1036,19 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+The error-code release shipped on 2026-11-15. Host commit `af7f0373` gives every refusal an
+`errorCode`. SDK 0.26.1 was mirrored at `0d8660b9d8ec405ae395171db387b542717f7dff`; its tree
+equals `af7f0373:packages/bonobo-plugin-sdk`. Data Probe 0.5.2 (`e649c257`, version doc
+`hn7hh7vryyx0gashgavwzgr8418j924c`) pins it. Only `chitchat-qa/copy-qa-0922` was updated; the
+`personal/home` install stays on its older version.
+
+Gmail 0.4.3 (`19ac807ae7305ff0e9cc773151f8c94c48dd42c3`, version doc
+`hn7vp64x69v41wqvmgevj8fam98j9f9a`) and Council Worker `4e8e946` (version
+`3d75a809-fc40-4e8b-b0d8-d8b854334d3e`, room revision `council-room-852bc22c`) now read the host
+`errorCode` instead of message text. Gmail passed review and 513 tests, and its backend is
+deployed. Its only install, in `personal`, stays on 0.4.2 for now. That is safe because the backend
+is shared by every install. Council passed 736 tests; no D1 migration was pending.
+
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
 installations were updated through normal consent. Their service accounts and grants were kept.
