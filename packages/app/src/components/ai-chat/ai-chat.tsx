@@ -45,6 +45,7 @@ import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/com
 import {
 	ai_chat_ui_context_get_label,
 	ai_chat_ui_context_remove,
+	useAiChatUiContextPluginSharesView,
 	useAiChatUiContextShown,
 } from "@/lib/ai-chat-ui-context.ts";
 import { AiChatPendingReview } from "@/components/ai-chat/ai-chat-pending-review.tsx";
@@ -424,6 +425,7 @@ type AiChatUiContext_Props = {
 const AiChatUiContext = memo(function AiChatUiContext(props: AiChatUiContext_Props) {
 	const { onFocusExit } = props;
 	const uiContext = useAiChatUiContextShown();
+	const pluginSharesView = useAiChatUiContextPluginSharesView();
 	if (!uiContext) return null;
 
 	return (
@@ -438,7 +440,11 @@ const AiChatUiContext = memo(function AiChatUiContext(props: AiChatUiContext_Pro
 					<MyChipMedia>
 						<Eye />
 					</MyChipMedia>
-					<MyChipLabel>{ai_chat_ui_context_get_label(uiContext)}</MyChipLabel>
+					<MyChipLabel>
+						{ai_chat_ui_context_get_label(uiContext)}
+						{/* The plugin text goes with the message too, so say so. Removing the chip leaves it out. */}
+						{uiContext.plugin && pluginSharesView ? " · shares its view" : null}
+					</MyChipLabel>
 					<MyChipRemove
 						tooltip="Don't send screen info"
 						// event.detail is 0 for keyboard clicks: MyChipRow then moves focus itself.

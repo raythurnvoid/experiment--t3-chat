@@ -3,6 +3,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { channels_LIMITS } from "./channels.ts";
 import { file_quotes_MAX_TEXT_BYTES } from "./file-quotes.ts";
 import { files_get_utf8_byte_size, files_STORED_PATH_MAX_LENGTH } from "./files.ts";
+import { secret_shaped_text_REGEX } from "./secret-shaped-text.ts";
 
 /**
  * What the user had open in the app when they sent a message. The app adds it to the message as one
@@ -184,4 +185,48 @@ export function ai_chat_ui_context_to_model_text(context: ai_chat_UiContext) {
 	}
 	lines.push("</ui_context>");
 	return lines.join("\n");
+}
+
+/**
+ * What the open plugin page or file view says it shows, sent in the `/api/chat` request body. The
+ * browser never puts it in the message parts, so it reaches the model for one turn and is never
+ * stored. The plugin wrote it, so it is untrusted data.
+ */
+export const ai_chat_plugin_context_schema = z
+	.object({
+		pluginName: z.string().min(1).max(64),
+		kind: z.enum(["page", "file_view"]),
+		content: z.array(z.object({ type: z.literal("text"), text: z.string() }).strict()).max(32),
+		structuredContent: z.record(z.string(), z.unknown()).nullable(),
+	})
+	.strict()
+	// The host frame drops a bigger value too, so only a forged request reaches this refusal.
+	.refine((context) => files_get_utf8_byte_size(JSON.stringify(context)) <= 16 * 1024, "Plugin text is too big");
+
+export type ai_chat_PluginContext = z.infer<typeof ai_chat_plugin_context_schema>;
+
+// The model reads at most this much plugin text per message. The cut keeps every turn cheap.
+const PLUGIN_CONTEXT_MAX_MODEL_BYTES = 4_096;
+
+/**
+ * The block the model reads for the plugin text. The text is cleaned, cut to 4 KiB, and quoted, so
+ * it cannot close the tag and read like the user's own words.
+ */
+export function ai_chat_plugin_context_to_model_text(context: ai_chat_PluginContext) {
+	const blocks = context.content.map((block) => block.text);
+	if (context.structuredContent) blocks.push(JSON.stringify(context.structuredContent));
+	const text = blocks
+		.join("\n\n")
+		// Keep line breaks and tabs. Other control and format characters can hide text from the user.
+		.replace(/[^\P{Cc}\n\t]|\p{Cf}/gu, "")
+		.replace(secret_shaped_text_REGEX, "[secret]");
+
+	// `encodeInto` never splits a character.
+	const { read } = new TextEncoder().encodeInto(text, new Uint8Array(PLUGIN_CONTEXT_MAX_MODEL_BYTES));
+	const shown = read < text.length ? `${text.slice(0, read)}\n[Cut: the plugin sent more than 4 KiB.]` : text;
+	return [
+		`<plugin_context plugin=${ai_chat_ui_context_quote(context.pluginName)} kind="${context.kind}">`,
+		ai_chat_ui_context_quote(shown),
+		"</plugin_context>",
+	].join("\n");
 }

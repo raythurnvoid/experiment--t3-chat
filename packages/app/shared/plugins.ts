@@ -1817,6 +1817,14 @@ export function plugins_validate_manifest(input: unknown) {
 	if (hasPageAgent && !capabilities.has("agent.page-tools" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Page agent tools require the agent.page-tools capability" } });
 	}
+	// Only pages and file views can share what they show, so without one the consent covers nothing.
+	if (
+		capabilities.has("agent.view-context" satisfies plugins_Capability) &&
+		pageIds.size === 0 &&
+		(parsed.data.fileViews ?? []).length === 0
+	) {
+		return Result({ _nay: { message: "The agent.view-context capability requires a page or a file view" } });
+	}
 	// Endpoints live inside the backend block, so this first rule catches the capability declared
 	// with no backend at all; the pair below then agrees in both directions like ui.outbound.fetch.
 	if (capabilities.has("plugin.backend.invoke" satisfies plugins_Capability) && !parsed.data.backend) {

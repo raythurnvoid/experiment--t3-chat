@@ -26,7 +26,7 @@ import { generate_id, get_id_generator } from "../../shared/generated-ids.ts";
 import { browser_intent_schema, type browser_Intent } from "../../shared/browser-intent.ts";
 import { file_quotes_parse_draft } from "../../shared/file-quotes.ts";
 import type { ai_chat_UiContext } from "../../shared/ai-chat-ui-context.ts";
-import { ai_chat_ui_context_get_shown } from "@/lib/ai-chat-ui-context.ts";
+import { ai_chat_ui_context_get_shown, ai_chat_ui_context_read_plugin_context } from "@/lib/ai-chat-ui-context.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_UiMessage,
@@ -460,6 +460,19 @@ function get_optimistic_thread_list_item(tenant: {
  */
 function get_ui_context_parts(uiContext: ai_chat_UiContext | null) {
 	return uiContext ? [{ type: "data-ui-context" as const, data: uiContext }] : [];
+}
+
+/**
+ * The plugin text for this request. It goes in the request body, never in the message parts, so it
+ * reaches the model for this turn only and is not saved in the chat.
+ */
+async function get_request_plugin_context(messages: ai_chat_UiMessage[]) {
+	// A send ends with the new user message. A regenerate ends with the stored user message it answers
+	// again. Edit and retry keep the screen info of the message they replace.
+	const triggerMessage = messages.at(-1)?.role === "user" ? messages.at(-1) : undefined;
+	const plugin = triggerMessage?.parts.find((part) => part.type === "data-ui-context")?.data.plugin ?? null;
+	const context = await ai_chat_ui_context_read_plugin_context(plugin);
+	return context && plugin ? { pluginName: plugin.pluginName, kind: plugin.kind, ...context } : null;
 }
 
 function message_has_visible_parts(message: ai_chat_UiMessage) {
@@ -1371,6 +1384,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				// Read it from the send call, not from this hook. A thread keeps the Chat of the panel that
 				// opened it first, so this hook can be another panel than the one that sends.
 				pluginPage: (options.body?.pluginPage ?? null) as AiChatController_Props["pluginPage"],
+				pluginContext: await get_request_plugin_context(options.messages),
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {
@@ -2026,6 +2040,7 @@ const useThreadRuntimeController = () => {
 				// Read it from the send call, not from this hook. A thread keeps the Chat of the panel that
 				// opened it first, so this hook can be another panel than the one that sends.
 				pluginPage: (options.body?.pluginPage ?? null) as AiChatController_Props["pluginPage"],
+				pluginContext: await get_request_plugin_context(options.messages),
 			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
 
 			return {

@@ -145,6 +145,7 @@ async function send(
 			membershipId: fx.membership.membershipId,
 			browserIntent: { policyRevision: 0 },
 			pluginPage: null,
+			pluginContext: null,
 		}),
 	});
 	const body = await response.text();

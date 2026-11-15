@@ -122,6 +122,7 @@ describe("/api/chat credit gate", () => {
 				membershipId: seeded.membershipId,
 				browserIntent: { policyRevision: 0 },
 				pluginPage: null,
+				pluginContext: null,
 			}),
 		});
 		const body = await response.json();
@@ -175,6 +176,7 @@ describe("/api/chat credit gate", () => {
 			membershipId: seeded.membershipId,
 			browserIntent: { policyRevision: 0 },
 			pluginPage: null,
+			pluginContext: null,
 		};
 
 		for (let i = 0; i < 1; i++) {
@@ -421,6 +423,7 @@ describe("/api/chat credit gate", () => {
 				membershipId: seeded.membershipId,
 				browserIntent: { policyRevision: 0 },
 				pluginPage: null,
+				pluginContext: null,
 			}),
 		});
 		const body = await response.json();

@@ -15,8 +15,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { StrictMode, useRef, useState } from "react";
-import type { ComponentProps, ComponentPropsWithRef, JSX } from "react";
+import { StrictMode, createRef, useRef, useState } from "react";
+import type { ComponentProps, ComponentPropsWithRef, JSX, Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { paramsMock, tenantContextMock, useQueryMock, mutationMock } = vi.hoisted(() => ({
@@ -113,7 +113,7 @@ vi.mock("@/components/my-button.tsx", () => ({
 	},
 }));
 
-import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
+import { PluginsUiFrame, type PluginsUiFrame_Props, type PluginsUiFrame_Ref } from "@/components/plugins-ui-frame.tsx";
 import { Route } from "./$pluginName_.pages.$pageId.tsx";
 
 const postMessageMock = vi.fn();
@@ -2807,6 +2807,87 @@ describe("RoutePluginsPluginPage", () => {
 			sessionId: "session_2",
 		});
 		expect(latest_init_message().context).toMatchObject({ file: { fileNodeId: "node_2" } });
+	});
+
+	test("the agent reads a view context only from this frame and only with the consent", async () => {
+		const props_for = (agentViewContext: boolean, ref: Ref<PluginsUiFrame_Ref>) =>
+			({
+				ref,
+				membershipId: "membership_1",
+				pluginName: "gallery",
+				pluginVersionId: "version_1",
+				entry: "dist/frontend/view.html",
+				title: "Viewer",
+				kindLabel: "plugin view",
+				mintSession: () =>
+					Promise.resolve({
+						_yay: {
+							token: "plu_view",
+							expiresAt: Date.now() + 60_000,
+							pluginVersionId: "version_1",
+							sessionId: "session_view",
+						},
+					}),
+				getInitContext: () => ({
+					kind: "file_view",
+					pluginName: "gallery",
+					fileViewId: "viewer",
+					fileViewTitle: "Viewer",
+					organizationId: "org_1",
+					workspaceId: "ws_1",
+					file: { fileNodeId: "node_1", name: "a.png", path: "/a.png", contentType: "image/png" },
+				}),
+				agentViewContext,
+				onError: () => {},
+			}) as unknown as ComponentProps<typeof PluginsUiFrame>;
+		const shown = { content: [{ type: "text", text: "Paused at 0:12" }] };
+		const expected = { content: [{ type: "text", text: "Paused at 0:12" }], structuredContent: null };
+
+		const frameRef = createRef<PluginsUiFrame_Ref>();
+		const view = render(<PluginsUiFrame {...props_for(true, frameRef)} />);
+		const { nonce } = bridge_for(view.container);
+		await act(async () => post_ready(nonce));
+
+		// A message from another mount or another origin must not reach the agent.
+		post_from_frame({ type: "bonobo:update-model-context", nonce: "other", context: shown });
+		post_from_frame({ type: "bonobo:update-model-context", nonce, context: shown }, "https://evil.example");
+		expect(await frameRef.current?.readAgentViewContext(), "a forged push must be dropped").toBeNull();
+
+		post_from_frame({ type: "bonobo:update-model-context", nonce, context: shown });
+		expect(await frameRef.current?.readAgentViewContext()).toEqual(expected);
+
+		// With a provider the host asks the page, and a page that never answers costs at most 2 s.
+		post_from_frame({ type: "bonobo:context-provider", nonce, enabled: true });
+		vi.useFakeTimers();
+		postMessageMock.mockClear();
+		const pending = frameRef.current?.readAgentViewContext();
+		const request = postMessageMock.mock.calls[0]?.[0] as { type: string; requestId: string };
+		expect(request.type).toBe("bonobo:context-request");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(2_000);
+		});
+		expect(await pending, "a silent provider falls back to the last push").toEqual(expected);
+
+		const answered = frameRef.current?.readAgentViewContext();
+		const nextRequest = postMessageMock.mock.calls[1]?.[0] as { requestId: string };
+		post_from_frame({
+			type: "bonobo:context-result",
+			nonce,
+			requestId: nextRequest.requestId,
+			ok: true,
+			context: { content: [{ type: "text", text: "Playing at 0:20" }] },
+		});
+		expect(await answered).toEqual({ content: [{ type: "text", text: "Playing at 0:20" }], structuredContent: null });
+		vi.useRealTimers();
+		view.unmount();
+
+		// Without the consent the frame drops the push, even a valid one.
+		const deniedRef = createRef<PluginsUiFrame_Ref>();
+		const denied = render(<PluginsUiFrame {...props_for(false, deniedRef)} />);
+		const deniedBridge = bridge_for(denied.container);
+		await act(async () => post_ready(deniedBridge.nonce));
+		post_from_frame({ type: "bonobo:update-model-context", nonce: deniedBridge.nonce, context: shown });
+		expect(await deniedRef.current?.readAgentViewContext(), "no consent, no view context").toBeNull();
 	});
 
 	test("a context missing a field the SDK requires is a compile error", () => {

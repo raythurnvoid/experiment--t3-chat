@@ -53,6 +53,7 @@ import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "./ai-chat
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT, type ai_chat_ModelId } from "../shared/ai-chat.ts";
+import { secret_shaped_text_REGEX } from "../shared/secret-shaped-text.ts";
 import { ai_chat_context_read_instructions, type ai_chat_context_Context } from "./ai-chat-context.ts";
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
@@ -1773,12 +1774,6 @@ const MCP_NO_TIME_MESSAGE = "This chat run has no time left for an MCP call.";
 const MCP_TEXT_ENCODER = new TextEncoder();
 
 /**
- * Text that looks like a token or a key. A tool result is untrusted, and nothing else scrubs it.
- */
-const MCP_SECRET_SHAPED_REGEX =
-	/\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b|Bearer\s+[A-Za-z0-9._~+/-]{16,}=*/gu;
-
-/**
  * One MCP server of a chat turn, with the tools its list returned at turn setup.
  */
 export type ai_chat_tool_McpServer = FunctionReturnType<
@@ -1845,7 +1840,7 @@ function mcp_clean_text(text: string, secrets: string[]) {
 			cleaned = cleaned.replaceAll(secret, "[secret]");
 		}
 	}
-	return cleaned.replace(MCP_SECRET_SHAPED_REGEX, "[secret]");
+	return cleaned.replace(secret_shaped_text_REGEX, "[secret]");
 }
 
 /**

@@ -101,6 +101,7 @@ async function setup(viewer = false) {
 			membershipId: team.membershipId,
 			browserIntent: { policyRevision: 0 },
 			pluginPage: null,
+			pluginContext: null,
 		}),
 	});
 	expect(response.status, await response.text()).toBe(200);

@@ -2109,6 +2109,11 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Let the chat agent use its page tools while a member has that page open";
 	}
 
+	// The plain rule writes "Agent View-context". Say what the agent reads and from where.
+	if (value === "agent.view-context") {
+		return "Let the chat agent read what its pages and file views show";
+	}
+
 	return format_access_label(value);
 }
 

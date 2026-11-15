@@ -89,7 +89,7 @@ import {
 import { MySeparator } from "@/components/my-separator.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
+import { PluginsUiFrame, type PluginsUiFrame_Props, type PluginsUiFrame_Ref } from "@/components/plugins-ui-frame.tsx";
 import {
 	files_metadata_catalog_key_prefixes,
 	useFilesMetadataFolderKeys,
@@ -104,7 +104,7 @@ import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
-import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
+import { useAiChatUiContextPluginSource, useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
@@ -1710,6 +1710,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 							fileViewId={activePluginView.fileView.id}
 							fileViewTitle={activePluginView.fileView.title}
 							entry={activePluginView.fileView.entry}
+							agentViewContext={activePluginView.plugin.agentViewContext}
 						/>
 					</div>
 				)}
@@ -2526,10 +2527,15 @@ type FileNodeViewPluginView_Props = {
 	fileViewId: string;
 	fileViewTitle: string;
 	entry: string;
+	/**
+	 * True when the installation accepted `agent.view-context`. The chat may then read what the view
+	 * says it shows.
+	 */
+	agentViewContext: boolean;
 };
 
 const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileNodeViewPluginView_Props) {
-	const { node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry } = props;
+	const { node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry, agentViewContext } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const sectionRef = useRef<HTMLElement | null>(null);
 	// Incremented by Retry. It is part of the frame key below, so each attempt gets a fresh frame.
@@ -2591,6 +2597,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 				fileViewId={fileViewId}
 				fileViewTitle={fileViewTitle}
 				entry={entry}
+				agentViewContext={agentViewContext}
 				onRetry={handleRetry}
 			/>
 		</section>
@@ -2617,6 +2624,7 @@ type FileNodeViewPluginViewFrame_Props = {
 	fileViewId: string;
 	fileViewTitle: string;
 	entry: string;
+	agentViewContext: boolean;
 	onRetry: () => void;
 };
 
@@ -2630,10 +2638,21 @@ type FileNodeViewPluginViewFrame_Props = {
 const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 	props: FileNodeViewPluginViewFrame_Props,
 ) {
-	const { regionRef, node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry, onRetry } =
-		props;
+	const {
+		regionRef,
+		node,
+		contentType,
+		pluginName,
+		pluginVersionId,
+		fileViewId,
+		fileViewTitle,
+		entry,
+		agentViewContext,
+		onRetry,
+	} = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+	const frameRef = useRef<PluginsUiFrame_Ref | null>(null);
 	// Names the message inside the alert, so the Retry button can point at it and say what failed.
 	const errorMessageId = `FileNodeViewPluginViewFrame-${useId()}-error`;
 	const [sessionError, setSessionError] = useState<string | null>(null);
@@ -2643,6 +2662,11 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 
 	const loadingMessage = `Loading ${fileViewTitle}...`;
 	const readyMessage = `${fileViewTitle} is ready.`;
+
+	useAiChatUiContextPluginSource(
+		agentViewContext ? { pluginName, title: fileViewTitle, kind: "file_view" } : null,
+		frameRef,
+	);
 
 	const mintSession = useFn(() =>
 		app_convex.action(app_convex_api.plugins_ui.mint_file_view_session, {
@@ -2736,6 +2760,7 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 				inert={!isFrameStarted}
 			>
 				<PluginsUiFrame
+					ref={frameRef}
 					membershipId={membershipId}
 					pluginName={pluginName}
 					pluginVersionId={pluginVersionId}
@@ -2745,6 +2770,7 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 					mintSession={mintSession}
 					getInitContext={getInitContext}
 					onStarted={() => setIsFrameStarted(true)}
+					agentViewContext={agentViewContext}
 					// The state setter is the handler: the frame hands over the sentence and this component
 					// shows it. A setter identity never changes, and the frame's bridge effect lists
 					// `onError` in its dependencies, so a changing one would tear the frame down.

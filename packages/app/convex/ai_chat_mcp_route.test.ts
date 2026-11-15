@@ -275,6 +275,7 @@ async function chat(
 			membershipId: args.membershipId,
 			browserIntent: { policyRevision: 0 },
 			pluginPage: null,
+			pluginContext: null,
 		}),
 		signal: args.signal,
 	});

@@ -3199,6 +3199,7 @@ describe("enforcement", () => {
 				membershipId,
 				browserIntent: { policyRevision: 0 },
 				pluginPage: null,
+				pluginContext: null,
 			}),
 		});
 		expect(replied.status).toBe(403);
@@ -3263,6 +3264,7 @@ describe("enforcement", () => {
 				membershipId: fixture.memberMembershipId,
 				browserIntent: { policyRevision: 0 },
 				pluginPage: null,
+				pluginContext: null,
 			});
 		const headers = { "Content-Type": "application/json" };
 
@@ -3335,6 +3337,7 @@ describe("enforcement", () => {
 					membershipId: fixture.memberMembershipId,
 					browserIntent: { policyRevision: 0 },
 					pluginPage: null,
+					pluginContext: null,
 				}),
 			});
 
@@ -3415,6 +3418,7 @@ describe("enforcement", () => {
 						membershipId,
 						browserIntent: { policyRevision: 0 },
 						pluginPage: null,
+						pluginContext: null,
 					}),
 				});
 

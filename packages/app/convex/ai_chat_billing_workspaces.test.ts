@@ -173,6 +173,7 @@ describe("/api/chat billing across workspaces", () => {
 					membershipId: membership._id,
 					browserIntent: { policyRevision: 0 },
 					pluginPage: null,
+					pluginContext: null,
 				}),
 			});
 			const body = await response.text();

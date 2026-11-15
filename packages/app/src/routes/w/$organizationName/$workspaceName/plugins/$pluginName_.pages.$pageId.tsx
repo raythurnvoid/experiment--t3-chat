@@ -19,7 +19,7 @@ import {
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
+import { useAiChatUiContextPluginSource, useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import type { Id } from "../../../../../../convex/_generated/dataModel.ts";
 
 // #region root
@@ -185,6 +185,7 @@ function RoutePluginsPluginPage() {
 			pageTitle={page.title}
 			entry={page.entry}
 			hasAgent={page.hasAgent}
+			agentViewContext={plugin.agentViewContext}
 			pageInstanceId={pageInstanceId}
 			onRetry={handleRetry}
 		/>
@@ -255,6 +256,11 @@ type RoutePluginsPluginPageFrame_Props = {
 	 */
 	hasAgent: boolean;
 	/**
+	 * True when the installation accepted `agent.view-context`. The chat may then read what the page
+	 * says it shows.
+	 */
+	agentViewContext: boolean;
+	/**
 	 * This tab's random id. The frame takes only the calls the chat of this tab sent.
 	 */
 	pageInstanceId: string;
@@ -322,7 +328,18 @@ async function relay_agent_tool_call(args: {
 const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 	props: RoutePluginsPluginPageFrame_Props,
 ) {
-	const { regionRef, pluginName, pluginVersionId, pageId, pageTitle, entry, hasAgent, pageInstanceId, onRetry } = props;
+	const {
+		regionRef,
+		pluginName,
+		pluginVersionId,
+		pageId,
+		pageTitle,
+		entry,
+		hasAgent,
+		agentViewContext,
+		pageInstanceId,
+		onRetry,
+	} = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
 	const frameRef = useRef<PluginsUiFrame_Ref | null>(null);
@@ -333,6 +350,8 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 	const agentToolWaitersRef = useRef(new Map<string, (result: PluginsUiFrame_AgentToolResult) => void>());
 	// Names the message inside the alert, so the Retry button can point at it and say what failed.
 	const errorMessageId = `RoutePluginsPluginPageFrame-${useId()}-error`;
+
+	useAiChatUiContextPluginSource(agentViewContext ? { pluginName, title: pageTitle, kind: "page" } : null, frameRef);
 	const [sessionError, setSessionError] = useState<string | null>(null);
 	const [isFrameStarted, setIsFrameStarted] = useState(false);
 	// False for the first commit, so the status region below enters the page empty. See the effect
@@ -493,6 +512,7 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 					getInitContext={getInitContext}
 					onStarted={() => setIsFrameStarted(true)}
 					onAgentToolResult={handleAgentToolResult}
+					agentViewContext={agentViewContext}
 					// The state setter is the handler: the frame hands over the sentence and this
 					// component shows it. A setter identity never changes, and the frame's bridge effect
 					// lists `onError` in its dependencies, so a changing one would tear the frame down.

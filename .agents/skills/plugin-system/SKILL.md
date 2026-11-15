@@ -89,6 +89,7 @@ Capabilities are the consent set. `CAPABILITIES` in `packages/app/shared/plugins
 | `agent.mcp.connect`                | The chat agent may call tools on the declared `mcpServers` (see below)             |
 | `agent.skills.contribute`          | The chat agent may follow the declared `skills` (see below)                        |
 | `agent.page-tools`                 | The chat agent may call a page's declared agent tools while a member has that page open (see "Page agent tools") |
+| `agent.view-context`               | The plugin's pages and file views may tell the chat agent what they show (see "Agent view context") |
 
 Several capabilities and manifest fields imply another one, and `plugins_validate_manifest` rejects the manifest at publish instead of letting it install and fail later:
 
@@ -104,6 +105,8 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 `ui.outbound.fetch` and `uiOutboundOrigins` require each other in both directions. The capability with no origin would grant nothing, and origins with no capability would widen the frame's policy without the install dialog listing a capability for it.
 
 `agent.page-tools` and page `agent.tools` require each other in both directions: the capability needs at least one page with agent tools, and a page with agent tools needs the capability. A tool name matches `^[a-z][a-z0-9_]{0,47}$` and is unique within its page. A description may hold newlines but no other control characters. `inputSchema` must be a JSON object with `type: "object"`.
+
+`agent.view-context` requires at least one page or file view. Without one the consent would cover nothing.
 
 `agent.mcp.connect` and `mcpServers` require each other in both directions, and so do `agent.skills.contribute` and `skills`. The manifest is public, so an MCP server URL must be a normalized `https:` URL on port 443 with a host name (no IP literal, no `localhost`), no credentials, no fragment, and no query name that looks like a key (`key`, `token`, `secret`, `auth`, and similar). Keys go in `headers`, whose values name declared `secrets`. Server ids `my` and `my-*` are reserved for members' own servers. An OAuth server (`auth.kind: "oauth"`) names its sign-in server in `issuer`, an optional `resource`, and extra `scopes`; `issuer` and `resource` must be `https:` URLs with no query or fragment, and such a server may not set an `Authorization` header. The issuer is a pin: Bonobo Senate never sends a member to another sign-in server until a new reviewed version names it. An OAuth `resource` must be the server URL or one of its parent paths. A skill path must be `dist/skills/<name>/SKILL.md`, a listed `text/markdown` file. Publish parses each skill's frontmatter with `ai_chat_skills_parse`, refuses a bad one before review and upload, and stores its `description`. Publish also stores `mcpServersFingerprint`, the SHA-256 of the parsed `mcpServers` JSON, so install can check an exact accept. The review sees the server ids, URLs, auth kinds, and skill names as facts, and reviews each skill file.
 
@@ -560,7 +563,7 @@ The batch secret mutations (`save_publisher_repository_secrets`, `save_installat
 
 ## Page agent tools (`agent.page-tools`)
 
-A page may declare `agent: { tools: [{ name, description, inputSchema }] }`. Such a page opens with the app's chat agent in a right panel, like the Files view (`list_ui_pages` returns `hasAgent`). The page code runs the tools, so the agent can work with what the member sees: open an item, write a draft, change the view. Mail (`plugins/bonobo-plugin-mail`) is the first user.
+A page may declare `agent: { tools: [{ name, description, inputSchema }] }`. Such a page opens with the app's chat agent in a right panel, like the Files view (`list_ui_pages` returns `hasAgent`). The page code runs the tools, so the agent can work with what the member sees: open an item, write a draft, change the view. Gmail (`plugins/bonobo-plugin-gmail`, page `mail`) is the first user.
 
 How one call travels:
 
@@ -578,6 +581,27 @@ Rules:
 - One consent label covers the install dialog and the Access screen: "Let the chat agent use its page tools while a member has that page open".
 - The tool only works while the tab that sent the message is open. The agent sees a timeout error when the member closed it.
 - There is no approval step. A page tool runs as soon as the agent calls it, so a plugin should only declare tools that are safe to run without asking, like writing a draft. When a call times out, the page may still finish it later, so a retried call can run twice.
+
+## Agent view context (`agent.view-context`)
+
+A page or file view may tell the chat agent what it shows, so a member can ask about "this email" without the agent calling a tool. The shape follows MCP Apps `ui/update-model-context`: `{ content?: [{ type: "text", text }], structuredContent?: object }`. Only text blocks are kept.
+
+How it travels:
+
+1. The page pushes with `client.agent.setContext` (`bonobo:update-model-context`, the SDK waits 500 ms and drops a value equal to the last one sent), or sets a provider with `client.agent.setContextProvider` (`bonobo:context-provider { enabled }`).
+2. `PluginsUiFrame` keeps only the newest pushed value, in memory, checked by `read_agent_view_context` (text blocks, at most 32, a plain object, at most 16 KiB as JSON; a bad value clears it). It answers `readAgentViewContext()` only when its `agentViewContext` prop is true. That prop comes from the live `list_ui_pages` / `list_file_views` field `agentViewContext`, so a disable or an upgrade stops sharing at once.
+3. The mount point registers the frame with `useAiChatUiContextPluginSource` (`src/lib/ai-chat-ui-context.ts`, one slot, because one plugin frame is mounted at a time). Right before a send, `get_request_plugin_context` in `ai-chat-controller.tsx` reads it, only when the trigger message's screen info names the same plugin view and the member did not remove the chip. With a provider the host posts `bonobo:context-request { requestId }` and waits at most 2 seconds for `bonobo:context-result`, then uses the last pushed value. A hidden tab never asks; it uses the last pushed value.
+4. The text goes in the `/api/chat` body as `pluginContext`, never in the message parts. The server keeps it only when the trigger's stored screen info has the same `pluginName` and `kind`, and `plugins_page_tools.has_turn_view_context` says the installation is enabled, accepted `agent.view-context`, and its version is ready and passed. Otherwise it is dropped and the send goes on.
+5. `add_plugin_context_part` in `convex/ai_chat.ts` adds it to the trigger message in memory, after the screen info part, at both model-message builds (the compaction rebuild reads the history again). `ai_chat_plugin_context_to_model_text` removes control and format characters, replaces token-shaped text (`shared/secret-shaped-text.ts`, which includes `plu_`, `plr_` and `psg_`) with `[secret]`, cuts to 4 KiB, and writes one quoted string inside `<plugin_context plugin="…" kind="…">`. A job wakeup sends none.
+
+Rules:
+
+- The text is never stored. A later turn does not see it. Only the reply and a new thread's title can echo it.
+- Ask mode keeps it, because it only reads. Page tools stay Agent-only.
+- Plugin text is untrusted: an email from a stranger now reaches the model on every message while it is open. Keep it short (Gmail sends headers and a short preview), and the fixed system prompt line says to treat it as data.
+- The composer chip shows "shares its view" while a registered frame may share. Removing the chip sends neither the screen info nor the plugin text.
+- One consent label covers the install dialog and the Access screen: "Let the chat agent read what its pages and file views show".
+- Safe only while one plugin frame is mounted at a time (see the frame isolation note above): a second frame could post as this one.
 
 The SDK's `fetchRaw` returns the HTTP status, headers and unread response body. Use it for `files/read`, following `X-File-Next-Cursor` until absent. Decode text with one streaming UTF-8 decoder across all pages. `fetchJson` accepts only JSON routes. Both methods share the same token refresh and one 401 retry.
 

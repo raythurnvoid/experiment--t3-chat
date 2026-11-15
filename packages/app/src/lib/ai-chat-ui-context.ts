@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, type RefObject } from "react";
 import { create } from "zustand";
+import type { PluginsUiFrame_Ref } from "../components/plugins-ui-frame.tsx";
 import type { ai_chat_UiContext } from "../../shared/ai-chat-ui-context.ts";
 import { file_quotes_MAX_TEXT_BYTES } from "../../shared/file-quotes.ts";
 
@@ -12,6 +13,10 @@ type State = ai_chat_UiContext & {
 	 * The editor that wrote `selection`. An editor that unmounts clears only its own selection.
 	 */
 	selectionOwner: object | null;
+	/**
+	 * True while the open plugin frame may share what it shows. The chip says so.
+	 */
+	pluginSharesView: boolean;
 };
 
 /**
@@ -27,6 +32,7 @@ const useAiChatUiContextStore = create<State>(() => ({
 	browser: null,
 	removedKey: null,
 	selectionOwner: null,
+	pluginSharesView: false,
 }));
 
 /**
@@ -36,7 +42,7 @@ function get_key(context: ai_chat_UiContext) {
 	return JSON.stringify({ ...context, selection: null });
 }
 
-function get_shown(state: Omit<State, "selectionOwner">) {
+function get_shown(state: Omit<State, "selectionOwner" | "pluginSharesView">) {
 	if (!state.node && !state.plugin && !state.channel && !state.browser) return null;
 	const context: ai_chat_UiContext = {
 		node: state.node,
@@ -114,6 +120,71 @@ export function useAiChatUiContextWrite(context: Partial<ai_chat_UiContext>) {
 	}, [contextKey]);
 }
 
+export function useAiChatUiContextPluginSharesView() {
+	return useAiChatUiContextStore((state) => state.pluginSharesView);
+}
+
+type PluginContextSource = {
+	plugin: NonNullable<ai_chat_UiContext["plugin"]>;
+	frameRef: RefObject<PluginsUiFrame_Ref | null>;
+};
+
+/**
+ * The plugin frame that may share its view with the chat. Only one plugin frame is mounted at a time
+ * (plugin-system skill), so one slot is enough. It is not in the store, because nothing renders from it.
+ */
+let pluginContextSource: PluginContextSource | null = null;
+
+function is_same_plugin(a: ai_chat_UiContext["plugin"], b: ai_chat_UiContext["plugin"]) {
+	return !!a && !!b && a.pluginName === b.pluginName && a.kind === b.kind && a.title === b.title;
+}
+
+/**
+ * Register the open plugin frame as the source of plugin text while the caller is mounted. Pass null
+ * when the installation did not accept `agent.view-context`.
+ */
+export function useAiChatUiContextPluginSource(
+	plugin: ai_chat_UiContext["plugin"],
+	frameRef: RefObject<PluginsUiFrame_Ref | null>,
+) {
+	// Compare by value: callers build a new object on each render.
+	const pluginKey = plugin ? JSON.stringify(plugin) : null;
+	useEffect(() => {
+		if (!pluginKey) return;
+
+		const source: PluginContextSource = {
+			plugin: JSON.parse(pluginKey) as PluginContextSource["plugin"],
+			frameRef,
+		};
+		pluginContextSource = source;
+		useAiChatUiContextStore.setState({ pluginSharesView: true });
+		return () => {
+			if (pluginContextSource !== source) return;
+			pluginContextSource = null;
+			useAiChatUiContextStore.setState({ pluginSharesView: false });
+		};
+	}, [pluginKey, frameRef]);
+}
+
+/**
+ * The plugin text to send with a message whose screen info names `plugin`, or null.
+ *
+ * Send it only when that plugin view is still open and the user did not remove the chip. A removed
+ * chip means nothing about the screen is sent, plugin text included.
+ */
+export async function ai_chat_ui_context_read_plugin_context(plugin: ai_chat_UiContext["plugin"]) {
+	const source = pluginContextSource;
+	if (
+		!source ||
+		!is_same_plugin(source.plugin, plugin) ||
+		!is_same_plugin(ai_chat_ui_context_get_shown()?.plugin ?? null, plugin)
+	) {
+		return null;
+	}
+
+	return (await source.frameRef.current?.readAgentViewContext()) ?? null;
+}
+
 function get_channel_label(channel: NonNullable<ai_chat_UiContext["channel"]>) {
 	const name =
 		channel.kind === "file"
@@ -172,6 +243,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"a cut selection must pass the server check",
 			).toBeUndefined();
 			ai_chat_ui_context_clear_selection(owner);
+		});
+	});
+
+	describe("ai_chat_ui_context_read_plugin_context", () => {
+		test("sends no plugin text after the user removed the chip", async () => {
+			const { renderHook } = await import("@testing-library/react");
+			const plugin = { pluginName: "gmail", title: "Mail", kind: "page" as const };
+			const viewContext = { content: [{ type: "text" as const, text: "Inbox" }], structuredContent: null };
+			const frameRef = {
+				current: { postAgentToolCall: () => true, readAgentViewContext: () => Promise.resolve(viewContext) },
+			};
+			useAiChatUiContextStore.setState({ node: null, plugin, removedKey: null });
+			const hook = renderHook(() => useAiChatUiContextPluginSource(plugin, frameRef));
+
+			expect(await ai_chat_ui_context_read_plugin_context(plugin)).toEqual(viewContext);
+			ai_chat_ui_context_remove(ai_chat_ui_context_get_shown()!);
+			expect(await ai_chat_ui_context_read_plugin_context(plugin), "a removed chip sends nothing").toBeNull();
+			hook.unmount();
+			useAiChatUiContextStore.setState({ plugin: null, removedKey: null });
 		});
 	});
 }

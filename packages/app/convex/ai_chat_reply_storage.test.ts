@@ -109,6 +109,7 @@ async function send_text_reply(args: {
 			membershipId: home.membershipId,
 			browserIntent: { policyRevision: 0 },
 			pluginPage: null,
+			pluginContext: null,
 		}),
 	};
 	const intercepted = args.beforeStepSave

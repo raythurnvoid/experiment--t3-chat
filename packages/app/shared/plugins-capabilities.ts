@@ -62,4 +62,7 @@ export const plugins_CAPABILITIES = [
 	// tools that page declares. The page runs each call in the member's browser with the page's own
 	// access, and the result goes back to the agent.
 	"agent.page-tools",
+	// Consent line: the chat agent may read what this plugin's pages and file views say they show.
+	// The text goes with the member's next message only and is not saved in the chat.
+	"agent.view-context",
 ] as const;

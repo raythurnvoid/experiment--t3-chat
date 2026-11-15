@@ -33,6 +33,8 @@ const bonobo_convex_api = /**
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 const READY_RETRY_MS = 500;
 const REFRESH_DEADLINE_MS = 10_000;
+// A view can change many times a second (a playing video). Send only the last value of each burst.
+const CONTEXT_DEBOUNCE_MS = 500;
 // Convex pauses its socket while setAuth fetches. Run this check before its longer-lived timers so
 // a tab that wakes after a long clock gap cannot reconnect with the dead session first.
 const AUTH_WAKE_POLL_MS = 1_000;
@@ -153,6 +155,32 @@ function is_ui_context(value) {
  * The checks below are format checks, not an allowlist: exactly these two keys, an origin with
  * no path or query, a UUIDv4 nonce.
  */
+/**
+ * True for a view context the host accepts: null, or an object with optional text blocks and an
+ * optional plain object. MCP Apps allows other block types; the host keeps only text for now.
+ *
+ * @param {unknown} value
+ */
+function is_agent_context(value) {
+	if (value === null) {
+		return true;
+	}
+	if (typeof value !== "object" || Array.isArray(value)) {
+		return false;
+	}
+	const { content, structuredContent } = /** @type {{ content?: unknown, structuredContent?: unknown }} */ (value);
+	return (
+		(content === undefined ||
+			(Array.isArray(content) &&
+				content.every(
+					(block) =>
+						typeof block === "object" && block !== null && block.type === "text" && typeof block.text === "string",
+				))) &&
+		(structuredContent === undefined ||
+			(typeof structuredContent === "object" && structuredContent !== null && !Array.isArray(structuredContent)))
+	);
+}
+
 function read_bridge_bootstrap() {
 	const fragment = window.location.hash.slice(1);
 	if (!fragment) {
@@ -261,6 +289,18 @@ export async function bonobo_connect() {
 	 * @type {Map<string, (input: unknown) => unknown>}
 	 */
 	const agentTools = new Map();
+
+	/**
+	 * The page's view context provider. The host asks it right before a chat message is sent.
+	 *
+	 * @type {(() => unknown) | null}
+	 */
+	let contextProvider = null;
+	// The JSON of the last view context posted to the host, and the timer of the next one.
+	/** @type {string | null} */
+	let lastContextSent = null;
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	let contextTimer;
 
 	/** @type {Map<string, { resolve: (token: string) => void, reject: (error: Error) => void, timeout: ReturnType<typeof setTimeout> }>} */
 	const pending_refreshes = new Map();
@@ -665,6 +705,42 @@ export async function bonobo_connect() {
 								}
 							};
 						},
+						setContext(context) {
+							if (!is_agent_context(context)) {
+								throw new TypeError(
+									'setContext needs null or { content?: [{ type: "text", text }], structuredContent?: object }',
+								);
+							}
+							const serialized = JSON.stringify(context);
+							clearTimeout(contextTimer);
+							// The host already has this value, so a later equal value sends nothing.
+							if (serialized === lastContextSent) {
+								return;
+							}
+							contextTimer = setTimeout(() => {
+								lastContextSent = serialized;
+								// Post a copy: the page may change its object before the timer fires.
+								window.parent.postMessage(
+									{ type: "bonobo:update-model-context", nonce, context: JSON.parse(serialized) },
+									parentOrigin,
+								);
+							}, CONTEXT_DEBOUNCE_MS);
+						},
+						setContextProvider(provider) {
+							if (provider !== null && typeof provider !== "function") {
+								throw new TypeError("setContextProvider needs a function or null");
+							}
+							contextProvider = provider;
+							// The host asks only while a provider is set. So a page without one never makes a
+							// chat message wait for the host's timeout.
+							window.parent.postMessage({ type: "bonobo:context-provider", nonce, enabled: provider !== null }, parentOrigin);
+							return () => {
+								if (provider !== null && contextProvider === provider) {
+									contextProvider = null;
+									window.parent.postMessage({ type: "bonobo:context-provider", nonce, enabled: false }, parentOrigin);
+								}
+							};
+						},
 					},
 				});
 			} else if (
@@ -739,6 +815,41 @@ export async function bonobo_connect() {
 						.then(() => handler(message.input))
 						.then(
 							(output) => reply({ ok: true, output }),
+							(error) => reply({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+						);
+				}
+			} else if (
+				initialized &&
+				message.nonce === nonce &&
+				message.type === "bonobo:context-request" &&
+				typeof message.requestId === "string"
+			) {
+				const requestId = message.requestId;
+				/** @param {{ ok: true, context: unknown } | { ok: false, error: string }} answer */
+				const reply = (answer) => {
+					// A value that postMessage cannot copy throws here. Answer with an error then.
+					try {
+						window.parent.postMessage({ type: "bonobo:context-result", nonce, requestId, ...answer }, parentOrigin);
+					} catch {
+						window.parent.postMessage(
+							{ type: "bonobo:context-result", nonce, requestId, ok: false, error: "The view context could not be sent" },
+							parentOrigin,
+						);
+					}
+				};
+				const provider = contextProvider;
+				if (!provider) {
+					reply({ ok: false, error: "No context provider" });
+				} else {
+					Promise.resolve()
+						.then(() => provider())
+						.then(
+							(context) =>
+								reply(
+									is_agent_context(context)
+										? { ok: true, context }
+										: { ok: false, error: "The context provider returned a bad value" },
+								),
 							(error) => reply({ ok: false, error: error instanceof Error ? error.message : String(error) }),
 						);
 				}

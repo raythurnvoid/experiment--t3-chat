@@ -32,6 +32,11 @@ export const list_ui_pages = query({
 			pluginName: v.string(),
 			displayName: v.string(),
 			pluginVersionId: v.id("plugins_versions"),
+			/**
+			 * True when the installation accepted `agent.view-context`, so its frames may tell the chat
+			 * agent what they show. The list is live, so a disable or an upgrade reaches the host at once.
+			 */
+			agentViewContext: v.boolean(),
 			pages: v.array(
 				v.object({
 					id: v.string(),
@@ -98,6 +103,7 @@ export const list_ui_pages = query({
 					pluginName: installation.pluginName,
 					displayName: version.displayName,
 					pluginVersionId: version._id,
+					agentViewContext: installation.acceptedCapabilities.includes("agent.view-context"),
 					pages: version.pages.map((page) => ({
 						id: page.id,
 						title: page.title,
@@ -121,6 +127,11 @@ export const list_file_views = query({
 		v.object({
 			pluginName: v.string(),
 			pluginVersionId: v.id("plugins_versions"),
+			/**
+			 * True when the installation accepted `agent.view-context`, so its frames may tell the chat
+			 * agent what they show. The list is live, so a disable or an upgrade reaches the host at once.
+			 */
+			agentViewContext: v.boolean(),
 			installationCreatedAt: v.number(),
 			fileViews: v.array(
 				v.object({
@@ -183,6 +194,7 @@ export const list_file_views = query({
 				return {
 					pluginName: installation.pluginName,
 					pluginVersionId: version._id,
+					agentViewContext: installation.acceptedCapabilities.includes("agent.view-context"),
 					// The files UI orders view tabs by installation creation time, so tab order does not
 					// depend on query order.
 					installationCreatedAt: installation._creationTime,

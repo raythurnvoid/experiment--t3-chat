@@ -97,6 +97,41 @@ export const get_turn_page = internalQuery({
 	},
 });
 
+/**
+ * Whether the chat turn may read the text a plugin's page or file view shares. True only when the
+ * plugin is installed, on, and the admin accepted `agent.view-context`. The host frame checks the
+ * same consent, but the request body comes from the browser, so the server checks it again.
+ */
+export const has_turn_view_context = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pluginName: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_pluginName", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("pluginName", args.pluginName),
+			)
+			.first();
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			!installation.acceptedCapabilities.includes("agent.view-context")
+		) {
+			return false;
+		}
+
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		return !!version && version.sourceStatus === "ready" && version.reviewStatus === "passed";
+	},
+});
+
 export const create_call = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
