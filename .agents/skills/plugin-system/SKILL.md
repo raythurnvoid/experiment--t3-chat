@@ -1079,6 +1079,16 @@ not deployed again. The review ended twice with "could not finish its assessment
 third try of the same commit. The only install, `personal/home`, went 0.4.2 → 0.4.3 → 0.4.4, each
 with no new permissions. The live audit of the page found no small targets.
 
+The view-sharing release shipped on 2026-11-15. Host commit `dbe271a6` adds `agent.view-context`.
+SDK 0.27.0 was mirrored at `df0a468025b1efd9db54e59d790e5e8ebc78de5f`; its tree equals
+`dbe271a6:packages/bonobo-plugin-sdk`. Gmail 0.5.0 (`de286e1c75ece6bac59bd19cc4576de604a9fbfd`,
+version doc `hn7tyq0e9e2vzsfrmdxamezwdd8j8fxk`) pins it. Its Mail page sends what it shows with each
+chat message, and `get_view` is gone. The backend did not change, so it was not deployed again. The
+`personal/home` install went 0.4.4 → 0.5.0; the consent modal marked only "Let the chat agent read
+what its pages and file views show" as new. Live check in Ask mode: the request carried the Mail
+view, the agent named the account, folder and draft state with no tool call, a request after
+removing the chip carried `pluginContext: null`, and no stored message or title held the view text.
+
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
 installations were updated through normal consent. Their service accounts and grants were kept.

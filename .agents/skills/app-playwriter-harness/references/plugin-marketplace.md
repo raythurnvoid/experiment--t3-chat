@@ -601,9 +601,11 @@ browser ([second-user-fixtures.md](second-user-fixtures.md)). Use `/restore-refu
 
 The Gmail plugin's Mail page is the fixture for page agent tools (`agent.page-tools`). It replaced the
 separate Mail plugin, which was uninstalled and removed from this repo on 2026-10-19 (its registry
-entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync writes and registers six
-tools: `get_view`, `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Drafts
-are real Gmail drafts. No tool can send; only the member's **Send** click does.
+entry and GitHub repo stay). The page lists the `/emails` files the Gmail sync writes and registers five
+tools: `open_email`, `list_drafts`, `create_draft`, `update_draft`, `delete_draft`. Since 0.5.0 it has
+no `get_view` tool: the page sends what it shows with each chat message (`agent.view-context`, see
+"View sharing check" below). Drafts are real Gmail drafts. No tool can send; only the member's
+**Send** click does.
 
 Where it lives (verified 2026-10-20): `gmail@0.3.5` is installed in `personal/home`. Pages:
 `/w/personal/home/plugins/gmail/pages/gmail` (connection) and
@@ -674,12 +676,32 @@ Where it lives (verified 2026-10-20): `gmail@0.3.5` is installed in `personal/ho
 - **The composer is Tiptap, not a textarea.** `fill` on `textarea` finds nothing. Focus
   `.AiChatComposer-editor-content` from page context, then `page.keyboard.insertText(text)`.
 
-Chat check (Agent mode, in the page's right panel): ask the agent to call `get_view`, then create a
-reply draft. The chat shows `Page tool: Mail: get_view` and `Page tool: Mail: create_draft` cards.
+Chat check (Agent mode, in the page's right panel): open an email, then ask the agent to create a
+reply draft. The chat shows a `Page tool: Mail: create_draft` card.
 Open **Drafts**: the row has an `Agent` mark, and the open draft shows `Edited by the agent`. Its
 inputs hold the values the agent sent (read `input,textarea` values with `frame.evaluate`;
 `innerText` does not show them). `plugins_page_tool_calls` in Bonobo Senate is empty again about 2 minutes
 after the run: each call doc deletes itself 120 seconds after it is created. That is expected.
+
+### View sharing check (Gmail 0.5.0, verified 2026-11-15)
+
+1. Open the Mail page, open one email from page context, and read the chip: `.AiChatUiContext` reads
+   `Mail (gmail) · shares its view`. Without the capability it reads only `Mail (gmail)`.
+2. Start a new chat in the page's right panel (the panel opens the last chat, which may be the
+   user's), then pick `Ask` in the `Chat mode:` combobox.
+3. Add `state.page.on("request", ...)` for `POST` requests to `/api/chat` and keep `postData()`.
+   The body field `pluginContext` holds `{ pluginName, kind, content }`. Remove the listener after.
+4. Ask something only the view knows, for example "Without using any tool: which Gmail account and
+   which folder is Mail showing, and can it write drafts?". The reply names them with no tool card.
+   A question about the sender can still make the model `cat` the path it read from the view; that
+   path in the Bash card is also proof that the view arrived.
+5. Press `Don't send screen info` and ask again: `pluginContext` is `null`. The chip stays hidden while
+   you stay on the same page, even when you open another email. Leaving the page and coming back
+   brings it back. The Gmail page has no chat panel, so it shows no chip.
+6. Read back what was stored: export `ai_chat_threads_messages_aisdk_5`, `ai_chat_run_steps` and
+   `ai_chat_threads` with `convex data ... --limit 60` into the task folder, and count strings that only
+   the view text has (`Start of the email`, `Gmail account:`). Expect 0. The email body itself may be
+   in a Bash card's output when the agent read the file, so do not search for body text.
 
 ## Triggering a plugin backend
 
