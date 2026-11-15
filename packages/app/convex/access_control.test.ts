@@ -11616,7 +11616,7 @@ describe("file write policy management", () => {
 		const messages = await t.run((ctx) =>
 			ctx.db
 				.query("channels_messages")
-				.withIndex("by_channel", (q) => q.eq("channelId", root!.root.message.channelId))
+				.withIndex("by_channel_listed", (q) => q.eq("channelId", root!.root.message.channelId))
 				.collect(),
 		);
 		expect(messages.map((message) => message.body).sort()).toEqual([

@@ -37,6 +37,7 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import {
 	app_local_storage_get_value,
 	app_local_storage_set_value,
@@ -110,6 +111,18 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const resolvable =
 		document.kind === "file" ||
 		((document.kind === "public" || document.kind === "private") && document.resolvableThreads);
+	const shownThread = thread?.root.message.channelId === document._id ? thread.root : null;
+	// Write here, not in the shared pane: Files comments reuse `ChannelsConversationPane`.
+	// The server replaces the names with saved ones, so the browser copy only has to be valid.
+	useAiChatUiContextWrite({
+		channel: {
+			channelId: document._id,
+			kind: document.kind,
+			name: name || "Direct message",
+			threadRootId: shownThread?.message._id ?? null,
+			threadTitle: shownThread?.thread?.title ?? null,
+		},
+	});
 	const openThread = useFn((id: app_convex_Id<"channels_messages">) => {
 		opener.current =
 			globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;

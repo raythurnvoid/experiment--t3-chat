@@ -32,6 +32,7 @@ function message(sequence: number, replies = false, body = "Saved message"): Cha
 			revision: 1,
 			editedAt: null,
 			deletedAt: null,
+			listed: true,
 		},
 		authorName: "Member",
 		mentionNames: [],

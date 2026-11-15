@@ -1649,6 +1649,7 @@ export const test_mocks_fill_db_with = {
 			revision: 0,
 			editedAt: null,
 			deletedAt: null,
+			listed: true,
 		});
 		const threadId = await ctx.db.insert("channels_threads", {
 			channelId,

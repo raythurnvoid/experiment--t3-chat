@@ -107,6 +107,7 @@ function message(): ComponentProps<typeof ChannelsFeedMessage>["row"] {
 			revision: 0,
 			editedAt: null,
 			deletedAt: null,
+			listed: true,
 		},
 		authorName: "Ana",
 		mentionNames: [],

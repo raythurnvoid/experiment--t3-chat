@@ -1864,6 +1864,91 @@ describe("agent_read", () => {
 		});
 		expect(result._nay?.message, "agent file read must not reveal a path after access is lost").toBe("Not found");
 	});
+	test("latest reads the newest messages first, and deleted messages do not shorten pages", async () => {
+		const f = await fixture();
+		const channelId = await create(f, "public");
+		vi.useFakeTimers();
+		try {
+			for (const body of ["A", "B", "C"]) await send(f, f.member, { kind: "channel", channelId }, { body });
+			const root = await send(f, f.member, { kind: "channel", channelId }, { body: "T" });
+			const rootMessageId = root._yay!.messageId as Id<"channels_messages">;
+			await send(f, f.member, { kind: "thread", rootMessageId }, { body: "Reply" });
+			// More deleted messages than one page, all newer than the live ones.
+			const deletedIds = await f.t.run(async (ctx) => {
+				const { _id, _creationTime, ...rootDoc } = (await ctx.db.get("channels_messages", rootMessageId))!;
+				const ids = [];
+				for (let index = 0; index < 60; index++)
+					ids.push(
+						await ctx.db.insert("channels_messages", {
+							...rootDoc,
+							body: `Deleted ${index}`,
+							mainSequence: 100 + index,
+							channelSequence: 100 + index,
+							clientMessageId: `deleted-${index}`,
+						}),
+					);
+				return ids;
+			});
+			for (const [index, messageId] of deletedIds.entries()) {
+				// The delete rate limit refills 20 tokens in 20 seconds.
+				if (index % 20 === 0) vi.setSystemTime(Date.now() + 60 * 1000);
+				const deleted = await f.as(f.member).mutation(api.channels_messages.delete_message, {
+					membershipId: f.member.membershipId,
+					messageId,
+				});
+				expect(deleted._nay).toBeUndefined();
+			}
+
+			const latestMain = await f
+				.as(f.member)
+				.query(api.channels_messages.list_latest_main, { membershipId: f.member.membershipId, channelId });
+			expect(
+				latestMain.messages.map((row) => row.message.body),
+				"the UI's first page must not be filled with deleted messages",
+			).toEqual(["T", "C", "B", "A"]);
+
+			const context = await agent_context(f);
+			const read = (args: Partial<FunctionArgs<typeof internal.channels_messages.agent_read>>) =>
+				f.t.query(internal.channels_messages.agent_read, {
+					...context,
+					reference: { kind: "channel", value: channelId },
+					latest: true,
+					paginationOpts: { numItems: 2, cursor: null },
+					...args,
+				});
+			const first = await read({});
+			expect(first._yay!.page.map((row) => row.message.body)).toEqual(["C", "T"]);
+			const older = await read({ paginationOpts: { numItems: 2, cursor: first._yay!.continueCursor } });
+			expect(older._yay!.page.map((row) => row.message.body)).toEqual(["A", "B"]);
+			const thread = await read({ rootMessageId, paginationOpts: { numItems: 50, cursor: null } });
+			expect(thread._yay!.page.map((row) => row.message.body)).toEqual(["T", "Reply"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("delete_message", () => {
+	test("a deleted root stays listed while it has replies", async () => {
+		const f = await fixture();
+		const channelId = await create(f, "public");
+		const root = await send(f, f.member, { kind: "channel", channelId }, { body: "Root" });
+		const reply = await send(f, f.member, { kind: "thread", rootMessageId: root._yay!.messageId }, { body: "Reply" });
+		const remove = (messageId: string) =>
+			f.as(f.member).mutation(api.channels_messages.delete_message, {
+				membershipId: f.member.membershipId,
+				messageId: messageId as Id<"channels_messages">,
+			});
+		const listed = () =>
+			f.t.run(
+				async (ctx) => (await ctx.db.get("channels_messages", root._yay!.messageId as Id<"channels_messages">))!.listed,
+			);
+
+		await remove(root._yay!.messageId);
+		expect(await listed(), "a deleted root with replies keeps its place for the thread").toBe(true);
+		await remove(reply._yay!.messageId);
+		expect(await listed(), "the root leaves the list with its last reply").toBe(false);
+	});
 });
 
 describe("search_messages", () => {

@@ -1569,7 +1569,7 @@ export async function channels_db_purge_channel_batch(
 
 	const messages = await ctx.db
 		.query("channels_messages")
-		.withIndex("by_channel", (q) => q.eq("channelId", channel._id))
+		.withIndex("by_channel_listed", (q) => q.eq("channelId", channel._id))
 		.take(batchSize);
 	if (messages.length) {
 		let deleted = 0;

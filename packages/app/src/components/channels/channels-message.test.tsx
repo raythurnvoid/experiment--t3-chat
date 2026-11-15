@@ -45,6 +45,7 @@ function fixture() {
 				revision: 1,
 				editedAt: null,
 				deletedAt: null,
+				listed: true,
 			},
 			authorName: "Ana",
 			mentionNames: [],

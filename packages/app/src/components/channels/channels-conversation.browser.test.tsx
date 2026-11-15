@@ -85,6 +85,7 @@ function message(sequence: number, reply = false): ChannelsMessage {
 			revision: 1,
 			editedAt: null,
 			deletedAt: null,
+			listed: true,
 		},
 		authorName: "Ana",
 		mentionNames: [],

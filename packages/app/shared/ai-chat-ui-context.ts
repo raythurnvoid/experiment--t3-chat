@@ -9,6 +9,9 @@ import { files_STORED_PATH_MAX_LENGTH } from "./files.ts";
  * The server checks `node.fileNodeId` and replaces `path` and `kind` with the saved values, so the
  * browser's copy is never trusted. A null `fileNodeId` is the workspace root, or a node the reader
  * can no longer open (history reads clear it, like file quotes).
+ *
+ * `channel` works the same way: the server checks `channelId` and `threadRootId` and replaces the
+ * names with saved ones. History reads clear both ids when the reader can no longer open the channel.
  */
 export const ai_chat_ui_context_schema = z
 	.object({
@@ -32,9 +35,23 @@ export const ai_chat_ui_context_schema = z
 			})
 			.strict()
 			.nullable(),
+		/**
+		 * The open Messages channel. `name` is what the chip shows: `#name`, the other people of a direct
+		 * message, or the file name of a file's comments.
+		 */
+		channel: z
+			.object({
+				channelId: z.string().min(1).max(128).nullable(),
+				kind: z.enum(["public", "private", "direct", "file"]),
+				name: z.string().min(1).max(1000),
+				threadRootId: z.string().min(1).max(128).nullable(),
+				threadTitle: z.string().min(1).max(200).nullable(),
+			})
+			.strict()
+			.nullable(),
 	})
 	.strict()
-	.refine((context) => context.node !== null || context.plugin !== null);
+	.refine((context) => context.node !== null || context.plugin !== null || context.channel !== null);
 
 export type ai_chat_UiContext = z.infer<typeof ai_chat_ui_context_schema>;
 
@@ -84,6 +101,20 @@ export function ai_chat_ui_context_to_model_text(context: ai_chat_UiContext) {
 		lines.push(
 			`${context.plugin.kind === "page" ? "Plugin page" : "Plugin view"}: ${quote(context.plugin.title)} (plugin ${quote(context.plugin.pluginName)})`,
 		);
+	}
+	if (context.channel) {
+		// The model needs the ids to run `channels read`. A history read clears them after access is lost.
+		const channel = context.channel;
+		const kind =
+			channel.kind === "file" ? "file comments" : channel.kind === "direct" ? "direct message" : channel.kind;
+		lines.push(
+			`Open channel: ${quote(channel.name)} (${kind}${channel.channelId ? `, id ${quote(channel.channelId)}` : ""})`,
+		);
+		if (channel.threadRootId || channel.threadTitle) {
+			lines.push(
+				`Open thread${channel.threadTitle ? `: ${quote(channel.threadTitle)}` : ""}${channel.threadRootId ? ` (root message id ${quote(channel.threadRootId)})` : ""}`,
+			);
+		}
 	}
 	lines.push("</ui_context>");
 	return lines.join("\n");

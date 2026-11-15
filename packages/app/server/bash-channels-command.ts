@@ -26,7 +26,7 @@ import {
 const USAGE =
 	"Usage: channels ls [--kind public|private|direct|file]\n" +
 	"Usage: channels members <reference>\n" +
-	"Usage: channels read <reference> [--since DATE] [--until DATE] [--thread ROOT_ID] [--format text|json]\n" +
+	"Usage: channels read <reference> [--latest | --since DATE --until DATE] [--thread ROOT_ID] [--format text|json]\n" +
 	"Usage: channels search <words> [--in reference] [--from USER_ID] [--attachments true|false] [--since DATE] [--until DATE] [--format text|json]\n" +
 	"All commands: [--workspace current|home] [--limit 1..50] [--cursor CURSOR]\n";
 const date_schema = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
@@ -68,6 +68,11 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			}
 			const equals = arg.indexOf("=");
 			const name = arg.slice(2, equals === -1 ? undefined : equals);
+			// `--latest` is the only flag without a value.
+			if (arg === "--latest" && command === "read" && !("latest" in options)) {
+				options.latest = "true";
+				continue;
+			}
 			if (!allowed.has(name) || name in options) return fail(`Invalid option --${name}`, true);
 			if (equals !== -1) options[name] = arg.slice(equals + 1);
 			else {
@@ -100,6 +105,9 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 		}
 		if (dates.since !== undefined && dates.until !== undefined && dates.since >= dates.until)
 			return fail("Since must be before until", true);
+		// The newest-first index is ordered by sequence, not by time, so it cannot also take a time window.
+		if (options.latest && (dates.since !== undefined || dates.until !== undefined))
+			return fail("Use --latest or --since/--until, not both", true);
 		let root = options.workspace === "home" ? (roots.personal ?? roots.app) : roots.app;
 		let target: FunctionArgs<typeof internal.channels_messages.agent_read>["reference"] = {
 			kind: "channel",
@@ -133,6 +141,9 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 				if (!urlRoot || (options.workspace && root !== urlRoot)) return fail("Not found");
 				root = urlRoot;
 				target = { kind: "channel", value: decodeURIComponent(match[3]) };
+				// A copied thread link reads that thread, unless --thread names another one.
+				const urlThread = url.searchParams.get("thread");
+				if (command === "read" && urlThread && options.thread === undefined) options.thread = urlThread;
 			} catch {
 				return fail("Invalid Messages app URL", true);
 			}
@@ -154,6 +165,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			target,
 			kind: kind.data,
 			...dates,
+			latest: options.latest === "true",
 			thread: options.thread,
 			query: searchQuery?.success ? searchQuery.data : undefined,
 			authorUserId: options.from,
@@ -200,6 +212,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 								reference: target,
 								...dates,
 								rootMessageId: options.thread,
+								latest: options.latest === "true",
 								paginationOpts,
 							});
 		if (result._nay) return fail(result._nay.message);
@@ -209,7 +222,7 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 			: await bash_cursor_id_create(ctx, source.userId, JSON.stringify({ key, cursor: page.continueCursor }));
 		// Print the clamped `--limit`, so the next page does not repeat the over-max note.
 		const next = nextCursor
-			? `Next page: channels ${[
+			? `${options.latest ? "Older messages" : "Next page"}: channels ${[
 					...args
 						.filter(
 							(arg, index) =>
@@ -243,13 +256,16 @@ export function bash_channels_command_create(ctx: ActionCtx, roots: bash_DbFiles
 				...(item.thread
 					? [`thread: ${item.thread.replyCount} replies${item.thread.isResolved ? " (resolved)" : ""}`]
 					: []),
-				channels_render_file_quotes(
-					channels_render_file_mentions(
-						channels_render_people_mentions(message.body, item.mentionNames),
-						item.fileMentions.map((file) => (file.kind === "file" ? file : null)),
+				// Other people wrote this text. Quote it, so a body cannot fake a header line of another author.
+				`body: ${JSON.stringify(
+					channels_render_file_quotes(
+						channels_render_file_mentions(
+							channels_render_people_mentions(message.body, item.mentionNames),
+							item.fileMentions.map((file) => (file.kind === "file" ? file : null)),
+						),
+						message.fileQuotes,
 					),
-					message.fileQuotes,
-				),
+				)}`,
 				...item.attachments.map((attachment) =>
 					attachment.kind === "file"
 						? `attachment: ${attachment.name} (${bash_db_files_path_to_current_workspace_path(root.currentWorkspacePath, attachment.path)})`

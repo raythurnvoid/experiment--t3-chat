@@ -195,7 +195,9 @@ describe("Messages totals", () => {
 		const last = await f.t.run((ctx) =>
 			ctx.db
 				.query("channels_messages")
-				.withIndex("by_channel_mainSequence", (q) => q.eq("channelId", channelId).eq("mainSequence", 52))
+				.withIndex("by_channel_listed_mainSequence", (q) =>
+					q.eq("channelId", channelId).eq("listed", true).eq("mainSequence", 52),
+				)
 				.unique(),
 		);
 		await f

@@ -13,15 +13,20 @@ const useAiChatUiContextStore = create<
 		 */
 		removedKey: string | null;
 	}
->(() => ({ node: null, view: null, plugin: null, removedKey: null }));
+>(() => ({ node: null, view: null, plugin: null, channel: null, removedKey: null }));
 
 function get_key(context: ai_chat_UiContext) {
 	return JSON.stringify(context);
 }
 
 function get_shown(state: ai_chat_UiContext & { removedKey: string | null }) {
-	if (!state.node && !state.plugin) return null;
-	const context: ai_chat_UiContext = { node: state.node, view: state.view, plugin: state.plugin };
+	if (!state.node && !state.plugin && !state.channel) return null;
+	const context: ai_chat_UiContext = {
+		node: state.node,
+		view: state.view,
+		plugin: state.plugin,
+		channel: state.channel,
+	};
 	return get_key(context) === state.removedKey ? null : context;
 }
 
@@ -36,8 +41,9 @@ export function useAiChatUiContextShown() {
 	const node = useAiChatUiContextStore((state) => state.node);
 	const view = useAiChatUiContextStore((state) => state.view);
 	const plugin = useAiChatUiContextStore((state) => state.plugin);
+	const channel = useAiChatUiContextStore((state) => state.channel);
 	const removedKey = useAiChatUiContextStore((state) => state.removedKey);
-	return get_shown({ node, view, plugin, removedKey });
+	return get_shown({ node, view, plugin, channel, removedKey });
 }
 
 export function ai_chat_ui_context_remove(context: ai_chat_UiContext) {
@@ -60,6 +66,21 @@ export function useAiChatUiContextWrite(context: Partial<ai_chat_UiContext>) {
 	}, [contextKey]);
 }
 
+function get_channel_label(channel: NonNullable<ai_chat_UiContext["channel"]>) {
+	const name =
+		channel.kind === "file"
+			? `Comments on ${channel.name}`
+			: channel.kind === "direct"
+				? `Direct message with ${channel.name}`
+				: channel.kind === "private"
+					? `${channel.name} (private)`
+					: channel.name;
+	// History clears the thread id when access is lost, but keeps the title.
+	return channel.threadRootId || channel.threadTitle
+		? `${name} · Thread${channel.threadTitle ? `: ${channel.threadTitle}` : ""}`
+		: name;
+}
+
 /**
  * A short line for the composer chip and the sent message.
  */
@@ -69,6 +90,7 @@ export function ai_chat_ui_context_get_label(context: ai_chat_UiContext) {
 		context.view,
 		// A plugin file view already shows its title as the view.
 		context.plugin?.kind === "page" ? `${context.plugin.title} (${context.plugin.pluginName})` : null,
+		context.channel ? get_channel_label(context.channel) : null,
 	]
 		.filter((item) => item)
 		.join(" · ");

@@ -14,25 +14,29 @@ const app_migrations = new Migrations(components.migrations, {
  */
 export const run = app_migrations.runner();
 
-// Temporary: remove after the backfill audit, when `listed` becomes required.
-// Same rule as `channels_messages_db_is_visible`, without the per-reader anchor check.
-export const backfill_channels_messages_listed = app_migrations.define({
-	table: "channels_messages",
+// Temporary: remove after the audit. Screen info parts sent before Messages screen info have no
+// `channel` key, and the strict part schema now requires it.
+export const backfill_ai_chat_ui_context_channel = app_migrations.define({
+	table: "ai_chat_threads_messages_aisdk_5",
 	migrateOne: async (ctx, message) => {
-		if (message.listed !== undefined) return;
-		const thread =
-			message.threadRootId === null
-				? await ctx.db
-						.query("channels_threads")
-						.withIndex("by_rootMessage", (q) => q.eq("rootMessageId", message._id))
-						.unique()
-				: null;
-		await ctx.db.patch("channels_messages", message._id, {
-			listed: message.deletedAt === null || (thread?.replyCount ?? 0) > 0,
+		const parts: unknown = message.content.parts;
+		if (!Array.isArray(parts)) return;
+		let changed = false;
+		const nextParts = parts.map((part: unknown) => {
+			if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "data-ui-context")
+				return part;
+			if (!("data" in part) || typeof part.data !== "object" || part.data === null || "channel" in part.data)
+				return part;
+			changed = true;
+			return { ...part, data: { ...part.data, channel: null } };
 		});
+		if (changed)
+			await ctx.db.patch("ai_chat_threads_messages_aisdk_5", message._id, {
+				content: { ...message.content, parts: nextParts },
+			});
 	},
 });
 
-export const run_backfill_channels_messages_listed = app_migrations.runner(
-	internal.migrations.backfill_channels_messages_listed,
+export const run_backfill_ai_chat_ui_context_channel = app_migrations.runner(
+	internal.migrations.backfill_ai_chat_ui_context_channel,
 );

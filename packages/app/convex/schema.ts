@@ -9746,14 +9746,18 @@ const app_convex_schema = defineSchema({
 		revision: v.number(),
 		editedAt: v.union(v.number(), v.null()),
 		deletedAt: v.union(v.number(), v.null()),
-		/** Temporary optional until `backfill_channels_messages_listed` runs. */
-		listed: v.optional(v.boolean()),
+		/**
+		 * False when readers never see the message: deleted, and not a root that still has replies.
+		 * Message pages read only listed rows, so deleted messages cost nothing however many there are.
+		 */
+		listed: v.boolean(),
 	})
-		.index("by_channel_mainSequence", ["channelId", "mainSequence"])
-		.index("by_threadRoot_threadSequence", ["threadRootId", "threadSequence"])
+		.index("by_channel_listed_mainSequence", ["channelId", "listed", "mainSequence"])
+		.index("by_threadRoot_listed_threadSequence", ["threadRootId", "listed", "threadSequence"])
 		// The agent reads one thread's replies in a time window. Convex adds `_creationTime` at the end.
-		.index("by_threadRoot", ["threadRootId"])
-		.index("by_channel", ["channelId"])
+		.index("by_threadRoot_listed", ["threadRootId", "listed"])
+		// A purge reads every row of a channel with only `channelId`.
+		.index("by_channel_listed", ["channelId", "listed"])
 		.index("by_authorMembership_clientMessageId", ["authorWorkspaceMembershipId", "clientMessageId"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.searchIndex("search_body", {

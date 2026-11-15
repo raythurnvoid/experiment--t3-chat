@@ -1368,6 +1368,8 @@ export const agent_read = internalQuery({
 		since: v.optional(v.number()),
 		until: v.optional(v.number()),
 		rootMessageId: v.optional(v.string()),
+		/** Read newest first. Callers do not combine it with `since` or `until`. */
+		latest: v.optional(v.boolean()),
 		paginationOpts: paginationOptsValidator,
 	},
 	returns: v_result({
@@ -1395,6 +1397,39 @@ export const agent_read = internalQuery({
 				return Result({ _nay: { message: "Not found" } });
 			rootMessage = root._yay.message;
 		}
+		const numItems = Math.max(1, Math.min(50, args.paginationOpts.numItems));
+
+		// Latest mode reads newest first, like the Messages UI: the main stream (no thread replies) or one
+		// thread's replies. Each page is returned in time order. The root is older than every reply, so it
+		// goes in front of the last page.
+		if (args.latest) {
+			const rows = await (
+				rootMessageId
+					? ctx.db
+							.query("channels_messages")
+							.withIndex("by_threadRoot_listed_threadSequence", (q) =>
+								q.eq("threadRootId", rootMessageId).eq("listed", true),
+							)
+					: ctx.db
+							.query("channels_messages")
+							.withIndex("by_channel_listed_mainSequence", (q) =>
+								q.eq("channelId", channelId).eq("listed", true).gt("mainSequence", null),
+							)
+			)
+				.order("desc")
+				.paginate({
+					...args.paginationOpts,
+					numItems,
+					maximumRowsRead: numItems,
+					maximumBytesRead: channels_LIMITS.pageBytes,
+				});
+			const messages = [...(rows.isDone && rootMessage ? [rootMessage] : []), ...rows.page.toReversed()];
+			const shaped = await Promise.all(messages.map((message) => shape_message(ctx, { ...context._yay, message })));
+			return Result({
+				_yay: { ...rows, page: shaped.filter((row) => row !== null) },
+			});
+		}
+
 		const since = args.since ?? 0;
 		const until = args.until ?? Number.MAX_SAFE_INTEGER;
 		// A thread reads only its own replies. The root is not a reply, so the first page adds it in front.
@@ -1402,22 +1437,28 @@ export const agent_read = internalQuery({
 		const query = rootMessageId
 			? ctx.db
 					.query("channels_messages")
-					.withIndex("by_threadRoot", (q) =>
-						q.eq("threadRootId", rootMessageId).gte("_creationTime", since).lt("_creationTime", until),
+					.withIndex("by_threadRoot_listed", (q) =>
+						q
+							.eq("threadRootId", rootMessageId)
+							.eq("listed", true)
+							.gte("_creationTime", since)
+							.lt("_creationTime", until),
 					)
 			: ctx.db
 					.query("channels_messages")
-					.withIndex("by_channel", (q) =>
-						q.eq("channelId", channelId).gte("_creationTime", since).lt("_creationTime", until),
+					.withIndex("by_channel_listed", (q) =>
+						q.eq("channelId", channelId).eq("listed", true).gte("_creationTime", since).lt("_creationTime", until),
 					);
 		const rootInPage =
 			rootMessage !== null &&
 			args.paginationOpts.cursor === null &&
 			rootMessage._creationTime >= since &&
 			rootMessage._creationTime < until;
+		const pageSize = Math.max(1, numItems - (rootInPage ? 1 : 0));
 		const rows = await query.paginate({
 			...args.paginationOpts,
-			numItems: Math.max(1, Math.min(50, args.paginationOpts.numItems) - (rootInPage ? 1 : 0)),
+			numItems: pageSize,
+			maximumRowsRead: pageSize,
 			maximumBytesRead: channels_LIMITS.pageBytes,
 		});
 		const messages = rootInPage && rootMessage ? [rootMessage, ...rows.page] : rows.page;
@@ -1609,7 +1650,9 @@ export const list_latest_main = query({
 			.unique())!;
 		const rows = await ctx.db
 			.query("channels_messages")
-			.withIndex("by_channel_mainSequence", (q) => q.eq("channelId", channel._id).gt("mainSequence", null))
+			.withIndex("by_channel_listed_mainSequence", (q) =>
+				q.eq("channelId", channel._id).eq("listed", true).gt("mainSequence", null),
+			)
 			.order("desc")
 			.take(channels_LIMITS.page);
 		const shaped = await Promise.all(rows.map((message) => shape_message(ctx, { ...context._yay, message })));
@@ -1643,8 +1686,12 @@ export const list_main_page = query({
 		if (access._nay) return { page: [], isDone: true, continueCursor: "" };
 		const rows = await ctx.db
 			.query("channels_messages")
-			.withIndex("by_channel_mainSequence", (q) =>
-				q.eq("channelId", channel._id).gt("mainSequence", null).lt("mainSequence", args.anchorSequence),
+			.withIndex("by_channel_listed_mainSequence", (q) =>
+				q
+					.eq("channelId", channel._id)
+					.eq("listed", true)
+					.gt("mainSequence", null)
+					.lt("mainSequence", args.anchorSequence),
 			)
 			.order("desc")
 			.paginate({
@@ -1713,7 +1760,9 @@ export const list_latest_thread = query({
 		if (target._nay || target._yay.message.threadRootId !== null) return { messages: [], lastReplySequence: 0 };
 		const rows = await ctx.db
 			.query("channels_messages")
-			.withIndex("by_threadRoot_threadSequence", (q) => q.eq("threadRootId", args.rootMessageId))
+			.withIndex("by_threadRoot_listed_threadSequence", (q) =>
+				q.eq("threadRootId", args.rootMessageId).eq("listed", true),
+			)
 			.order("desc")
 			.take(channels_LIMITS.page);
 		const shaped = await Promise.all(rows.map((message) => shape_message(ctx, { ...context._yay, message })));
@@ -1809,8 +1858,8 @@ export const list_thread_page = query({
 		if (target._nay || target._yay.message.threadRootId !== null) return { page: [], isDone: true, continueCursor: "" };
 		const rows = await ctx.db
 			.query("channels_messages")
-			.withIndex("by_threadRoot_threadSequence", (q) =>
-				q.eq("threadRootId", args.rootMessageId).lt("threadSequence", args.anchorSequence),
+			.withIndex("by_threadRoot_listed_threadSequence", (q) =>
+				q.eq("threadRootId", args.rootMessageId).eq("listed", true).lt("threadSequence", args.anchorSequence),
 			)
 			.order("desc")
 			.paginate({
