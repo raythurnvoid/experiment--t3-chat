@@ -1,8 +1,7 @@
 // Keep routing static; load JWT and membership code only for these requests.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type {
 	plugins_service_access_http_lease_Body,
 	plugins_service_access_http_snapshot_Body,
@@ -36,7 +35,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_lease
 							>;
 						};
@@ -68,7 +67,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_snapshot
 							>;
 						};
@@ -100,7 +99,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_events
 							>;
 						};
@@ -132,7 +131,7 @@ export function plugins_service_access_http_routes(router: { route: HttpRouter["
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service_access_http.ts").plugins_service_access_http_signing_key
 							>;
 						};

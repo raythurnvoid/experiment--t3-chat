@@ -1367,8 +1367,8 @@ describe("public API routes", () => {
 			headers: service_headers(minted._yay.token),
 			body: JSON.stringify({ collection: "meetings", key: "meeting-1", padding: "x".repeat(64 * 1024) }),
 		});
-		expect(oversized.status).toBe(400);
-		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
+		expect(oversized.status).toBe(413);
+		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "request_too_large" });
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 	});
 

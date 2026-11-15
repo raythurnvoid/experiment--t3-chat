@@ -370,7 +370,7 @@ async function parse_body<T>(request: Request, schema: z.ZodSchema<T>) {
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);
 	if (declaredBytes > REQUEST_MAX_BYTES) {
 		await request.body?.cancel();
-		return Result({ _nay: { message: "Request body is too large" } });
+		return Result({ _nay: { name: "request_too_large", message: "Request body is too large" } });
 	}
 	const reader = request.body?.getReader();
 	const bytes = new Uint8Array(REQUEST_MAX_BYTES);
@@ -381,7 +381,7 @@ async function parse_body<T>(request: Request, schema: z.ZodSchema<T>) {
 				const chunk = await reader.read();
 				if (chunk.done) break;
 				if (length + chunk.value.byteLength > REQUEST_MAX_BYTES) {
-					return Result({ _nay: { message: "Request body is too large" } });
+					return Result({ _nay: { name: "request_too_large", message: "Request body is too large" } });
 				}
 				bytes.set(chunk.value, length);
 				length += chunk.value.byteLength;
@@ -432,6 +432,13 @@ export async function public_api_ai_chat_http_transcript(args: {
 		} as const;
 	}
 	const parsed = await parse_body(args.request, transcript_body_schema);
+	if (parsed._nay?.name === "request_too_large") {
+		return {
+			status: 413,
+			headers: NO_STORE_HEADERS,
+			body: { message: parsed._nay.message, errorCode: "request_too_large" },
+		} as const;
+	}
 	if (parsed._nay) {
 		return {
 			status: 400,
@@ -514,6 +521,13 @@ export async function public_api_ai_chat_http_read_output(args: {
 		} as const;
 	}
 	const parsed = await parse_body(args.request, output_body_schema);
+	if (parsed._nay?.name === "request_too_large") {
+		return {
+			status: 413,
+			headers: NO_STORE_HEADERS,
+			body: { message: parsed._nay.message, errorCode: "request_too_large" },
+		} as const;
+	}
 	if (parsed._nay) {
 		return {
 			status: 400,

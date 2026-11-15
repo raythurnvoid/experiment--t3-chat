@@ -1,8 +1,8 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler, pluginRunner_InvokeReply } from "common/api-schemas.ts";
+import type { pluginRunner_InvokeReply } from "common/api-schemas.ts";
 import type { plugins_invoke_http_invoke_Body } from "./plugins_invoke.ts";
 
 export function plugins_invoke_http_routes(router: { route: HttpRouter["route"] }) {
@@ -15,7 +15,7 @@ export function plugins_invoke_http_routes(router: { route: HttpRouter["route"] 
 						type PathParams = never;
 						type Headers = Record<string, string>;
 						type Body = plugins_invoke_http_invoke_Body;
-						type Responses = api_schemas_BuildResponseSpecFromHandler<
+						type Responses = public_api_http_action_ResponseSpec<
 							typeof import("./plugins_invoke.ts").plugins_invoke_http_invoke
 						>;
 

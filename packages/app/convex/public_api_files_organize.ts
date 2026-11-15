@@ -48,8 +48,12 @@ import {
 } from "./public_api_http_auth.ts";
 import { public_api_credentials_db_get_write_context } from "./public_api_credentials_db.ts";
 import type { r2_get_assets_ready_states_Result } from "./r2.ts";
-import { rate_limiter_limit_by_key, rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE } from "./rate_limiter.ts";
-import app_convex_schema, { ai_chat_workspaces_source_validator, files_saved_stream_validator } from "./schema.ts";
+import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import app_convex_schema, {
+	ai_chat_workspaces_source_validator,
+	files_refused_error_code_validator,
+	files_saved_stream_validator,
+} from "./schema.ts";
 import { ai_chat_workspaces_db_authorize_file_scope } from "./ai_chat_workspaces.ts";
 import { convex_error } from "../server/convex-utils.ts";
 import { crypto_open_cursor, crypto_seal_cursor, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -380,10 +384,6 @@ export const create_folders = internalMutation({
 				if (name === "read_only" || name === "move_busy" || name === "path_busy") {
 					throw fail({ path, message, status: 409, errorCode: name });
 				}
-				// A purge is deleting this item. Answer like any other job that holds the path.
-				if (name === "deleting") {
-					throw fail({ path, message, status: 409, errorCode: "path_busy" });
-				}
 				if (name === "too_many_folders") {
 					throw fail({ path, message, status: 400, errorCode: "too_many_folders" });
 				}
@@ -513,19 +513,23 @@ export async function public_api_files_organize_http_mkdir(args: {
 }
 
 /**
- * The code of one item of a `refused` list (delete, move, copy, restore, jobs/get). The lists keep only
- * a message, also in the saved request that a retry answers from. So the code comes from the message,
- * and the same message always gets the same code.
+ * The code of one refusal of a delete or restore job. Read it when the item is refused and save it with
+ * the item, so a retry and `jobs/get` answer the same code.
  *
- * Only the fixed messages get their own code. The other refusals (read-only items, busy items, job
- * errors) have messages that name items, so they get "conflict".
+ * The fixed messages carry no refusal name, so they are read by their text. Other refusals have messages
+ * that name items, so they are read by name. A refusal without a known name gets "conflict".
  */
-function get_refused_error_code(message: string) {
-	if (message === "Permission denied") return "permission_denied" as const;
+function get_refusal_error_code(refusal: { name?: string | null; message: string }) {
+	if (refusal.message === "Permission denied") return "permission_denied" as const;
 	// A plugin gets "Not in the Trash" for a missing item too, so both mean the Trash item is not there.
-	if (message === "Not found" || message === files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash) {
+	if (refusal.message === "Not found" || refusal.message === files_archive_runs_PLUGIN_RESTORE_MESSAGES.not_in_trash) {
 		return "not_found" as const;
 	}
+	if (refusal.name === "read_only") return "read_only" as const;
+	if (refusal.name === "move_busy") return "move_busy" as const;
+	// `busy`: another job holds these items. The restore check names an item that a purge has started
+	// by its message only.
+	if (refusal.name === "busy" || refusal.message === "This item is being deleted.") return "path_busy" as const;
 	return "conflict" as const;
 }
 
@@ -560,7 +564,9 @@ export const delete_paths = internalMutation({
 	returns: v.object({
 		jobId: v.union(v.id("activities"), v.null()),
 		isDone: v.boolean(),
-		refused: v.array(v.object({ path: v.string(), message: v.string() })),
+		refused: v.array(
+			v.object({ path: v.string(), message: v.string(), errorCode: files_refused_error_code_validator }),
+		),
 	}),
 	handler: async (ctx, args) => {
 		const fail = (failArgs: z.infer<typeof delete_failure_validator> & { message: string }) => {
@@ -646,14 +652,22 @@ export const delete_paths = internalMutation({
 		}
 
 		// Resolve each path as the key. Locked answers "Permission denied", never "Not found".
-		const refused: Array<{ path: string; message: string }> = [];
+		const refused: Array<{
+			path: string;
+			message: string;
+			errorCode: Infer<typeof files_refused_error_code_validator>;
+		}> = [];
 		const pathByNodeId = new Map<Id<"files_nodes">, string>();
 		for (const path of args.paths) {
 			const access = await files_db_get_path_access(ctx, { ...args, subject, path });
 			if (access.status === "found") {
 				pathByNodeId.set(access.node._id, path);
 			} else {
-				refused.push({ path, message: access.status === "locked" ? "Permission denied" : "Not found" });
+				refused.push(
+					access.status === "locked"
+						? { path, message: "Permission denied", errorCode: "permission_denied" }
+						: { path, message: "Not found", errorCode: "not_found" },
+				);
 			}
 		}
 		if (pathByNodeId.size === 0) {
@@ -670,7 +684,8 @@ export const delete_paths = internalMutation({
 		const refusedData = archived._nay?.data && "refusedItems" in archived._nay.data ? archived._nay.data : null;
 		// Refused before any file write. Its one message is for every found path.
 		if (archived._nay && !refusedData) {
-			for (const path of pathByNodeId.values()) refused.push({ path, message: archived._nay.message });
+			for (const path of pathByNodeId.values())
+				refused.push({ path, message: archived._nay.message, errorCode: get_refusal_error_code(archived._nay) });
 			return { jobId: null, isDone: true, refused };
 		}
 		// Every item was refused before a job started, and `data` has each one's own reason. A path not in
@@ -680,11 +695,15 @@ export const delete_paths = internalMutation({
 			for (const item of refusedData.refusedItems) {
 				const path = pathByNodeId.get(item.nodeId)!;
 				refusedPaths.push(path);
-				refused.push({ path, message: item.refusal.message });
+				refused.push({ path, message: item.refusal.message, errorCode: get_refusal_error_code(item.refusal) });
 			}
 			for (const path of pathByNodeId.values()) {
 				if (!refusedPaths.includes(path) && refusedPaths.some((folderPath) => path.startsWith(`${folderPath}/`)))
-					refused.push({ path, message: "Not deleted, because a folder above it was not deleted." });
+					refused.push({
+						path,
+						message: "Not deleted, because a folder above it was not deleted.",
+						errorCode: "conflict",
+					});
 			}
 			return { jobId: null, isDone: true, refused };
 		}
@@ -693,13 +712,16 @@ export const delete_paths = internalMutation({
 		}
 
 		const job = archived._yay;
-		const messageByNodeId = new Map(job.refusedItems.map((item) => [item.nodeId, item.message]));
+		const refusalByNodeId = new Map(job.refusedItems.map((item) => [item.nodeId, item]));
 		for (const nodeId of job.notArchivedNodeIds) {
-			refused.push({
-				path: pathByNodeId.get(nodeId)!,
-				// A named path inside a refused folder stays with that folder.
-				message: messageByNodeId.get(nodeId) ?? "Not deleted, because a folder above it was not deleted.",
-			});
+			const refusal = refusalByNodeId.get(nodeId);
+			const path = pathByNodeId.get(nodeId)!;
+			// A named path inside a refused folder stays with that folder.
+			refused.push(
+				refusal
+					? { path, message: refusal.message, errorCode: get_refusal_error_code(refusal) }
+					: { path, message: "Not deleted, because a folder above it was not deleted.", errorCode: "conflict" },
+			);
 		}
 		// A delete from a key always keeps its job, so the job can hold the request for a retry.
 		await ctx.db.patch("files_archive_runs", job.runId, {
@@ -844,10 +866,7 @@ export async function public_api_files_organize_http_delete(args: {
 	}
 	return {
 		status: 200,
-		body: {
-			...result,
-			refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-		},
+		body: result,
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
@@ -2078,7 +2097,7 @@ async function db_render_plugin_restore_refusals(
 ) {
 	return await Promise.all(
 		args.refused.map(async (refusal) => {
-			if (!("nodeId" in refusal)) return { path: null, message: refusal.message };
+			if (!("nodeId" in refusal)) return { path: null, message: refusal.message, errorCode: refusal.errorCode };
 			if (refusal.path === null) return refusal;
 			const nodeId = ctx.db.normalizeId("files_nodes", refusal.nodeId);
 			const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
@@ -2123,8 +2142,17 @@ export const restore_items = internalMutation({
 		refused: v.array(
 			v.union(
 				// A plugin's retry gets a null path where it may not see the path now.
-				v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
-				v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+				v.object({
+					path: v.union(v.string(), v.null()),
+					message: v.string(),
+					errorCode: files_refused_error_code_validator,
+				}),
+				v.object({
+					nodeId: v.string(),
+					path: v.union(v.string(), v.null()),
+					message: v.string(),
+					errorCode: files_refused_error_code_validator,
+				}),
 			),
 		),
 	}),
@@ -2349,7 +2377,8 @@ export const restore_items = internalMutation({
 		// paths it sent. A path it sent keeps the id of the one item found there when the plugin can read it,
 		// so a retry can check that item again. A node it sent never gets a path.
 		type Selector = { path: string } | { nodeId: string; path: string | null };
-		const refused: Array<Selector & { message: string }> = [];
+		const refused: Array<Selector & { message: string; errorCode: Infer<typeof files_refused_error_code_validator> }> =
+			[];
 		const nodes: Doc<"files_nodes">[] = [];
 		const selectorsByOperationId = new Map<string, Selector[]>();
 		const add_node = (node: Doc<"files_nodes">, selector: Selector) => {
@@ -2383,6 +2412,7 @@ export const restore_items = internalMutation({
 							: access.status === "found"
 								? "Not in the Trash"
 								: notFoundMessage,
+					errorCode: access.status === "locked" ? "permission_denied" : "not_found",
 				});
 				continue;
 			}
@@ -2393,7 +2423,7 @@ export const restore_items = internalMutation({
 				isReadable &&= await checker.can(fileNode, "content.read");
 			}
 			if (!isReadable) {
-				refused.push({ path, message: "Permission denied" });
+				refused.push({ path, message: "Permission denied", errorCode: "permission_denied" });
 				continue;
 			}
 			// The same path was archived more than once, for example after a new item took the name.
@@ -2402,6 +2432,7 @@ export const restore_items = internalMutation({
 					path,
 					message:
 						"Several deleted items have this path. Find the one you want in files/trash/list and restore it by nodes.",
+					errorCode: "conflict",
 				});
 				continue;
 			}
@@ -2420,7 +2451,7 @@ export const restore_items = internalMutation({
 					checker: pluginRestore ? checker : null,
 				}))
 			) {
-				refused.push({ ...selector, message: "Permission denied" });
+				refused.push({ ...selector, message: "Permission denied", errorCode: "permission_denied" });
 				continue;
 			}
 			add_node(node, selector);
@@ -2431,12 +2462,17 @@ export const restore_items = internalMutation({
 			// shows its new place and Trash stamp before its cleanup rewrites the node doc.
 			const node = nodeId ? await files_saved_placement_db_get_node(ctx.db, nodeId) : null;
 			if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
-				refused.push({ nodeId: selector.nodeId, path: null, message: notFoundMessage });
+				refused.push({ nodeId: selector.nodeId, path: null, message: notFoundMessage, errorCode: "not_found" });
 				continue;
 			}
 			// Check access before the item's state, so a locked item does not tell whether it changed.
 			if (!(await checker.can(node, "content.read"))) {
-				refused.push({ nodeId: selector.nodeId, path: null, message: "Permission denied" });
+				refused.push({
+					nodeId: selector.nodeId,
+					path: null,
+					message: "Permission denied",
+					errorCode: "permission_denied",
+				});
 				continue;
 			}
 			const path = pluginRestore ? null : node.path;
@@ -2447,6 +2483,7 @@ export const restore_items = internalMutation({
 					nodeId: selector.nodeId,
 					path,
 					message: "This Trash item changed. List the Trash and pick it again.",
+					errorCode: "conflict",
 				});
 				continue;
 			}
@@ -2460,7 +2497,7 @@ export const restore_items = internalMutation({
 					checker: pluginRestore ? checker : null,
 				}))
 			) {
-				refused.push({ nodeId: selector.nodeId, path, message: "Permission denied" });
+				refused.push({ nodeId: selector.nodeId, path, message: "Permission denied", errorCode: "permission_denied" });
 				continue;
 			}
 			add_node(node, { nodeId: selector.nodeId, path });
@@ -2483,7 +2520,7 @@ export const restore_items = internalMutation({
 		// A refused delete operation refuses every path or node that named an item of it.
 		for (const refusal of restored.refusals) {
 			for (const selector of selectorsByOperationId.get(refusal.archiveOperationId)!) {
-				refused.push({ ...selector, message: refusal.nay.message });
+				refused.push({ ...selector, message: refusal.nay.message, errorCode: get_refusal_error_code(refusal.nay) });
 			}
 		}
 
@@ -2771,11 +2808,8 @@ export async function public_api_files_organize_http_restore(args: {
 						dryRun: true as const,
 						// False when a job did not end in the first step: its later results are unknown.
 						complete: preview.isDone,
-						refused: preview.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-						jobs: preview.jobs.map((job) => ({
-							...job,
-							refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-						})),
+						refused: preview.refused,
+						jobs: preview.jobs,
 					},
 					headers: { "Cache-Control": "no-store" },
 				} as const;
@@ -2802,10 +2836,7 @@ export async function public_api_files_organize_http_restore(args: {
 		}
 		return {
 			status: 200,
-			body: {
-				...result,
-				refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-			},
+			body: result,
 			headers: { "Cache-Control": "no-store" },
 		} as const;
 	})().catch(async (error: unknown) => {
@@ -2850,7 +2881,12 @@ const transfer_failure_validator = z.discriminatedUnion("status", [
 		status: z.literal(409),
 		errorCode: z.enum(["request_id_reused", "transfer_busy", "read_only", "conflict"]),
 	}),
-	z.object({ path: z.string().optional(), status: z.literal(429), errorCode: z.literal("rate_limited") }),
+	z.object({
+		path: z.string().optional(),
+		status: z.literal(429),
+		errorCode: z.literal("rate_limited"),
+		retryAfterMs: z.number(),
+	}),
 ]);
 
 /**
@@ -2878,7 +2914,9 @@ export const transfer_paths = internalMutation({
 	returns: v.object({
 		jobId: v.union(v.id("activities"), v.null()),
 		isDone: v.boolean(),
-		refused: v.array(v.object({ path: v.string(), message: v.string() })),
+		refused: v.array(
+			v.object({ path: v.string(), message: v.string(), errorCode: files_refused_error_code_validator }),
+		),
 	}),
 	handler: async (ctx, args) => {
 		const fail = (failArgs: z.infer<typeof transfer_failure_validator> & { message: string }) => {
@@ -2949,7 +2987,11 @@ export const transfer_paths = internalMutation({
 
 		// Resolve each path as the key. Locked answers "Permission denied", never "Not found". The job
 		// would stop for one bad source, so a bad one is refused here and the others still go.
-		const refused: Array<{ path: string; message: string }> = [];
+		const refused: Array<{
+			path: string;
+			message: string;
+			errorCode: Infer<typeof files_refused_error_code_validator>;
+		}> = [];
 		const sources: Array<{ kind: "saved"; id: Id<"files_nodes"> }> = [];
 		for (const path of args.from) {
 			const mustBeFolder = path.endsWith("/");
@@ -2959,12 +3001,16 @@ export const transfer_paths = internalMutation({
 				path: mustBeFolder ? path.slice(0, -1) : path,
 			});
 			if (access.status !== "found") {
-				refused.push({ path, message: access.status === "locked" ? "Permission denied" : "Not found" });
+				refused.push(
+					access.status === "locked"
+						? { path, message: "Permission denied", errorCode: "permission_denied" }
+						: { path, message: "Not found", errorCode: "not_found" },
+				);
 				continue;
 			}
 			// Like `mv file.md/ dest`, a trailing "/" refuses a file.
 			if (mustBeFolder && access.node.kind !== "folder") {
-				refused.push({ path, message: "Not a folder" });
+				refused.push({ path, message: "Not a folder", errorCode: "conflict" });
 				continue;
 			}
 			sources.push({ kind: "saved", id: access.node._id });
@@ -3078,8 +3124,8 @@ export const transfer_paths = internalMutation({
 			if (name === "request_changed") {
 				throw fail({ message, status: 409, errorCode: "request_id_reused" });
 			}
-			if (message === rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE) {
-				throw fail({ message, status: 429, errorCode: "rate_limited" });
+			if (name === "rate_limited") {
+				throw fail({ message, status: 429, errorCode: "rate_limited", retryAfterMs: started._nay.data.retryAfterMs });
 			}
 			if (message === "Permission denied") {
 				throw fail({ message, status: 403, errorCode: "permission_denied" });
@@ -3244,14 +3290,14 @@ export async function public_api_files_organize_http_transfer(args: {
 		if (data.status === 409) {
 			return { status: 409, body: { message, errorCode: data.errorCode, path: data.path } } as const;
 		}
-		return { status: 429, body: { message, errorCode: data.errorCode, path: data.path } } as const;
+		return {
+			status: 429,
+			body: { message, errorCode: data.errorCode, path: data.path, retryAfterMs: data.retryAfterMs },
+		} as const;
 	}
 	return {
 		status: 200,
-		body: {
-			...result,
-			refused: result.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-		},
+		body: result,
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
@@ -3281,9 +3327,18 @@ export const get_job = internalQuery({
 			errorMessage: v.union(v.string(), v.null()),
 			refused: v.array(
 				v.union(
-					v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
+					v.object({
+						path: v.union(v.string(), v.null()),
+						message: v.string(),
+						errorCode: files_refused_error_code_validator,
+					}),
 					// A restore that named its items by node id.
-					v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+					v.object({
+						nodeId: v.string(),
+						path: v.union(v.string(), v.null()),
+						message: v.string(),
+						errorCode: files_refused_error_code_validator,
+					}),
 				),
 			),
 			/**
@@ -3346,10 +3401,11 @@ export const get_job = internalQuery({
 				// keeps its name, like a locked row in its folder.
 				refused: [
 					...(args.cursor ? [] : run.origin.refused),
-					...items.map((item) => ({
-						path: item.sourcePath,
-						message: part === "failed" ? (item.errorMessage ?? "Failed") : "Permission denied",
-					})),
+					...items.map((item) =>
+						part === "failed"
+							? { path: item.sourcePath, message: item.errorMessage ?? "Failed", errorCode: "conflict" as const }
+							: { path: item.sourcePath, message: "Permission denied", errorCode: "permission_denied" as const },
+					),
 				],
 				// Move and copy never rename. Type the empty list, or the SDK's generated types print `never[]`.
 				renamed: [] as Array<{ path: string; newPath: string }>,
@@ -3416,15 +3472,18 @@ export const get_job = internalQuery({
 			if (item.kind !== "force_archive") continue;
 			const node = await files_saved_placement_db_get_node(ctx.db, item.nodeId);
 			const readable = node && (await checker.can(node, "content.read"));
-			forcedRefused.push({
-				path: readable ? node.path : null,
-				message:
-					!readable || item.reason === "permission"
-						? "Permission denied"
-						: item.reason === "not_empty"
-							? "This folder still holds items that could not be moved to Trash."
-							: "This item changed. Try again.",
-			});
+			forcedRefused.push(
+				!readable || item.reason === "permission"
+					? { path: readable ? node.path : null, message: "Permission denied", errorCode: "permission_denied" as const }
+					: {
+							path: node.path,
+							message:
+								item.reason === "not_empty"
+									? "This folder still holds items that could not be moved to Trash."
+									: "This item changed. Try again.",
+							errorCode: "conflict" as const,
+						},
+			);
 		}
 		return {
 			jobId: activity._id,
@@ -3450,6 +3509,7 @@ export const get_job = internalQuery({
 							...run.refusedItems.map((refusedItem) => ({
 								path: pathByNodeId.get(refusedItem.nodeId) ?? null,
 								message: refusedItem.refusal.message,
+								errorCode: get_refusal_error_code(refusedItem.refusal),
 							})),
 						]),
 				...(leftNode && pathByNodeId.has(leftNode._id)
@@ -3458,6 +3518,7 @@ export const get_job = internalQuery({
 								path: pathByNodeId.get(leftNode._id)!,
 								message:
 									"This item is still in the Trash. Restore it to bring it back with the items inside it that were moved to Trash with it.",
+								errorCode: "conflict" as const,
 							},
 						]
 					: []),
@@ -3468,6 +3529,7 @@ export const get_job = internalQuery({
 								{
 									path: item.path,
 									message: "An item with this name is already there, so this item stays in the Trash.",
+									errorCode: "conflict" as const,
 								},
 							]
 						: [],
@@ -3564,6 +3626,7 @@ async function db_get_plugin_restore_job(
 			skipped.push({
 				path: isReadable ? item.path : null,
 				message: "An item with this name is already there, so this item stays in the Trash.",
+				errorCode: "conflict" as const,
 			});
 		} else {
 			renamed.push({ path: isReadable ? item.path : null, newPath: isReadable ? item.newPath : null });
@@ -3600,6 +3663,7 @@ async function db_get_plugin_restore_job(
 							path: (await is_readable(leftNode)) ? leftNode.path : null,
 							message:
 								"This item is still in the Trash. Restore it to bring it back with the items inside it that were moved to Trash with it.",
+							errorCode: "conflict" as const,
 						},
 					]
 				: []),
@@ -3653,8 +3717,17 @@ export const get_plugin_restore_job = internalQuery({
 				errorMessage: v.union(v.string(), v.null()),
 				refused: v.array(
 					v.union(
-						v.object({ path: v.union(v.string(), v.null()), message: v.string() }),
-						v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+						v.object({
+							path: v.union(v.string(), v.null()),
+							message: v.string(),
+							errorCode: files_refused_error_code_validator,
+						}),
+						v.object({
+							nodeId: v.string(),
+							path: v.union(v.string(), v.null()),
+							message: v.string(),
+							errorCode: files_refused_error_code_validator,
+						}),
 					),
 				),
 				renamed: v.array(v.object({ path: v.union(v.string(), v.null()), newPath: v.union(v.string(), v.null()) })),
@@ -3890,7 +3963,6 @@ export async function public_api_files_organize_http_jobs_get(args: {
 				status: 200,
 				body: {
 					...job,
-					refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
 					refusedCursor: isDone
 						? null
 						: await crypto_seal_cursor({ purpose: "files_jobs_get", scope, payload: { cursor: continueCursor } }),
@@ -3951,48 +4023,7 @@ export async function public_api_files_organize_http_jobs_get(args: {
 	}
 	return {
 		status: 200,
-		body: {
-			...job,
-			refused: job.refused.map((item) => ({ ...item, errorCode: get_refused_error_code(item.message) })),
-		},
+		body: job,
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
-
-/**
- * Temporary, for one run: erase the refused items that API delete, restore, move and copy jobs saved
- * before refused items had an `errorCode`. The next schema requires the code, so these items must go
- * first. Delete this function after the run.
- *
- * It reads one page per call. It runs once in the background, and no user waits on it.
- */
-export const erase_refused_without_error_code = internalMutation({
-	args: {
-		table: v.union(v.literal("files_archive_runs"), v.literal("files_transfer_runs")),
-		cursor: v.union(v.string(), v.null()),
-	},
-	returns: v.object({ erased: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
-	handler: async (ctx, args) => {
-		let erased = 0;
-
-		if (args.table === "files_archive_runs") {
-			const page = await ctx.db.query("files_archive_runs").paginate({ numItems: 100, cursor: args.cursor });
-			for (const run of page.page) {
-				if (run.apiRequest && run.apiRequest.refused.length > 0) {
-					erased += run.apiRequest.refused.length;
-					await ctx.db.patch(run._id, { apiRequest: { ...run.apiRequest, refused: [] } });
-				}
-			}
-			return { erased, continueCursor: page.continueCursor, isDone: page.isDone };
-		}
-
-		const page = await ctx.db.query("files_transfer_runs").paginate({ numItems: 100, cursor: args.cursor });
-		for (const run of page.page) {
-			if (run.origin.kind === "api" && run.origin.refused.length > 0) {
-				erased += run.origin.refused.length;
-				await ctx.db.patch(run._id, { origin: { ...run.origin, refused: [] } });
-			}
-		}
-		return { erased, continueCursor: page.continueCursor, isDone: page.isDone };
-	},
-});

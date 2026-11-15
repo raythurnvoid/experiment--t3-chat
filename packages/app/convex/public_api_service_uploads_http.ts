@@ -50,6 +50,20 @@ function upload_failure(failure: { name?: string; message: string }) {
 	if (failure.name === ("oversized_upload" satisfies public_api_service_uploads_RefusalName)) {
 		return { status: 409, body: { message, errorCode: "oversized_upload" } } as const;
 	}
+	// Give each replay refusal its own code, so a service can tell them apart without reading the text.
+	if (failure.name === ("file_exists" satisfies public_api_service_uploads_RefusalName)) {
+		return { status: 409, body: { message, errorCode: "file_exists" } } as const;
+	}
+	if (failure.name === ("upload_released" satisfies public_api_service_uploads_RefusalName)) {
+		return { status: 409, body: { message, errorCode: "upload_released" } } as const;
+	}
+	if (failure.name === ("upload_expired" satisfies public_api_service_uploads_RefusalName)) {
+		return { status: 409, body: { message, errorCode: "upload_expired" } } as const;
+	}
+	// The declared size is over the upload limit. Trying the same request again cannot help.
+	if (failure.name === ("file_too_large" satisfies public_api_service_uploads_RefusalName)) {
+		return { status: 400, body: { message, errorCode: "file_too_large" } } as const;
+	}
 	if (failure.name === REFUSAL_STORAGE_FULL) {
 		return { status: 403, body: { message, errorCode: "storage_full" } } as const;
 	}
@@ -66,8 +80,7 @@ function upload_failure(failure: { name?: string; message: string }) {
 	if (failure.name === "move_busy") {
 		return { status: 409, body: { message, errorCode: "move_busy" } } as const;
 	}
-	// `deleting` means a purge is deleting this item. Answer like any other job that holds the path.
-	if (failure.name === "path_busy" || failure.name === "deleting") {
+	if (failure.name === "path_busy") {
 		return { status: 409, body: { message, errorCode: "path_busy" } } as const;
 	}
 	if (failure.name === "too_many_folders") {

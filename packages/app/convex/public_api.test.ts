@@ -5433,8 +5433,8 @@ describe("locked and missing paths", () => {
 				refused: [
 					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
 					// Not the general "None of these items can be archived…" message.
-					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
-					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
+					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
+					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
 				],
 			},
 		});
@@ -5499,7 +5499,7 @@ describe("locked and missing paths", () => {
 					{ path: "/secret/h01.md", message: "Permission denied", errorCode: "permission_denied" },
 					{ path: "/secret/nope.md", message: "Permission denied", errorCode: "permission_denied" },
 					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
-					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "conflict" },
+					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
 				],
 			},
 		});
@@ -7995,8 +7995,8 @@ describe("files write-many", () => {
 			headers: auth_headers(credential),
 			body: JSON.stringify({ files: [{ path: "/big.md", content: "x".repeat(8_500_000) }] }),
 		});
-		expect(oversized.status).toBe(400);
-		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
+		expect(oversized.status).toBe(413);
+		expect(await oversized.json()).toEqual({ message: "Request body is too large", errorCode: "request_too_large" });
 
 		// One item over the batch item cap fails shape validation.
 		const overfull = await t.fetch("/api/v1/files/write-many", {

@@ -570,8 +570,7 @@ function writer_failure(error: { message: string; name?: string }) {
 		return { status: 409, body: { message: error.message, errorCode: "read_only" } } as const;
 	if (error.name === "move_busy")
 		return { status: 409, body: { message: error.message, errorCode: "move_busy" } } as const;
-	// `deleting` means a purge is deleting this item. Answer like any other job that holds the path.
-	if (error.name === "path_busy" || error.name === "deleting")
+	if (error.name === "path_busy")
 		return { status: 409, body: { message: error.message, errorCode: "path_busy" } } as const;
 	return { status: 400, body: { message: error.message, errorCode: "invalid_input" } } as const;
 }

@@ -1590,7 +1590,11 @@ async function db_start(
 
 	if (!args.rename) {
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: membership.userId });
-		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+		if (rateLimit) {
+			return Result({
+				_nay: { name: "rate_limited", message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } },
+			});
+		}
 	}
 
 	const activeActivity = args.rename ? null : await files_transfer_status_db_get_current_activity(ctx, scope);

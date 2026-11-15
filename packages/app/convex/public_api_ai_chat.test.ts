@@ -390,21 +390,21 @@ describe("AI transcript API", () => {
 			});
 			expect(preflight.status).toBe(204);
 			expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(origin);
-			for (const [body, declaredLength] of [
-				["{}", "32769"],
-				["{", "1"],
-			]) {
+			for (const [body, declaredLength, status] of [
+				["{}", "32769", 413],
+				["{", "1", 400],
+			] as const) {
 				const response = await f.t.fetch(path, {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${f.key.credential}`,
 						Origin: origin,
 						"Content-Type": "application/json",
-						"Content-Length": declaredLength!,
+						"Content-Length": declaredLength,
 					},
 					body,
 				});
-				expect(response.status).toBe(400);
+				expect(response.status).toBe(status);
 				expect(response.headers.get("Cache-Control")).toBe("no-store");
 				expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin);
 			}
@@ -715,7 +715,7 @@ describe("AI transcript API", () => {
 		expect((await f.request(TRANSCRIPT_PATH, {}, "bad-token")).status).toBe(401);
 		expect((await f.request(TRANSCRIPT_PATH, { threadId: "not-an-id" })).status).toBe(400);
 		expect((await f.request(TRANSCRIPT_PATH, { cursor: "x".repeat(16_385) })).status).toBe(400);
-		expect((await f.request(TRANSCRIPT_PATH, { padding: "x".repeat(32 * 1024) })).status).toBe(400);
+		expect((await f.request(TRANSCRIPT_PATH, { padding: "x".repeat(32 * 1024) })).status).toBe(413);
 		const account = await f.asUser.mutation(api.access_control.create_service_account, {
 			membershipId: f.db.membershipId,
 			name: "Bound reader",

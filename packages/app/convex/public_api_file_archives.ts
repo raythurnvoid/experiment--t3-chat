@@ -5,6 +5,7 @@ import { access_control_create_file_checker, access_control_db_resolve_trash_ent
 import { files_nodes_db_archive_node } from "./files_nodes.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import { files_refused_error_code_validator } from "./schema.ts";
 import { files_nodes_db_require_writable, type files_nodes_WriteContext } from "../server/files-write-policy.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_trash_entries_db_insert } from "../server/files-trash-entries.ts";
@@ -17,7 +18,13 @@ export const public_api_file_archives_result_validator = v.object({
 	requestId: v.string(),
 	archivedNodes: v.number(),
 	complete: v.boolean(),
-	refused: v.array(v.object({ path: v.union(v.string(), v.null()), message: v.string() })),
+	refused: v.array(
+		v.object({
+			path: v.union(v.string(), v.null()),
+			message: v.string(),
+			errorCode: files_refused_error_code_validator,
+		}),
+	),
 });
 
 type Receipt = Doc<"plugins_file_archive_receipts">;
@@ -103,17 +110,28 @@ export async function public_api_file_archives_db_result(
 			node.workspaceId === args.receipt.workspaceId &&
 			(node.path === args.receipt.path || node.path.startsWith(`${args.receipt.path}/`)) &&
 			(await checker.can(node, "content.read"));
-		refused.push({
-			path: readable ? node.path : null,
-			message:
-				!readable || item.reason === "permission"
-					? "Permission denied"
-					: item.reason === "read_only"
-						? "This item is read-only."
-						: item.reason === "not_empty"
-							? "This folder still holds items that could not be moved to Trash."
-							: "This item changed. Try again.",
-		});
+		const path = readable ? node.path : null;
+		// An item the plugin cannot read now answers "Permission denied", whatever the saved reason.
+		if (!readable || item.reason === "permission") {
+			refused.push({ path, message: "Permission denied", errorCode: "permission_denied" as const });
+		} else if (item.reason === "read_only") {
+			refused.push({ path, message: "This item is read-only.", errorCode: "read_only" as const });
+		} else if (item.reason === "move_busy") {
+			refused.push({
+				path,
+				message: "This item is being moved. Try again when the Move ends.",
+				errorCode: "move_busy" as const,
+			});
+		} else {
+			refused.push({
+				path,
+				message:
+					item.reason === "not_empty"
+						? "This folder still holds items that could not be moved to Trash."
+						: "This item changed. Try again.",
+				errorCode: "conflict" as const,
+			});
+		}
 	}
 	return {
 		requestId: args.receipt.requestId,
@@ -222,7 +240,12 @@ export async function public_api_file_archives_db_archive(
 			if (!args.writeContext.force) return Result({ _nay: failure });
 			refused.push({
 				nodeId: node._id,
-				reason: failure.name === "read_only" ? "read_only" : failure.name === "conflict" ? "changed" : "permission",
+				reason:
+					failure.name === "read_only" || failure.name === "move_busy"
+						? failure.name
+						: failure.name === "conflict"
+							? "changed"
+							: "permission",
 			});
 			continue;
 		}

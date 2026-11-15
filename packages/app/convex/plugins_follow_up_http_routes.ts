@@ -1,8 +1,7 @@
 // Keep route registration static. Load runtime code only when this route runs.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type { plugins_follow_up_http_Body } from "./plugins_follow_up_http.ts";
 
 export function plugins_follow_up_http_routes(router: { route: HttpRouter["route"] }) {
@@ -30,7 +29,7 @@ export function plugins_follow_up_http_routes(router: { route: HttpRouter["route
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_follow_up_http.ts").plugins_follow_up_http
 							>;
 						};

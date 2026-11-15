@@ -69,23 +69,34 @@ async function parse_request_json<T>(args: { request: Request; schema: z.ZodSche
 
 	const declaredBytes = Number(request.headers.get("content-length") ?? Number.NaN);
 	if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
-		return { _nay: { message: "Request body is too large" } } as const;
+		return {
+			_nay: { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } },
+		} as const;
 	}
 
 	const bodyText = await read_request_text_bounded(request, maxBytes);
 	if (bodyText === null) {
-		return { _nay: { message: "Request body is too large" } } as const;
+		return {
+			_nay: { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } },
+		} as const;
 	}
 
 	try {
 		const parsed = schema.safeParse(JSON.parse(bodyText));
 		if (parsed.error) {
-			return { _nay: { message: server_request_body_issue_message(parsed.error) } } as const;
+			return {
+				_nay: {
+					status: 400,
+					body: { message: server_request_body_issue_message(parsed.error), errorCode: "invalid_input" },
+				},
+			} as const;
 		}
 
 		return { _yay: parsed.data } as const;
 	} catch {
-		return { _nay: { message: "Failed to parse request body as JSON" } } as const;
+		return {
+			_nay: { status: 400, body: { message: "Failed to parse request body as JSON", errorCode: "invalid_input" } },
+		} as const;
 	}
 }
 
@@ -120,7 +131,7 @@ export async function plugins_invoke_http_invoke(args: {
 
 	const body = await parse_request_json({ request, schema: invoke_body_validator, maxBytes: INVOKE_REQUEST_MAX_BYTES });
 	if (body._nay) {
-		return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
+		return body._nay;
 	}
 
 	// One member clicking through one plugin frame. Keyed by user and installation together, so

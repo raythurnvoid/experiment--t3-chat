@@ -99,6 +99,15 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -109,8 +118,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -219,6 +237,15 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -229,8 +256,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -317,6 +353,15 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -327,8 +372,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -421,6 +475,15 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -431,8 +494,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -515,6 +587,15 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -525,8 +606,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -556,41 +646,50 @@ export type BonoboHttpApi = {
 						"Cache-Control": "no-store";
 					};
 					body: {
-						dryRun: true;
-						complete: boolean;
+						jobIds: import("convex/values").GenericId<"activities">[];
+						isDone: boolean;
 						refused: ({
-							errorCode: "conflict" | "permission_denied" | "not_found";
 							path: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
 							message: string;
 						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
 							path: string | null;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+							nodeId: string;
+						})[] | ({
+							path: string | null;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
 							message: string;
 							nodeId: string;
 						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
 							path: null;
 							message: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+						})[];
+					} | {
+						dryRun: true;
+						complete: boolean;
+						refused: ({
+							path: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+						} | {
+							path: string | null;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+							nodeId: string;
+						})[] | ({
+							path: string | null;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+							nodeId: string;
+						} | {
+							path: null;
+							message: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
 						})[];
 						jobs: ({
-							refused: ({
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string;
-								message: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-								nodeId: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-							})[];
 							kind: "copy" | "move" | "restore" | "delete";
 							status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 							errorMessage: string | null;
@@ -604,6 +703,15 @@ export type BonoboHttpApi = {
 								discovered: number;
 								total: number | null;
 							} | undefined;
+							refused: {
+								path: string;
+								errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+								message: string;
+							}[] | {
+								path: string | null;
+								message: string;
+								errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							}[];
 							renamed: {
 								path: string;
 								newPath: string;
@@ -613,24 +721,6 @@ export type BonoboHttpApi = {
 							}[];
 							hasMoreItems: boolean;
 						} | {
-							refused: ({
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string;
-								message: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-								nodeId: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-							} | {
-								errorCode: "conflict" | "permission_denied" | "not_found";
-								path: string | null;
-								message: string;
-							})[];
 							kind: "restore";
 							status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
 							errorMessage: string | null;
@@ -644,6 +734,20 @@ export type BonoboHttpApi = {
 								discovered: number;
 								total: number | null;
 							} | undefined;
+							refused: ({
+								path: string | null;
+								errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+								message: string;
+								nodeId: string;
+							} | {
+								path: null;
+								message: string;
+								errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							} | {
+								path: string | null;
+								message: string;
+								errorCode: "conflict";
+							})[];
 							renamed: {
 								path: string | null;
 								newPath: string | null;
@@ -654,31 +758,6 @@ export type BonoboHttpApi = {
 						errorCode?: undefined;
 						nodeId?: undefined;
 						path?: undefined;
-						retryAfterMs?: undefined;
-					} | {
-						refused: ({
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string;
-							message: string;
-						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string | null;
-							message: string;
-							nodeId: string;
-						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: null;
-							message: string;
-						})[];
-						jobIds: import("convex/values").GenericId<"activities">[];
-						isDone: boolean;
-						message?: undefined;
-						errorCode?: undefined;
-						nodeId?: undefined;
-						path?: undefined;
-						dryRun?: undefined;
-						complete?: undefined;
-						jobs?: undefined;
 						retryAfterMs?: undefined;
 					};
 				};
@@ -814,8 +893,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -912,8 +1000,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -992,8 +1089,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -1016,16 +1122,56 @@ export type BonoboHttpApi = {
 						"Cache-Control": "no-store";
 					};
 					body: {
-						refused: ({
-							errorCode: "conflict" | "permission_denied" | "not_found";
+						jobId: import("convex/values").GenericId<"activities">;
+						kind: "copy" | "move";
+						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+						progress: {
+							failed: number;
+							canceled: number;
+							completed: number;
+							blocked: number;
+							skipped: number;
+							unit: "items" | "files";
+							discovered: number;
+							total: number | null;
+						} | undefined;
+						errorMessage: string | null;
+						refused: {
+							path: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+						}[];
+						renamed: {
+							path: string;
+							newPath: string;
+						}[];
+						refusedCursor: string | null;
+					} | {
+						jobId: import("convex/values").GenericId<"activities">;
+						kind: "restore" | "delete";
+						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
+						progress: {
+							failed: number;
+							canceled: number;
+							completed: number;
+							blocked: number;
+							skipped: number;
+							unit: "items" | "files";
+							discovered: number;
+							total: number | null;
+						} | undefined;
+						errorMessage: string | null;
+						refused: {
 							path: string | null;
 							message: string;
-							nodeId: string;
-						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string | null;
-							message: string;
-						})[];
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+						}[];
+						renamed: {
+							path: string;
+							newPath: string;
+						}[];
+						refusedCursor: string | null;
+					} | {
 						refusedCursor: string | null;
 						jobId: import("convex/values").GenericId<"activities">;
 						kind: "restore";
@@ -1041,70 +1187,26 @@ export type BonoboHttpApi = {
 							total: number | null;
 						} | undefined;
 						errorMessage: string | null;
+						refused: ({
+							path: string | null;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+							message: string;
+							nodeId: string;
+						} | {
+							path: null;
+							message: string;
+							errorCode: "permission_denied" | "not_found" | "read_only" | "path_busy" | "move_busy" | "conflict";
+						} | {
+							path: string | null;
+							message: string;
+							errorCode: "conflict";
+						})[];
 						renamed: {
 							path: string | null;
 							newPath: string | null;
 						}[];
 						message?: undefined;
 						errorCode?: undefined;
-					} | {
-						refused: ({
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string;
-							message: string;
-						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string | null;
-							message: string;
-						})[];
-						jobId: import("convex/values").GenericId<"activities">;
-						kind: "copy" | "move";
-						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
-						progress: {
-							failed: number;
-							canceled: number;
-							completed: number;
-							blocked: number;
-							skipped: number;
-							unit: "items" | "files";
-							discovered: number;
-							total: number | null;
-						} | undefined;
-						errorMessage: string | null;
-						renamed: {
-							path: string;
-							newPath: string;
-						}[];
-						refusedCursor: string | null;
-					} | {
-						refused: ({
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string;
-							message: string;
-						} | {
-							errorCode: "conflict" | "permission_denied" | "not_found";
-							path: string | null;
-							message: string;
-						})[];
-						jobId: import("convex/values").GenericId<"activities">;
-						kind: "restore" | "delete";
-						status: "running" | "stopping" | "partial" | "succeeded" | "failed" | "queued" | "canceled" | "timed_out" | "awaiting_input";
-						progress: {
-							failed: number;
-							canceled: number;
-							completed: number;
-							blocked: number;
-							skipped: number;
-							unit: "items" | "files";
-							discovered: number;
-							total: number | null;
-						} | undefined;
-						errorMessage: string | null;
-						renamed: {
-							path: string;
-							newPath: string;
-						}[];
-						refusedCursor: string | null;
 					};
 				};
 				400: {
@@ -1164,8 +1266,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -1273,8 +1384,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -1367,7 +1487,7 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
@@ -1381,6 +1501,15 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "storage_unavailable";
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -1511,28 +1640,6 @@ export type BonoboHttpApi = {
 						unchanged?: undefined;
 					};
 				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-					} | {
-						message: "The write receipt is unavailable";
-						errorCode: "internal_error";
-						path?: undefined;
-						nodeId?: undefined;
-						contentType?: undefined;
-						receipt?: undefined;
-						revision?: undefined;
-						size?: undefined;
-						contentChanged?: undefined;
-						normalizations?: undefined;
-						usedEditorText?: undefined;
-						unchanged?: undefined;
-					};
-				};
 				400: {
 					headers: {
 						[x: string]: string;
@@ -1574,7 +1681,7 @@ export type BonoboHttpApi = {
 					};
 					body: {
 						message: string;
-						errorCode: "conflict" | "read_only" | "path_busy" | "stale_write" | "file_changed" | "file_needs_repair" | "file_not_latest" | "file_exists" | "text_not_found" | "text_not_unique" | "file_busy";
+						errorCode: "read_only" | "conflict" | "stale_write" | "file_changed" | "file_needs_repair" | "file_not_latest" | "file_exists" | "text_not_found" | "text_not_unique" | "file_busy";
 					} | {
 						message: "The output folder or writer changed" | "This operation was already used for another write" | "A newer file write already exists" | "The file changed during the write";
 						errorCode: "stale_write";
@@ -1591,19 +1698,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: "This item is read-only.";
 						errorCode: "read_only";
-						path?: undefined;
-						nodeId?: undefined;
-						contentType?: undefined;
-						receipt?: undefined;
-						revision?: undefined;
-						size?: undefined;
-						contentChanged?: undefined;
-						normalizations?: undefined;
-						usedEditorText?: undefined;
-						unchanged?: undefined;
-					} | {
-						message: "This item is being deleted.";
-						errorCode: "path_busy";
 						path?: undefined;
 						nodeId?: undefined;
 						contentType?: undefined;
@@ -1648,8 +1742,33 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
+					} | {
+						message: "The write receipt is unavailable";
+						errorCode: "internal_error";
+						path?: undefined;
+						nodeId?: undefined;
+						contentType?: undefined;
+						receipt?: undefined;
+						revision?: undefined;
+						size?: undefined;
+						contentChanged?: undefined;
+						normalizations?: undefined;
+						usedEditorText?: undefined;
+						unchanged?: undefined;
 					};
 				};
 			};
@@ -1677,15 +1796,6 @@ export type BonoboHttpApi = {
 							nodeId: import("convex/values").GenericId<"files_nodes">;
 							created: boolean;
 						}[];
-					};
-				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
 					};
 				};
 				400: {
@@ -1722,9 +1832,6 @@ export type BonoboHttpApi = {
 						errorCode: "read_only";
 					} | {
 						message: string;
-						errorCode: "path_busy";
-					} | {
-						message: string;
 						errorCode: "conflict";
 					};
 				};
@@ -1751,8 +1858,20 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -1844,6 +1963,18 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+						items?: undefined;
+						errors?: undefined;
+						truncated?: undefined;
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -1854,8 +1985,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -1978,8 +2118,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -2015,10 +2164,23 @@ export type BonoboHttpApi = {
 						requestId: string;
 						archivedNodes: number;
 						complete: boolean;
-						refused: {
+						refused: ({
 							path: string | null;
 							message: string;
-						}[];
+							errorCode: "permission_denied";
+						} | {
+							path: string | null;
+							message: string;
+							errorCode: "read_only";
+						} | {
+							path: string | null;
+							message: string;
+							errorCode: "move_busy";
+						} | {
+							path: string | null;
+							message: string;
+							errorCode: "conflict";
+						})[];
 					} | {
 						archivedNodes: 1;
 						receipt: {
@@ -2112,8 +2274,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -2247,8 +2418,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -2373,8 +2553,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -2480,8 +2669,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -2541,16 +2739,6 @@ export type BonoboHttpApi = {
 						};
 					};
 				};
-				500: {
-					headers: {
-						"Cache-Control": "no-store";
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-						retryAfterMs?: number | undefined;
-					};
-				};
 				400: {
 					headers: {
 						"Cache-Control": "no-store";
@@ -2558,7 +2746,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				403: {
@@ -2574,7 +2761,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "permission_denied";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				401: {
@@ -2590,7 +2776,15 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "unauthenticated";
-						retryAfterMs?: number | undefined;
+					};
+				};
+				413: {
+					headers: {
+						"Cache-Control": "no-store";
+					};
+					body: {
+						message: string;
+						errorCode: "request_too_large";
 					};
 				};
 				429: {
@@ -2603,8 +2797,20 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -2632,16 +2838,6 @@ export type BonoboHttpApi = {
 						abandonedStagingId: import("convex/values").GenericId<"plugins_volume_generations"> | null;
 					};
 				};
-				500: {
-					headers: {
-						"Cache-Control": "no-store";
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-						retryAfterMs?: number | undefined;
-					};
-				};
 				400: {
 					headers: {
 						"Cache-Control": "no-store";
@@ -2649,7 +2845,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				403: {
@@ -2665,7 +2860,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "permission_denied";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				409: {
@@ -2675,11 +2869,9 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "volume_deleting";
-						retryAfterMs?: number | undefined;
 					} | {
 						message: string;
 						errorCode: "volume_cap_reached";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				401: {
@@ -2695,7 +2887,15 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "unauthenticated";
-						retryAfterMs?: number | undefined;
+					};
+				};
+				413: {
+					headers: {
+						"Cache-Control": "no-store";
+					};
+					body: {
+						message: string;
+						errorCode: "request_too_large";
 					};
 				};
 				429: {
@@ -2710,12 +2910,24 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
 						errorCode: "rate_limited";
-						retryAfterMs?: number | undefined;
+						retryAfterMs: number;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -2752,16 +2964,6 @@ export type BonoboHttpApi = {
 						}[];
 					};
 				};
-				500: {
-					headers: {
-						"Cache-Control": "no-store";
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-						retryAfterMs?: number | undefined;
-					};
-				};
 				400: {
 					headers: {
 						"Cache-Control": "no-store";
@@ -2769,7 +2971,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				403: {
@@ -2785,7 +2986,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "permission_denied";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				409: {
@@ -2795,15 +2995,12 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "volume_deleting";
-						retryAfterMs?: number | undefined;
 					} | {
 						message: string;
 						errorCode: "daily_cap_reached";
-						retryAfterMs?: number | undefined;
 					} | {
 						message: string;
 						errorCode: "staging_unavailable";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				401: {
@@ -2819,7 +3016,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "unauthenticated";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				404: {
@@ -2829,7 +3025,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "not_found";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				402: {
@@ -2839,7 +3034,15 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "insufficient_funds";
-						retryAfterMs?: number | undefined;
+					};
+				};
+				413: {
+					headers: {
+						"Cache-Control": "no-store";
+					};
+					body: {
+						message: string;
+						errorCode: "request_too_large";
 					};
 				};
 				429: {
@@ -2854,12 +3057,24 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
 						errorCode: "rate_limited";
-						retryAfterMs?: number | undefined;
+						retryAfterMs: number;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -2888,16 +3103,6 @@ export type BonoboHttpApi = {
 						publishedAt: number;
 					};
 				};
-				500: {
-					headers: {
-						"Cache-Control": "no-store";
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-						retryAfterMs?: number | undefined;
-					};
-				};
 				400: {
 					headers: {
 						"Cache-Control": "no-store";
@@ -2905,7 +3110,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				403: {
@@ -2921,7 +3125,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "permission_denied";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				409: {
@@ -2931,15 +3134,12 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "volume_deleting";
-						retryAfterMs?: number | undefined;
 					} | {
 						message: string;
 						errorCode: "staging_unavailable";
-						retryAfterMs?: number | undefined;
 					} | {
 						message: string;
 						errorCode: "empty_copy";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				401: {
@@ -2955,7 +3155,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "unauthenticated";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				404: {
@@ -2965,7 +3164,15 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "not_found";
-						retryAfterMs?: number | undefined;
+					};
+				};
+				413: {
+					headers: {
+						"Cache-Control": "no-store";
+					};
+					body: {
+						message: string;
+						errorCode: "request_too_large";
 					};
 				};
 				429: {
@@ -2980,12 +3187,24 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
 						errorCode: "rate_limited";
-						retryAfterMs?: number | undefined;
+						retryAfterMs: number;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -3011,16 +3230,6 @@ export type BonoboHttpApi = {
 						deleted: true;
 					};
 				};
-				500: {
-					headers: {
-						"Cache-Control": "no-store";
-					};
-					body: {
-						message: string;
-						errorCode: "storage_failure";
-						retryAfterMs?: number | undefined;
-					};
-				};
 				400: {
 					headers: {
 						"Cache-Control": "no-store";
@@ -3028,7 +3237,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				403: {
@@ -3044,7 +3252,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "permission_denied";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				409: {
@@ -3054,7 +3261,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "volume_deleting";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				401: {
@@ -3070,7 +3276,6 @@ export type BonoboHttpApi = {
 					} | {
 						message: string;
 						errorCode: "unauthenticated";
-						retryAfterMs?: number | undefined;
 					};
 				};
 				404: {
@@ -3080,7 +3285,15 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "not_found";
-						retryAfterMs?: number | undefined;
+					};
+				};
+				413: {
+					headers: {
+						"Cache-Control": "no-store";
+					};
+					body: {
+						message: string;
+						errorCode: "request_too_large";
 					};
 				};
 				429: {
@@ -3095,12 +3308,24 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
 					} | {
 						message: string;
 						errorCode: "rate_limited";
-						retryAfterMs?: number | undefined;
+						retryAfterMs: number;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: string;
+						errorCode: "storage_failure";
 					};
 				};
 			};
@@ -3185,8 +3410,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3220,6 +3454,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
+						retryAfterMs?: undefined;
 					};
 				};
 				403: {
@@ -3229,6 +3464,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Permission denied";
 						errorCode: "permission_denied";
+						retryAfterMs?: undefined;
 					};
 				};
 				409: {
@@ -3238,9 +3474,11 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Lease has expired";
 						errorCode: "expired_lease";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation is unavailable";
 						errorCode: "unavailable";
+						retryAfterMs?: undefined;
 					};
 				};
 				401: {
@@ -3250,6 +3488,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Unauthorized";
 						errorCode: "unauthenticated";
+						retryAfterMs?: undefined;
 					};
 				};
 				429: {
@@ -3257,8 +3496,9 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Rate limit exceeded";
+						message: string;
 						errorCode: "rate_limited";
+						retryAfterMs: number;
 					};
 				};
 				410: {
@@ -3268,9 +3508,20 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Snapshot required";
 						errorCode: "snapshot_required";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation has been removed";
 						errorCode: "revoked";
+						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3316,6 +3567,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
+						retryAfterMs?: undefined;
 					};
 				};
 				403: {
@@ -3325,6 +3577,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Permission denied";
 						errorCode: "permission_denied";
+						retryAfterMs?: undefined;
 					};
 				};
 				409: {
@@ -3334,9 +3587,11 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Lease has expired";
 						errorCode: "expired_lease";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation is unavailable";
 						errorCode: "unavailable";
+						retryAfterMs?: undefined;
 					};
 				};
 				401: {
@@ -3346,6 +3601,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Unauthorized";
 						errorCode: "unauthenticated";
+						retryAfterMs?: undefined;
 					};
 				};
 				429: {
@@ -3353,8 +3609,9 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Rate limit exceeded";
+						message: string;
 						errorCode: "rate_limited";
+						retryAfterMs: number;
 					};
 				};
 				410: {
@@ -3364,9 +3621,20 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Snapshot required";
 						errorCode: "snapshot_required";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation has been removed";
 						errorCode: "revoked";
+						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3429,6 +3697,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
+						retryAfterMs?: undefined;
 					};
 				};
 				403: {
@@ -3438,6 +3707,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Permission denied";
 						errorCode: "permission_denied";
+						retryAfterMs?: undefined;
 					};
 				};
 				409: {
@@ -3447,9 +3717,11 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Lease has expired";
 						errorCode: "expired_lease";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation is unavailable";
 						errorCode: "unavailable";
+						retryAfterMs?: undefined;
 					};
 				};
 				401: {
@@ -3459,6 +3731,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Unauthorized";
 						errorCode: "unauthenticated";
+						retryAfterMs?: undefined;
 					};
 				};
 				429: {
@@ -3466,8 +3739,9 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Rate limit exceeded";
+						message: string;
 						errorCode: "rate_limited";
+						retryAfterMs: number;
 					};
 				};
 				410: {
@@ -3477,9 +3751,20 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Snapshot required";
 						errorCode: "snapshot_required";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation has been removed";
 						errorCode: "revoked";
+						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3512,6 +3797,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
+						retryAfterMs?: undefined;
 					};
 				};
 				403: {
@@ -3521,6 +3807,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Permission denied";
 						errorCode: "permission_denied";
+						retryAfterMs?: undefined;
 					};
 				};
 				409: {
@@ -3530,9 +3817,11 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Lease has expired";
 						errorCode: "expired_lease";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation is unavailable";
 						errorCode: "unavailable";
+						retryAfterMs?: undefined;
 					};
 				};
 				401: {
@@ -3542,6 +3831,7 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Unauthorized";
 						errorCode: "unauthenticated";
+						retryAfterMs?: undefined;
 					};
 				};
 				429: {
@@ -3549,8 +3839,9 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
-						message: "Rate limit exceeded";
+						message: string;
 						errorCode: "rate_limited";
+						retryAfterMs: number;
 					};
 				};
 				410: {
@@ -3560,9 +3851,20 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Snapshot required";
 						errorCode: "snapshot_required";
+						retryAfterMs?: undefined;
 					} | {
 						message: "Installation has been removed";
 						errorCode: "revoked";
+						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3593,15 +3895,6 @@ export type BonoboHttpApi = {
 						organizationId: string;
 						workspaceId: string;
 						installationId: string;
-					};
-				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: "Failed to mint a unique grant token";
-						errorCode: "internal_error";
 					};
 				};
 				400: {
@@ -3643,6 +3936,18 @@ export type BonoboHttpApi = {
 						errorCode: "not_found";
 					};
 				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: "Failed to mint a unique grant token";
+						errorCode: "internal_error";
+					};
+				};
 			};
 		};
 	};
@@ -3675,15 +3980,6 @@ export type BonoboHttpApi = {
 						workspaceId: import("convex/values").GenericId<"organizations_workspaces">;
 						installationId: import("convex/values").GenericId<"plugins_workspace_installations">;
 						destinationPathPrefix: string | null;
-					};
-				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: "Failed to mint a unique grant token";
-						errorCode: "internal_error";
 					};
 				};
 				400: {
@@ -3741,6 +4037,18 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					};
 				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: "Failed to mint a unique grant token";
+						errorCode: "internal_error";
+					};
+				};
 			};
 		};
 	};
@@ -3764,15 +4072,6 @@ export type BonoboHttpApi = {
 						token: string;
 						expiresAt: number;
 						scopes: ("files:write" | "plugin_data:read" | "plugin_data:write")[];
-					};
-				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: "Failed to mint a unique grant token";
-						errorCode: "internal_error";
 					};
 				};
 				400: {
@@ -3812,6 +4111,18 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Not found";
 						errorCode: "not_found";
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: "Failed to mint a unique grant token";
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -3846,15 +4157,6 @@ export type BonoboHttpApi = {
 						installationId: string;
 					};
 				};
-				500: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: "Failed to mint a unique grant token";
-						errorCode: "internal_error";
-					};
-				};
 				400: {
 					headers: {
 						[x: string]: string;
@@ -3892,6 +4194,18 @@ export type BonoboHttpApi = {
 					body: {
 						message: "Not found";
 						errorCode: "not_found";
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
+						message: "Failed to mint a unique grant token";
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -4011,6 +4325,15 @@ export type BonoboHttpApi = {
 						contentPermissions?: undefined;
 					};
 				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
+					};
+				};
 			};
 		};
 	};
@@ -4088,8 +4411,17 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
+					};
+				};
+				500: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "internal_error";
 					};
 				};
 			};
@@ -4113,6 +4445,9 @@ export type BonoboHttpApi = {
 						[x: string]: string;
 					};
 					body: {
+						message: string;
+						errorCode: "internal_error";
+					} | {
 						message: "Plugin backend failed";
 						errorCode: "internal_error";
 						runId: string;
@@ -4131,8 +4466,6 @@ export type BonoboHttpApi = {
 					body: {
 						message: string;
 						errorCode: "invalid_input";
-						retryAfterMs?: undefined;
-						runId?: undefined;
 					};
 				};
 				403: {
@@ -4177,6 +4510,20 @@ export type BonoboHttpApi = {
 						runId?: undefined;
 					};
 				};
+				413: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: "Request body is too large";
+						errorCode: "request_too_large";
+					} | {
+						message: "Invoke request is too large for this plugin configuration";
+						errorCode: "request_too_large";
+						retryAfterMs?: undefined;
+						runId?: undefined;
+					};
+				};
 				429: {
 					headers: {
 						[x: string]: string;
@@ -4187,19 +4534,8 @@ export type BonoboHttpApi = {
 						retryAfterMs: number;
 					} | {
 						message: "Plugin API call limit exceeded";
-						errorCode: "rate_limited";
+						errorCode: "call_limit_reached";
 						retryAfterMs?: undefined;
-					};
-				};
-				413: {
-					headers: {
-						[x: string]: string;
-					};
-					body: {
-						message: "Invoke request is too large for this plugin configuration";
-						errorCode: "request_too_large";
-						retryAfterMs?: undefined;
-						runId?: undefined;
 					};
 				};
 				200: {

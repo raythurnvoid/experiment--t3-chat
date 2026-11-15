@@ -415,7 +415,10 @@ async function db_ensure_signing_key(ctx: MutationCtx, registration: Doc<"plugin
  */
 export const get_signing_key = internalMutation({
 	args: { pluginName: v.string(), serviceSecretHash: v.string() },
-	returns: v_result({ _yay: v.object({ key: v.string(), createdAt: v.number() }) }),
+	returns: v_result({
+		_yay: v.object({ key: v.string(), createdAt: v.number() }),
+		_nay: { data: v.object({ retryAfterMs: v.number() }) },
+	}),
 	handler: async (ctx, args) => {
 		const registration = await ctx.db
 			.query("plugins_service_registrations")
@@ -428,7 +431,7 @@ export const get_signing_key = internalMutation({
 			name: "public_api_principal",
 			key: `plugin-events-key:${registration._id}`,
 		});
-		if (limited) return Result({ _nay: { message: limited.message } });
+		if (limited) return Result({ _nay: { message: limited.message, data: { retryAfterMs: limited.retryAfterMs } } });
 
 		const encrypted = await db_ensure_signing_key(ctx, registration);
 		const key = await crypto_decrypt_secret_value({

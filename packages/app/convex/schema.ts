@@ -435,6 +435,19 @@ export const files_content_version_validator = v.union(
 
 export const file_quote_validator = v.object({ fileNodeId: v.union(v.string(), v.null()), text: v.string() });
 
+/**
+ * The `errorCode` of one refused item in a public API files job (delete, restore, move, copy). It is
+ * saved with the item, so a retry and `jobs/get` answer the same code.
+ */
+export const files_refused_error_code_validator = v.union(
+	v.literal("permission_denied"),
+	v.literal("not_found"),
+	v.literal("read_only"),
+	v.literal("path_busy"),
+	v.literal("move_busy"),
+	v.literal("conflict"),
+);
+
 export const files_pending_target_validator = v.union(
 	v.object({ kind: v.literal("saved"), id: v.id("files_nodes") }),
 	v.object({ kind: v.literal("private"), id: v.id("files_pending_nodes") }),
@@ -6508,7 +6521,9 @@ const app_convex_schema = defineSchema({
 				/**
 				 * The `from` paths refused before the job started, at most 100. A retry and `jobs/get` show them.
 				 */
-				refused: v.array(v.object({ path: v.string(), message: v.string() })),
+				refused: v.array(
+					v.object({ path: v.string(), message: v.string(), errorCode: files_refused_error_code_validator }),
+				),
 			}),
 		),
 		rename: v.optional(
@@ -7113,8 +7128,13 @@ const app_convex_schema = defineSchema({
 				 */
 				refused: v.array(
 					v.union(
-						v.object({ path: v.string(), message: v.string() }),
-						v.object({ nodeId: v.string(), path: v.union(v.string(), v.null()), message: v.string() }),
+						v.object({ path: v.string(), message: v.string(), errorCode: files_refused_error_code_validator }),
+						v.object({
+							nodeId: v.string(),
+							path: v.union(v.string(), v.null()),
+							message: v.string(),
+							errorCode: files_refused_error_code_validator,
+						}),
 					),
 				),
 				/**
@@ -8717,7 +8737,13 @@ const app_convex_schema = defineSchema({
 		refused: v.array(
 			v.object({
 				nodeId: v.id("files_nodes"),
-				reason: v.union(v.literal("permission"), v.literal("changed"), v.literal("read_only"), v.literal("not_empty")),
+				reason: v.union(
+					v.literal("permission"),
+					v.literal("changed"),
+					v.literal("read_only"),
+					v.literal("not_empty"),
+					v.literal("move_busy"),
+				),
 			}),
 		),
 		createdAt: v.number(),

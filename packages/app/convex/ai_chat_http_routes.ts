@@ -1,6 +1,6 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
 import { httpAction } from "./_generated/server.js";
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -66,7 +66,7 @@ export function ai_chat_http_routes(router: { route: HttpRouter["route"] }) {
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof import("./ai_chat.ts").ai_chat_http_run_stream>;
+							response: public_api_http_action_ResponseSpec<typeof import("./ai_chat.ts").ai_chat_http_run_stream>;
 						};
 					})(),
 				}))(),

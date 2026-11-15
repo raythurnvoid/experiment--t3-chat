@@ -4573,7 +4573,6 @@ async function db_check_file_node_write_access(
 		writeContext,
 		target: { kind: "node", node: fileNode },
 	});
-	if (writable._nay?.name === "deleting") return Result({ _nay: { name: "deleting", message: writable._nay.message } });
 	if (writable._nay) return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	return Result({ _yay: fileNode });
 }
@@ -4594,12 +4593,11 @@ export const can_write_file_node = internalQuery({
 		force: v.optional(v.boolean()),
 		requestReadOnly: v.optional(v.boolean()),
 	},
-	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only"), v.literal("deleting")),
+	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
 		const access = await db_check_file_node_write_access(ctx, args);
 		if (!access._nay) return "ok";
-		if (access._nay.name === "read_only" || access._nay.name === "deleting") return access._nay.name;
-		return "permission_denied";
+		return access._nay.name === "read_only" ? "read_only" : "permission_denied";
 	},
 });
 
@@ -4631,7 +4629,6 @@ export const get_file_save_refusal = internalQuery({
 				v.literal("changed_during_write"),
 				v.literal("permission_denied"),
 				v.literal("read_only"),
-				v.literal("deleting"),
 				v.literal("file_needs_repair"),
 				v.literal("file_changed"),
 				v.literal("file_not_latest"),
@@ -4985,7 +4982,7 @@ export const create_file_upload_targets = internalMutation({
 			}
 
 			if (!Number.isSafeInteger(item.size) || item.size < 0 || item.size > files_MAX_UPLOADS_BYTES) {
-				return Result({ _nay: { message: "File too large", data: { path: item.path } } });
+				return Result({ _nay: { name: "file_too_large", message: "File too large", data: { path: item.path } } });
 			}
 
 			if (leafPaths.has(item.path)) {
@@ -5372,8 +5369,6 @@ function file_revision_failure(name: string | undefined) {
 function file_save_failure(name: string | undefined) {
 	if (name === "read_only") return { status: 409 as const, errorCode: "read_only" as const };
 	if (name === "stale_write") return { status: 409 as const, errorCode: "stale_write" as const };
-	// A purge is deleting this item. Answer like any other job that holds the path.
-	if (name === "deleting") return { status: 409 as const, errorCode: "path_busy" as const };
 	if (name === "too_many_folders") return { status: 400 as const, errorCode: "too_many_folders" as const };
 	return null;
 }
@@ -5618,7 +5613,7 @@ async function write_one_text_file_attempt(
 			principalRef: args.principalRef,
 			force: args.force === true,
 			requestReadOnly: args.requestReadOnly,
-		})) as "ok" | "permission_denied" | "read_only" | "deleting";
+		})) as "ok" | "permission_denied" | "read_only";
 		if (canWriteNode !== "ok") return null;
 
 		return Result({
@@ -5674,10 +5669,6 @@ async function write_one_text_file_attempt(
 		}
 		if (refusal.name === "read_only") {
 			return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: "read_only" } } });
-		}
-		// A purge is deleting this item. Answer like any other job that holds the path.
-		if (refusal.name === "deleting") {
-			return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: "path_busy" } } });
 		}
 		// Only the revision refusals are left: file_needs_repair, file_changed, file_not_latest.
 		return Result({ _nay: { name: "nay", message: refusal.message, data: { status: 409, errorCode: refusal.name } } });
@@ -5844,12 +5835,6 @@ async function write_one_text_file_attempt(
 						message: prepared._nay.message,
 						data: { status: 403, errorCode: "permission_denied" },
 					},
-				});
-			}
-			// A purge is deleting this item. Answer like any other job that holds the path.
-			if (prepared._nay.name === "deleting") {
-				return Result({
-					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
 				});
 			}
 			// A Read-only target is a 409, not a permission error. A permission error would stop the whole
@@ -6086,12 +6071,6 @@ async function write_one_text_file_attempt(
 							message: prepared._nay.message,
 							data: { status: 403, errorCode: "permission_denied" },
 						},
-					});
-				}
-				// A purge is deleting this item. Answer like any other job that holds the path.
-				if (prepared._nay.name === "deleting") {
-					return Result({
-						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
 					});
 				}
 				// A Read-only target is a 409, not a permission error. A permission error would stop the whole
@@ -6382,12 +6361,6 @@ async function write_one_text_file_attempt(
 		if (prepared._nay.message === "Permission denied") {
 			return Result({
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 403, errorCode: "permission_denied" } },
-			});
-		}
-		// A purge is deleting this item. Answer like any other job that holds the path.
-		if (prepared._nay.name === "deleting") {
-			return Result({
-				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "path_busy" } },
 			});
 		}
 		// A Read-only target or parent is a 409, not a permission error. A permission error would stop
@@ -7463,9 +7436,6 @@ export async function public_api_http_write_file(args: {
 			if (prior._nay.name === "read_only") {
 				return { status: 409, body: { message: prior._nay.message, errorCode: "read_only" } } as const;
 			}
-			if (prior._nay.name === "deleting") {
-				return { status: 409, body: { message: prior._nay.message, errorCode: "path_busy" } } as const;
-			}
 			if (prior._nay.message === "Permission denied") {
 				return { status: 403, body: { message: prior._nay.message, errorCode: "permission_denied" } } as const;
 			}
@@ -7605,9 +7575,6 @@ export async function public_api_http_write_file(args: {
 			}
 			if (receipt._nay.name === "read_only") {
 				return { status: 409, body: { message: receipt._nay.message, errorCode: "read_only" } } as const;
-			}
-			if (receipt._nay.name === "deleting") {
-				return { status: 409, body: { message: receipt._nay.message, errorCode: "path_busy" } } as const;
 			}
 			if (receipt._nay.message === "Permission denied") {
 				return { status: 403, body: { message: receipt._nay.message, errorCode: "permission_denied" } } as const;
@@ -7869,11 +7836,11 @@ export async function public_api_http_write_many(args: {
 
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_WRITE_MANY_MAX_REQUEST_BYTES) {
-		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
+		return { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } } as const;
 	}
 	const bodyText = await read_request_text_bounded(request, FILES_WRITE_MANY_MAX_REQUEST_BYTES);
 	if (bodyText === null) {
-		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
+		return { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } } as const;
 	}
 	let bodyJson: unknown;
 	try {
@@ -8410,7 +8377,7 @@ export async function public_api_http_touch_files(args: {
 				path: requestedPath,
 				principalRef,
 				force: body._yay.force === true,
-			})) as "ok" | "permission_denied" | "read_only" | "deleting";
+			})) as "ok" | "permission_denied" | "read_only";
 			if (canWriteNode === "permission_denied") {
 				return {
 					status: 403,
@@ -8422,13 +8389,6 @@ export async function public_api_http_touch_files(args: {
 				return {
 					status: 409,
 					body: await fail({ status: 409, message: "This item is read-only.", errorCode: "read_only" }),
-				} as const;
-			}
-			// A purge is deleting this item. Answer like any other job that holds the path.
-			if (canWriteNode === "deleting") {
-				return {
-					status: 409,
-					body: await fail({ status: 409, message: "This item is being deleted.", errorCode: "path_busy" }),
 				} as const;
 			}
 			if (activeNode.kind === "folder") {
@@ -8484,13 +8444,6 @@ export async function public_api_http_touch_files(args: {
 				return {
 					status: 400,
 					body: await fail({ status: 400, message: prepared._nay.message, errorCode: "invalid_input" }),
-				} as const;
-			}
-			// A purge is deleting this item. Answer like any other job that holds the path.
-			if (prepared._nay.name === "deleting") {
-				return {
-					status: 409,
-					body: await fail({ status: 409, message: prepared._nay.message, errorCode: "path_busy" }),
 				} as const;
 			}
 			// A Read-only parent is a 409, not a permission error.
@@ -8597,9 +8550,6 @@ export async function public_api_http_touch_files(args: {
 			if (published._nay.name === "read_only") {
 				return { status: 409, body: await fail({ status: 409, message, errorCode: "read_only" }) } as const;
 			}
-			if (published._nay.name === "deleting") {
-				return { status: 409, body: await fail({ status: 409, message, errorCode: "path_busy" }) } as const;
-			}
 			return { status: 409, body: await fail({ status: 409, message, errorCode: "conflict" }) } as const;
 		}
 
@@ -8644,11 +8594,11 @@ export async function public_api_http_download_urls(args: {
 
 	const declaredBytes = Number(request.headers.get("content-length"));
 	if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
-		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
+		return { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } } as const;
 	}
 	const bodyText = await read_request_text_bounded(request, FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES);
 	if (bodyText === null) {
-		return { status: 400, body: { message: "Request body is too large", errorCode: "invalid_input" } } as const;
+		return { status: 413, body: { message: "Request body is too large", errorCode: "request_too_large" } } as const;
 	}
 	let bodyJson: unknown;
 	try {
@@ -9083,17 +9033,13 @@ export async function public_api_http_upload_urls(args: {
 		if (name === "read_only" || name === "move_busy" || name === "path_busy") {
 			return { status: 409, body: { message, errorCode: name, path: failedPath } } as const;
 		}
-		// A purge is deleting this item. Answer like any other job that holds the path.
-		if (name === "deleting") {
-			return { status: 409, body: { message, errorCode: "path_busy", path: failedPath } } as const;
-		}
 		if (message === "A file already exists at this path") {
 			return { status: 409, body: { message, errorCode: "file_exists", path: failedPath } } as const;
 		}
 		if (message === "The path cannot point to a folder" || message === files_PATH_BELOW_FILE_MESSAGE) {
 			return { status: 409, body: { message, errorCode: "conflict", path: failedPath } } as const;
 		}
-		if (name === "too_many_folders") {
+		if (name === "too_many_folders" || name === "file_too_large") {
 			return { status: 400, body: { message, errorCode: name, path: failedPath } } as const;
 		}
 		return { status: 400, body: { message, errorCode: "invalid_input", path: failedPath } } as const;

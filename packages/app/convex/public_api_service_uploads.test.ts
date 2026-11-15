@@ -35,6 +35,8 @@ import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts"
 import type { plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import * as pending_overlay from "../server/files-pending-overlay.ts";
+import * as move_reservations from "../server/files-move-reservations.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import {
 	files_NAME_MAX_LENGTH,
 	files_NEW_FOLDER_DEPTH_MAX,
@@ -114,8 +116,8 @@ test("forced archive keeps blocked branches, replays its receipt, and pins a par
 	const movedReplay = await call({ t, path: ARCHIVE_PATH, bearer: memberGrant, body });
 	expect(movedReplay.status).toBe(200);
 	expect((await movedReplay.json()).refused).toEqual([
-		{ path: null, message: "Permission denied" },
-		{ path: null, message: "Permission denied" },
+		{ path: null, message: "Permission denied", errorCode: "permission_denied" },
+		{ path: null, message: "Permission denied", errorCode: "permission_denied" },
 	]);
 	const replacement = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: fixture.membershipId,
@@ -1562,7 +1564,7 @@ describe("service upload targets", () => {
 			}),
 		});
 		expect(overCap.status).toBe(400);
-		expect(await overCap.json()).toEqual({ message: "File too large", errorCode: "invalid_input" });
+		expect(await overCap.json()).toEqual({ message: "File too large", errorCode: "file_too_large" });
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
@@ -3342,7 +3344,7 @@ describe("service upload delete", () => {
 		expect(createDuringDelete.status).toBe(409);
 		expect(await createDuringDelete.json()).toEqual({
 			message: "This target was already released",
-			errorCode: "conflict",
+			errorCode: "upload_released",
 		});
 		const remintDuringDelete = await call({
 			t,
@@ -3356,7 +3358,7 @@ describe("service upload delete", () => {
 		expect(remintDuringDelete.status).toBe(409);
 		expect(await remintDuringDelete.json()).toEqual({
 			message: "This target was already released",
-			errorCode: "conflict",
+			errorCode: "upload_released",
 		});
 		const finalizeDuringDelete = await call({
 			t,
@@ -4455,6 +4457,43 @@ describe("service upload archive", () => {
 		expect(restored.every((node) => node.archiveOperationId === null)).toBe(true);
 		const restoredFile = restored.find((node) => node._id === target.nodeId);
 		expect(restoredFile?.readOnly).toBe(true);
+	});
+
+	test("forced archive names an item that a Move holds as move_busy", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token({ t, fixture, destinationPathPrefix: "/meetings/meeting-1" });
+		expect((await write_note({ t, sealed, path: "/meetings/meeting-1/meeting.md" })).status).toBe(200);
+		const note = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/meetings/meeting-1/meeting.md")!,
+		);
+		// A real Move needs a whole Move job. Answer the Move check for the note instead, and run the real
+		// check for every other node.
+		const check_node_write = move_reservations.files_move_reservations_db_check_node_write;
+		const moveCheck = vi
+			.spyOn(move_reservations, "files_move_reservations_db_check_node_write")
+			.mockImplementation(async (db, args) =>
+				args.target.kind === "saved" && args.target.id === note._id
+					? Result({ _nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." } })
+					: await check_node_write(db, args),
+			);
+		// Later tests get the same node ids, so the spy must not outlive this test.
+		onTestFinished(() => moveCheck.mockRestore());
+
+		const response = await call({ t, path: ARCHIVE_PATH, bearer: sealed, body: { requestId: "busy", force: true } });
+		expect(response.status, await response.clone().text()).toBe(200);
+		expect((await response.json()).refused).toEqual([
+			{
+				path: "/meetings/meeting-1/meeting.md",
+				message: "This item is being moved. Try again when the Move ends.",
+				errorCode: "move_busy",
+			},
+			{
+				path: "/meetings/meeting-1",
+				message: "This folder still holds items that could not be moved to Trash.",
+				errorCode: "conflict",
+			},
+		]);
 	});
 
 	test("force passes the direct parent flag while ordinary archive refuses the item", async () => {

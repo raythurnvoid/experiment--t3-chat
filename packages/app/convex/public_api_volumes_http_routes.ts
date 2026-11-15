@@ -1,8 +1,7 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type {
 	public_api_volumes_http_list_Body,
 	public_api_volumes_http_stage_Body,
@@ -37,7 +36,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./public_api_volumes.ts").public_api_volumes_http_list
 							>;
 						};
@@ -69,7 +68,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./public_api_volumes.ts").public_api_volumes_http_stage
 							>;
 						};
@@ -101,7 +100,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./public_api_volumes.ts").public_api_volumes_http_write_many
 							>;
 						};
@@ -133,7 +132,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./public_api_volumes.ts").public_api_volumes_http_publish
 							>;
 						};
@@ -165,7 +164,7 @@ export function public_api_volumes_http_routes(router: { route: HttpRouter["rout
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./public_api_volumes.ts").public_api_volumes_http_delete
 							>;
 						};

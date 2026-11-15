@@ -99,11 +99,19 @@ export type public_api_service_uploads_RefusalName =
 	| "storage_full"
 	| "plan_required"
 	| "oversized_upload"
-	| "outside_destination";
+	| "outside_destination"
+	| "file_too_large"
+	| "file_exists"
+	| "upload_released"
+	| "upload_expired";
 
 const REFUSAL_CONFLICT: public_api_service_uploads_RefusalName = "conflict";
 const REFUSAL_OVERSIZED_UPLOAD: public_api_service_uploads_RefusalName = "oversized_upload";
 const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "outside_destination";
+const REFUSAL_FILE_TOO_LARGE: public_api_service_uploads_RefusalName = "file_too_large";
+const REFUSAL_FILE_EXISTS: public_api_service_uploads_RefusalName = "file_exists";
+const REFUSAL_UPLOAD_RELEASED: public_api_service_uploads_RefusalName = "upload_released";
+const REFUSAL_UPLOAD_EXPIRED: public_api_service_uploads_RefusalName = "upload_expired";
 
 /**
  * What the route hands the mutation after `public_api_authorize_request` resolved a
@@ -798,7 +806,7 @@ export const create_upload_target = internalMutation({
 		}
 
 		if (!Number.isSafeInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
-			return Result({ _nay: { message: "File too large" } });
+			return Result({ _nay: { name: REFUSAL_FILE_TOO_LARGE, message: "File too large" } });
 		}
 		// The service always names the type. It decides how the upload is processed, so a broken
 		// value is refused instead of guessed from the name.
@@ -857,7 +865,7 @@ export const create_upload_target = internalMutation({
 				});
 			}
 			if (existingTarget.state === "released" || existingTarget.deleteRequestedAt !== undefined) {
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target was already released" } });
+				return Result({ _nay: { name: REFUSAL_UPLOAD_RELEASED, message: "This target was already released" } });
 			}
 			const liveNode = await db_authorize_live_target_node(ctx, {
 				target: existingTarget,
@@ -886,7 +894,7 @@ export const create_upload_target = internalMutation({
 			if (!asset) {
 				const released = await db_release_expired_target(ctx, { target: existingTarget, now });
 				if (released._nay) return released;
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target's upload expired" } });
+				return Result({ _nay: { name: REFUSAL_UPLOAD_EXPIRED, message: "This target's upload expired" } });
 			}
 			if (asset.r2Key !== undefined) {
 				const settled = await db_settle_canonicalized_target(ctx, {
@@ -930,7 +938,7 @@ export const create_upload_target = internalMutation({
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
-			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "A file already exists at this path" } });
+			return Result({ _nay: { name: REFUSAL_FILE_EXISTS, message: "A file already exists at this path" } });
 		}
 
 		// Ancestor pass, same as `/api/v1/files/upload-urls`: a restricted, file-owned, or read-only
@@ -1277,7 +1285,7 @@ export const remint_upload_target = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (target.state === "released" || target.deleteRequestedAt !== undefined) {
-			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target was already released" } });
+			return Result({ _nay: { name: REFUSAL_UPLOAD_RELEASED, message: "This target was already released" } });
 		}
 		const liveNode = await db_authorize_live_target_node(ctx, {
 			target,
@@ -1305,7 +1313,7 @@ export const remint_upload_target = internalMutation({
 		if (!asset) {
 			const released = await db_release_expired_target(ctx, { target, now });
 			if (released._nay) return released;
-			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target's upload expired" } });
+			return Result({ _nay: { name: REFUSAL_UPLOAD_EXPIRED, message: "This target's upload expired" } });
 		}
 		// The object already reached its canonical key: a fresh URL would be useless, so answer
 		// committed instead, settling the books on the way.

@@ -1602,7 +1602,7 @@ describe("files/restore for a plugin run", () => {
 					nodeId: blocked,
 					path: "/chosen/ro/blocked.md",
 					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only,
-					errorCode: "conflict",
+					errorCode: "read_only",
 				},
 			],
 		});
@@ -1620,7 +1620,7 @@ describe("files/restore for a plugin run", () => {
 					nodeId: blocked,
 					path: null,
 					message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.read_only,
-					errorCode: "conflict",
+					errorCode: "read_only",
 				},
 			],
 		});
@@ -1666,7 +1666,7 @@ describe("files/restore for a plugin run", () => {
 						nodeId: child._id,
 						path: null,
 						message: files_archive_runs_PLUGIN_RESTORE_MESSAGES.busy,
-						errorCode: "conflict",
+						errorCode: "path_busy",
 					},
 				],
 			},
@@ -2182,6 +2182,7 @@ describe("files/restore for a plugin run", () => {
 							nodeId: chain.refusal,
 							path: `${chain.path}/refusal.md`,
 							message: "Permission denied",
+							errorCode: "permission_denied" as const,
 						})),
 					},
 				});

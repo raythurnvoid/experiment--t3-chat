@@ -1,8 +1,7 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type {
 	plugins_data_http_delete_Body,
 	plugins_data_http_delete_versioned_Body,
@@ -41,7 +40,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_read
 							>;
 						};
@@ -73,7 +72,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_list
 							>;
 						};
@@ -105,7 +104,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_write
 							>;
 						};
@@ -137,7 +136,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_write_batch
 							>;
 						};
@@ -169,7 +168,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_delete
 							>;
 						};
@@ -201,7 +200,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_write_versioned
 							>;
 						};
@@ -233,7 +232,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_delete_versioned
 							>;
 						};
@@ -265,7 +264,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_reserve
 							>;
 						};
@@ -297,7 +296,7 @@ export function plugins_data_http_routes(router: { route: HttpRouter["route"] })
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_data_http.ts").plugins_data_http_release_reservation
 							>;
 						};

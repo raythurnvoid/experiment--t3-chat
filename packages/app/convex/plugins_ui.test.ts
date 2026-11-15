@@ -1590,8 +1590,11 @@ describe("plugin ui sessions", () => {
 			method: "POST",
 			body: JSON.stringify({ fileNodeIds: ["x".repeat(32_001)] }),
 		});
-		expect(oversizedBody.status).toBe(400);
-		expect(await oversizedBody.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
+		expect(oversizedBody.status).toBe(413);
+		expect(await oversizedBody.json()).toEqual({
+			message: "Request body is too large",
+			errorCode: "request_too_large",
+		});
 
 		let streamCancelled = false;
 		const streamingBody = new ReadableStream<Uint8Array>({
@@ -1608,8 +1611,8 @@ describe("plugin ui sessions", () => {
 			// Node requires this flag when Request receives a streaming body.
 			duplex: "half",
 		} as RequestInit & { duplex: "half" });
-		expect(streamedBody.status).toBe(400);
-		expect(await streamedBody.json()).toEqual({ message: "Request body is too large", errorCode: "invalid_input" });
+		expect(streamedBody.status).toBe(413);
+		expect(await streamedBody.json()).toEqual({ message: "Request body is too large", errorCode: "request_too_large" });
 		expect(streamCancelled).toBe(true);
 	});
 

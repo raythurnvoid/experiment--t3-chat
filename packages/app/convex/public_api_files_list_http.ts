@@ -1,11 +1,10 @@
 import type { ActionCtx } from "./_generated/server.js";
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import { internal } from "./_generated/api.js";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import { z } from "zod";
 import { ConvexError } from "convex/values";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
 import {
 	public_api_authorize_request,
@@ -324,7 +323,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+							response: public_api_http_action_ResponseSpec<typeof handler>;
 						};
 					})(),
 				}))(),

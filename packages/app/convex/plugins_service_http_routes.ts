@@ -1,8 +1,7 @@
 // Keep route registration static. Load the heavy implementation only when its route runs.
-import { public_api_http_action } from "./public_api_http_action.ts";
+import { public_api_http_action, type public_api_http_action_ResponseSpec } from "./public_api_http_action.ts";
 import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
-import type { api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type {
 	plugins_service_http_exchange_Body,
 	plugins_service_http_renew_Body,
@@ -34,7 +33,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service.ts").plugins_service_http_recover
 							>;
 						};
@@ -63,7 +62,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service.ts").plugins_service_http_exchange
 							>;
 						};
@@ -92,7 +91,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service.ts").plugins_service_http_renew
 							>;
 						};
@@ -123,7 +122,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service.ts").plugins_service_http_seal_processing
 							>;
 						};
@@ -152,7 +151,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 							searchParams: SearchParams;
 							headers: Headers;
 							body: Body;
-							response: api_schemas_BuildResponseSpecFromHandler<
+							response: public_api_http_action_ResponseSpec<
 								typeof import("./plugins_service.ts").plugins_service_http_verify_live
 							>;
 						};

@@ -931,8 +931,8 @@ describe("volumes write-many validation", () => {
 			headers: { Authorization: `Bearer ${f.token}`, "Content-Type": "application/json" },
 			body: "x".repeat(8_000_001),
 		});
-		expect(response.status).toBe(400);
-		expect((await calls(f)).at(-1)).toMatchObject({ status: "failed", responseStatus: 400 });
+		expect(response.status).toBe(413);
+		expect((await calls(f)).at(-1)).toMatchObject({ status: "failed", responseStatus: 413 });
 	});
 
 	test("settles malformed JSON and a failed request stream", async () => {

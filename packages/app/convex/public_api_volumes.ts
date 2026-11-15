@@ -64,6 +64,7 @@ const failure_data_validator = v.object({
 		v.literal(403),
 		v.literal(404),
 		v.literal(409),
+		v.literal(413),
 		v.literal(429),
 		v.literal(500),
 	),
@@ -1064,7 +1065,10 @@ async function finish_failure<
 	} as Failure extends unknown
 		? {
 				readonly status: Failure["data"]["status"];
-				readonly body: { message: string; errorCode: Failure["data"]["errorCode"]; retryAfterMs?: number };
+				// Every `rate_limited` failure is built with the limiter's wait time.
+				readonly body: Failure["data"]["errorCode"] extends "rate_limited"
+					? { message: string; errorCode: "rate_limited"; retryAfterMs: number }
+					: { message: string; errorCode: Failure["data"]["errorCode"] };
 				readonly headers: { readonly "Cache-Control": "no-store" };
 			}
 		: never;
@@ -1102,7 +1106,7 @@ async function authorize_request<T>(args: {
 			_nay: await finish_failure({
 				ctx,
 				callId,
-				error: failure({ status: 400, message: "Request body is too large", errorCode: "invalid_input" })._nay,
+				error: failure({ status: 413, message: "Request body is too large", errorCode: "request_too_large" })._nay,
 			}),
 		};
 	let text = "";
@@ -1121,7 +1125,8 @@ async function authorize_request<T>(args: {
 						_nay: await finish_failure({
 							ctx,
 							callId,
-							error: failure({ status: 400, message: "Request body is too large", errorCode: "invalid_input" })._nay,
+							error: failure({ status: 413, message: "Request body is too large", errorCode: "request_too_large" })
+								._nay,
 						}),
 					};
 				}

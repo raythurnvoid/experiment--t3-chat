@@ -161,6 +161,7 @@ export const create_lease_facts = internalMutation({
 			expiresAt: v.number(),
 			audience: v.string(),
 		}),
+		_nay: { data: v.object({ retryAfterMs: v.number() }) },
 	}),
 	handler: async (ctx, args) => {
 		const session = await ctx.db
@@ -219,7 +220,8 @@ export const create_lease_facts = internalMutation({
 			name: "plugins_ui_session_jwt_exchange",
 			key: `plugin-identity:${session._id}`,
 		});
-		if (rateLimit) return Result({ _nay: { message: rateLimit.message } });
+		if (rateLimit)
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
 
 		const state = await ctx.db
 			.query("access_control_change_state")
@@ -298,6 +300,7 @@ export const get_snapshot = internalMutation({
 			),
 			continueCursor: v.union(v.string(), v.null()),
 		}),
+		_nay: { data: v.object({ retryAfterMs: v.number() }) },
 	}),
 	handler: async (ctx, args) => {
 		const installationId = ctx.db.normalizeId("plugins_workspace_installations", args.installationId);
@@ -314,7 +317,7 @@ export const get_snapshot = internalMutation({
 			name: "public_api_principal",
 			key: `plugin-members:${installationId}`,
 		});
-		if (limited) return Result({ _nay: { message: limited.message } });
+		if (limited) return Result({ _nay: { message: limited.message, data: { retryAfterMs: limited.retryAfterMs } } });
 
 		const current = await db_live_installation(ctx, installationId);
 		const live =
@@ -406,6 +409,7 @@ export const get_events = internalMutation({
 			continueRevision: v.number(),
 			isDone: v.boolean(),
 		}),
+		_nay: { data: v.object({ retryAfterMs: v.number() }) },
 	}),
 	handler: async (ctx, args) => {
 		const installationId = ctx.db.normalizeId("plugins_workspace_installations", args.installationId);
@@ -422,7 +426,7 @@ export const get_events = internalMutation({
 			name: "public_api_principal",
 			key: `plugin-access:${installationId}`,
 		});
-		if (limited) return Result({ _nay: { message: limited.message } });
+		if (limited) return Result({ _nay: { message: limited.message, data: { retryAfterMs: limited.retryAfterMs } } });
 		await plugins_service_events_db_wake_installation(ctx, installationId);
 
 		const state = await ctx.db

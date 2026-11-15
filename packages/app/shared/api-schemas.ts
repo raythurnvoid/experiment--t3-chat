@@ -48,6 +48,8 @@ Schema to store all api types grouped by api path for easy lookup.
 - Use the same `path`, `method`, and `handler` values for runtime registration and the computed schema keys.
 - Infer `response` from the handler's literal `{ status, body, headers? }` return union. Keep every
   status literal narrow with `as const`.
+- An `/api/v1` route builds its `response` with `public_api_http_action_ResponseSpec`, not the plain
+  builder. It adds the 500 `internal_error` body that `public_api_http_action` sends for an uncaught error.
 - The plugin invoke route returns already encoded JSON bytes on 200. Only that route replaces
   the derived `200.body` with the runner's public reply type. All error responses stay inferred;
   the bytes never become the public JSON type.
@@ -341,7 +343,8 @@ Every /api/v1 error answer (status 4xx or 5xx) must be `{ message, errorCode, ..
 The check reads the inferred route types, so there is no list of codes to keep up to date. It fails when:
 - an error body has no `errorCode`, or the code can be `undefined` or any `string`;
 - a route status is typed `number`, because then the check cannot see which codes it answers;
-- one code is used with two statuses, in one route or across routes.
+- one code is used with two statuses, in one route or across routes;
+- a `rate_limited` body has no `retryAfterMs: number`.
 
 On failure the lint error names a problem, for example
 `"/api/v1/files/list 401: also used by another status: rate_limited"`.
@@ -366,10 +369,20 @@ type ApiErrorCodesAt<Response, Status> = Response[Status & keyof Response] exten
 	? ApiErrorCodeOf<Body>
 	: never;
 
+// A `rate_limited` answer must say how long to wait. Check a union body member by member.
+type ApiErrorRetryProblems<Path extends string, Status extends number, Body> = Body extends {
+	errorCode: "rate_limited";
+}
+	? Body extends { retryAfterMs: number }
+		? never
+		: `${Path} ${Status}: rate_limited without retryAfterMs`
+	: never;
+
 type ApiErrorStatusProblems<Path extends string, Response, Status extends number> =
 	| ("(no errorCode)" extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: a body without errorCode` : never)
 	| (undefined extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: errorCode can be undefined` : never)
 	| (string extends ApiErrorCodesAt<Response, Status> ? `${Path} ${Status}: errorCode is string` : never)
+	| (Response[Status & keyof Response] extends { body: infer Body } ? ApiErrorRetryProblems<Path, Status, Body> : never)
 	| (string extends ApiErrorCodesAt<Response, Status>
 			? never
 			: Exclude<

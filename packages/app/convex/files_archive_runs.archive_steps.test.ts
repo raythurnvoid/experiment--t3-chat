@@ -148,7 +148,11 @@ describe("archive_nodes", () => {
 				notArchivedNodeIds: [refused.topId, refused.fileIds[0]],
 				// The reason names the locked file, so the toast can say what to unlock.
 				refusedItems: [
-					{ nodeId: refused.topId, message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.' },
+					{
+						nodeId: refused.topId,
+						name: "read_only",
+						message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.',
+					},
 				],
 				waitingNodeIds: [],
 				isChecking: false,

@@ -397,8 +397,12 @@ export async function public_api_authorize_request<K extends PrincipalKind>(args
 			},
 		);
 		if (consumed._nay) {
+			// The run's call cap never refills, so there is no time to wait. Use its own code, not
+			// `rate_limited`, so a client does not wait and try again.
 			if (consumed._nay.message === "Plugin API call limit exceeded") {
-				return { _nay: { status: 429, body: { message: consumed._nay.message, errorCode: "rate_limited" } } } as const;
+				return {
+					_nay: { status: 429, body: { message: consumed._nay.message, errorCode: "call_limit_reached" } },
+				} as const;
 			}
 			if (consumed._nay.message === "Permission denied" || consumed._nay.name === "permission_denied") {
 				return {

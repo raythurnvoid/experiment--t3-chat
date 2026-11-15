@@ -3511,7 +3511,9 @@ export const archive_nodes = mutation({
 				 * The named items refused so far, each with the reason and how to fix it. A named item inside a
 				 * refused folder is not listed here.
 				 */
-				refusedItems: v.array(v.object({ nodeId: v.id("files_nodes"), message: v.string() })),
+				refusedItems: v.array(
+					v.object({ nodeId: v.id("files_nodes"), name: v.union(v.string(), v.null()), message: v.string() }),
+				),
 				/**
 				 * The named ids that stay in the tree until a later step stamps them, with the named ids inside
 				 * them.

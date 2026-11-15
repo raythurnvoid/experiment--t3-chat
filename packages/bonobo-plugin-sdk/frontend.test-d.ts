@@ -193,11 +193,12 @@ export async function http_type_check() {
 		void retryAfterMs;
 	}
 	// The invoke route declares a 500. `fetchJson` resolves it like any other answer,
-	// so the union keeps that member and narrows to its body.
+	// so the union keeps that member and narrows to its body. Every route can also answer the
+	// generic 500 of a server crash, which has no `runId`, so check for it first.
 	if (invoked.status === 500) {
 		const message: string | undefined = invoked.body?.message;
 		const errorCode: "internal_error" | "response_too_large" | undefined = invoked.body?.errorCode;
-		const runId: string | undefined = invoked.body?.runId;
+		const runId: string | undefined = invoked.body && "runId" in invoked.body ? invoked.body.runId : undefined;
 		void message;
 		void errorCode;
 		void runId;

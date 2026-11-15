@@ -319,7 +319,10 @@ export async function bash_transfer_command_run(
 
 	if (started._nay)
 		return {
-			...fail(started._nay.message + (started._nay.data ? ` (activity ${started._nay.data.activityId})` : "")),
+			...fail(
+				started._nay.message +
+					(started._nay.data && "activityId" in started._nay.data ? ` (activity ${started._nay.data.activityId})` : ""),
+			),
 			exitCode: started._nay.name === "timed_out" ? bash_COMMAND_EXIT_TIMED_OUT : 1,
 		};
 

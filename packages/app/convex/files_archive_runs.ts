@@ -3772,7 +3772,11 @@ export async function files_archive_runs_db_start(
 	// A job that goes on in the background can refuse more named items in later steps. A named item that
 	// is neither stamped nor refused yet stays in the tree until a later step stamps it.
 	const notArchivedNodeIds = run.refusedItems.map((refusedItem) => refusedItem.nodeId);
-	const refusedItems = run.refusedItems.map(({ nodeId, refusal }) => ({ nodeId, message: refusal.message }));
+	const refusedItems = run.refusedItems.map(({ nodeId, refusal }) => ({
+		nodeId,
+		name: refusal.name,
+		message: refusal.message,
+	}));
 	const waitingNodeIds =
 		run.kind === "archive"
 			? (run.phase === "apply" ? run.rootNodeIds.slice(run.applyRootIndex) : run.rootNodeIds).filter(
