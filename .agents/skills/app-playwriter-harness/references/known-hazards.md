@@ -596,6 +596,7 @@ Poll it: the editor mounts a few seconds after `domcontentloaded`, and until the
   - Paste skips those features (`autoIndentOnPaste` is off by default), so it lands exactly.
   - Multi-line text: `page.evaluate((t) => navigator.clipboard.writeText(t), text)`, click the editor, `Control+A`, `Control+V`. This overwrites the user's system clipboard, so say so in your report.
   - One line of text: click the editor, `Control+A`, `Delete`, then `keyboard.insertText(text)`.
+  - Do not `focus()` the hidden `.monaco-editor textarea` to get keyboard focus. `ed.hasTextFocus()` stays false, so keys go nowhere and selection listeners (such as the agent chat's screen info) ignore the change. Click a `.view-line` first. Seen 2026-11-15.
   - Read the text back with the handle below on the dev server, or with the sorted `.view-line` recipe below on a build without `/@id/`.
   - Notes from 2026-08-03 to 2026-08-31 said input never lands. That was not reproduced on 2026-10-21; older Edge builds or a window without OS focus are possible causes. If input does nothing, check `ed.hasTextFocus()` and whether the browser window has focus before you switch to the handle route. Do not read "typing does nothing" as a read-only editor — probe `aria-readonly` and the toolbar instead.
 - **A Monaco pane's hidden `<textarea>` reports `readOnly: true` even when the editor is editable.**

@@ -133,7 +133,8 @@ function get_channel_label(channel: NonNullable<ai_chat_UiContext["channel"]>) {
  * A short line for the composer chip and the sent message.
  */
 export function ai_chat_ui_context_get_label(context: ai_chat_UiContext) {
-	const lineCount = context.selection ? context.selection.text.split("\n").length : 0;
+	// A selection that ends at a line start ends with "\n". Do not count that empty last line.
+	const lineCount = context.selection ? context.selection.text.replace(/\n$/u, "").split("\n").length : 0;
 	return [
 		context.node ? `${context.node.path}${context.node.pendingNodeId ? " (draft)" : ""}` : null,
 		context.view,
