@@ -913,8 +913,9 @@ export const get_plugin_trash_access = internalQuery({
  * Area mode (no `folderNodeId`) reads the area's Trash entries, like the app's Trash view
  * (`files_tree.list_trash_entries`): the items in Trash on their own, then by the path they had at
  * delete time. A restricted folder lists in the area of its parent, locked when the caller cannot open
- * it. An unrestrict moves the entries of the opened folder to the area above, while the Trash items
- * keep their delete-time area. So an area must not read the items by their stored area.
+ * it. An unrestrict moves the Trash items of the opened folder and their entries to the area above, in
+ * a background job. An item can get its new area later than its entry. So an area must not read the
+ * items by their stored area.
  * `entriesCursor` is the Convex cursor of that range.
  *
  * Folder mode reads the archived docs directly inside the folder, by name, below `upperKey`.
