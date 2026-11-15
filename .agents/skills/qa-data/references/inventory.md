@@ -207,7 +207,7 @@ reset. Organization ID: `gs7pjc3hzy2m10e1hj3vk0kzad8cm7tb`. Workspace ID:
 | --- | --- | --- |
 | Public `sidebar-qa-alpha` | `ts7rj0ydq4q0paxyhc54tq2kjd8h7rcj` | Named-channel order and whole-name prefix search. Created through the native dialog. |
 | Public `sidebar-qa-zulu` | `ts7vzeyhyq3wchqsrchfpezp4s8h7k3g` | Archive and restore, Starred, and name order. Archived again after the retained-star restore check; the owner's star is retained. Archived Find shows `#sidebar-qa-zulu · Archived`. |
-| Private `sidebar-qa-private` | `ts7tpt6fpa1gx616z8pktq3h918h7s89` | Owner and `qa.perm.member`. Mention root `v97wbdf2z2b8y8cw48yst50nmh8h7317` has `Sidebar QA mention`. Thread root `v97vekr47m0zg8tgbtp3p4hebn8h68nv` has `Sidebar QA thread` and a reply. Both roots remain live. Use for unread counts, Activity, Threads, and access loss/restore. |
+| Private `sidebar-qa-private` | `ts7tpt6fpa1gx616z8pktq3h918h7s89` | Owner and `qa.perm.member`. Mention root `v97wbdf2z2b8y8cw48yst50nmh8h7317` has `Sidebar QA mention`. Thread root `v97vekr47m0zg8tgbtp3p4hebn8h68nv` has `Sidebar QA thread` and two replies. Root `v97pwet2zwpa04ha3yyzm0b26s8h7vkr` (`Sidebar QA native send`, no replies) is the newest message, so `channels read --latest --limit 1` prints it and a Next page line. All roots remain live. Use for unread counts, Activity, Threads, and access loss/restore. |
 | Owner/member DM | `ts7yv1kpbsqaq4zaj4e1brw93n8h7c8h` | Root `v97x5dncmfafw8znb2rncgwwbs8h7tga` has `Sidebar QA direct message` and a reply. Close and explicit URL reopen passed for `qa.perm.member`. It is open now (`hidden: false`, visibility revision 2). Reuse for Close, discovery, explicit reopen and reply behavior. |
 
 The seeded member's exact Home membership is `h97w612te123z9485k4yrp648n8ed4cm`. Its private
@@ -227,6 +227,10 @@ Its saved search turn checks author, attachments, UTC dates, text/JSON output, a
 command, `--workspace home`, and refusal of a foreign workspace URL. It used the real paid agent.
 The AI chat is preserved, but its old human channel, root and reply IDs were erased by the
 Messages reset. Treat those saved outputs as history; use the new fixtures for another check.
+
+Messages panel agent checks (screen info chip, `channels read --thread` and `--latest`) reuse chat
+`n178w45phzvne8hrs6tvddmkv98j8kaf` in `chitchat-qa/home`, from the Agent tab of `#sidebar-qa-private`.
+It holds two paid turns from 2026-11-15. Add later turns to it instead of starting a new chat.
 
 Public AI output reads reuse chat `n174yyeysbxqbzk9szcv77pz3x8g9281` in
 `chitchat-qa/metadata-qa-0906`, owned by the QA Edge account. These existing outputs are ready
@@ -367,3 +371,4 @@ The kept personal-workspace Mount chats above test separate setups.
 - 2026-11-13: live job limit check as the owner in `chitchat-qa/xfer-qa-0914`. `/g4-x/movable.txt` was moved to Trash and restored once through the app's `archive_nodes` and `unarchive_nodes`; it is live with the same id, and no job is left. No new file, tenant or user.
 - 2026-11-13: delete reporting checks reused `/u55`, `/u18/readonly-cli-check` and a missing path. The job now keeps early refusals without repeating the Read-only refusal, and `rm --wait` reads a finished job on retry. `/u55` and all 46 children were restored with the same ids, paths, sizes, types and flags; the same 3 old Trash items remain. Replaying the saved request after Restore left `/u55` live. No new file, key, tenant or user.
 - 2026-11-13: updated the personal/home skill to press-api 1.6.8 (`0c0d248`): 4 files changed, 6 were already equal, and all 10 saved files matched the pushed source byte for byte. The app shows 1.6.8 and Saved. The downloaded helper passed the finished-job retry check. No upload, new file, key, tenant or user.
+- 2026-11-15: Messages right panel checks in `chitchat-qa/home` `#sidebar-qa-private`. Two agent turns in chat `n178w45phzvne8hrs6tvddmkv98j8kaf`; panel width reset to the defaults through double-click. No new message, file, tenant or user.

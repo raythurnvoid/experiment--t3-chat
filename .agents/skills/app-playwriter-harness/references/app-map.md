@@ -146,11 +146,19 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
 - Route: `/w/:organizationName/:workspaceName/messages/:channelId`. `thread` uses a root message id;
   `message` jumps to a message. Missing and denied ids show the same `Channel not found` state.
   A personally closed DM remains readable; explicit navigation may reopen it.
-- The sidebar is `complementary "Channels"`. The thread is `complementary "Thread"`.
-  Their resize controls are separators named `Resize channels sidebar` and `Resize conversation and thread`.
-  Below 820 px the sidebar uses a drawer. Below 940 px, the thread replaces the conversation;
-  use `Back to channel`. At 940–1199 px an open thread hides the desktop sidebar. At 1200 px and
-  above all three panes fit. Width means the Messages region, not the whole browser window.
+- The sidebar is `complementary "Channels"`. The right panel has tabs `#app_channels_panel_tabs_thread`
+  and `#app_channels_panel_tabs_agent` (tablist `Panel tabs`); the thread inside it is `complementary "Thread"`.
+  The resize controls are separators named `Resize channels sidebar` and `Resize conversation and panel`;
+  a double-click resets both widths. `.ChannelsContent[data-layout]` is `wide` (list, conversation and
+  panel, from 944 px), `columns` (820–943 px: conversation and panel, list in a drawer), or `single`
+  (below 820 px: the panel covers the conversation while a thread is open or after the header `Agent`
+  button; the panel toolbar `Back to channel` closes it and the thread). Width means the Messages
+  region, not the whole browser window. To change it, set the viewport and read the layout in a later
+  call (see "Backgrounded Tabs" in `known-hazards.md`).
+- The agent chat in the Agent tab works like the Files sidebar agent; scope composer and messages to
+  `.ChannelsContent-panel-tabs-panel:not([hidden])`. Its screen info chip reads `#name (kind)`, plus
+  ` · Thread` while a thread is open. A thread pane `Reply in thread` button also sits hidden inside
+  the panel, so pick main-stream buttons with `[data-message-id="<id>"] button[aria-label="Reply in thread"]`.
 - Channel rows have `data-channel-id`, `data-channel-kind`, `data-unread`, and `data-mention-count`.
   The active link has `aria-current="page"`. Articles have `data-message-id` and reply root ids.
 - To open a sidebar row menu, first hover its link inside `complementary "Channels"`, then click

@@ -55,7 +55,9 @@ the safe fields.
 Authors edit with `expectedRevision`. Edits never notify or create new followers. Removing a mention
 retires only its mention inbox item, keeping a separate inline-reply item. Authors and managers can
 delete under their channel rules. Deleted messages disappear, except a root with live replies keeps
-a tombstone. Readable inbox items leave in the delete transaction. Previously delivered items for
+a tombstone. Each message keeps `listed`: false when no reader sees it (deleted, and not a root with
+live replies). Every message page index starts with `listed`, so deleted messages never fill a page,
+however many there are. Readable inbox items leave in the delete transaction. Previously delivered items for
 denied readers stay as inert locked rows until access returns. Reaction docs drain in bounded jobs.
 A deleted empty root loses its thread immediately; a durable cursor job cleans readable followers.
 Denied followers keep their locked row. Whole-channel deletion may remove those rows.
@@ -127,13 +129,20 @@ person cannot read the channel now). They never drop rows, so the list and the c
 members dialog shows "(left)" and "(can't see this)". A manager can remove both; a `left` row
 cannot change level, and Add people does not lock a person whose row is `left`.
 
-Measure the Messages region after the global navigation. At 1200px and above, show the sidebar,
-channel and open thread. At 940–1199px, an open thread moves the sidebar into a drawer. At
-820–939px, show the sidebar and thread. Below 820px, show one conversation with a channel drawer.
-The sidebar defaults to 240px (220–320px); the thread defaults to 380px (360–480px). Split channels
-keep at least 560px. Save the two widths separately. Hidden channel panes stay mounted so drafts,
-attachments and the visible message survive thread opens and resize. The root and replies share
-one scroll area. Back or Close returns focus to the opener when it is still present.
+Measure the Messages region after the global navigation. Like the Files sidebar, the right panel
+has Thread and Agent tabs. From 820px it is always a column, 360–480px wide (default 380px). The
+channel list follows the user's own open flag, and shows as a column only from 944px (list 220 +
+conversation 360 + panel 360). Below that it opens as a drawer. Below 820px the panel covers the
+conversation while a thread is open, or after the header Agent button. Its Back closes the panel
+and the thread, and returns focus to the opener (the Agent button or Reply in thread).
+
+A new thread selects Thread. A tab the user picks holds while the same thread stays open. No thread
+falls back to Agent, and Reply in thread selects Thread again. A thread link opens only after its
+channel loads, so the Thread tab is never blank. The sidebar defaults to 240px (220–320px). Save the
+two widths separately; a double-click on a resize handle resets both. Hidden panes stay mounted, so
+drafts, attachments, the visible message and the agent chat survive. `ChannelsConversation` renders
+the thread through a portal into the Thread tab, so it still owns opener focus, the jump target and
+the notice. The root and replies share one scroll area.
 
 Rows show local 24-hour timestamps, with the full date on focus or hover. Keep the existing
 five-minute grouping and entry unread boundary. Reply in thread is separate from Quote reply
@@ -218,7 +227,15 @@ Agent reads use `server/bash-channels-command.ts`, registered beside `meta`. The
 workspace membership, and source lifetime before channel access. Scope is current workspace or
 personal home only. References include ids, public names, file ids/paths, and Messages URLs.
 Read dates are UTC; until is exclusive. Pages cap at 50 and short cursors last 24 hours. Cursors keep
-workspace, source, reference, query, author, attachment/date filters, and page size.
+workspace, source, reference, query, author, attachment/date filters, mode, and page size.
+
+`channels read --latest` starts at the newest messages, like the Messages UI: the main stream, or one
+thread with `--thread`. Each page prints in time order, and its Next page goes back to older messages.
+It does not combine with `--since` or `--until`. A Messages URL with `?thread=` reads that thread.
+Bodies print as JSON strings after `body:`, because other people wrote them: a body cannot print a
+fake header line. The Messages page also sends screen info with the open channel and thread. The
+server rebuilds the channel name, kind and thread title from the database, and drops a channel or
+thread the sender cannot read now.
 See the [agent spec](../ai-chat-agent/SKILL.md).
 
 `channels ls` never reads a channel the user is not in, except public channels. Private, direct
