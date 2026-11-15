@@ -9908,21 +9908,6 @@ const app_convex_schema = defineSchema({
 		revision: v.number(),
 	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
-	channels_move_authority_proofs: defineTable({
-		cohortId: v.id("files_move_cohorts"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		proofEpoch: v.number(),
-		fence: v.number(),
-		attemptFence: v.number(),
-		clockPins: files_move_clock_pins_validator,
-		lastOrder: v.union(v.number(), v.null()),
-		changed: v.boolean(),
-		complete: v.boolean(),
-	})
-		.index("by_cohort_epoch", ["cohortId", "proofEpoch"])
-		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
-
 	channels_sidebar_jobs: defineTable({
 		channelId: v.id("channels"),
 		organizationId: v.id("organizations"),

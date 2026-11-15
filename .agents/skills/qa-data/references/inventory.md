@@ -272,6 +272,7 @@ The kept personal-workspace Mount chats above test separate setups.
 
 ## Change Log
 
+- 2026-11-15: Trash access and Messages totals checks as the owner, with `qa.perm.member` in a scratch browser. In `chitchat-qa/xfer-qa-0914`, `/g4-x/movable.txt` was moved to Trash and restored (same id), and `/g4-x` was restricted and opened again. In `chitchat-qa/home`, `/creation-perf-combined-file_combined-02.md` and `/creation-perf-combined-folder_combined-01` were restricted and opened again; the workspace Messages clock went from 63 to 64. All items are back as they were. No new file, tenant or user.
 - 2026-11-14: `errorCode` checks in `chitchat-qa/xfer-qa-0914` as the owner with the temporary key `qa-errcode-20261114` (now revoked, `revokedAt` set). The mkdir into `/u18/readonly-cli-check` was refused with 409 `read_only`, and the folder is still empty. The Chitchat page in `chitchat-qa/home` was only opened. No new file, tenant or user.
 - 2026-11-14: moved the old app copy `personal/home:/.agents/skills/press-api` (1.6.8) to Trash, with the user's approval. The built-in `/skills/press-api` replaces it. No new file, tenant or user.
 - 2026-11-13: the built-in skill check added one one-turn agent chat in `chitchat-qa/xfer-qa-0914` (thread `n174xaamc6xkp96752d3nabqnd8j5fdy`). It ran one read-only Bash command on `/skills/press-api`. No file, tenant or user.

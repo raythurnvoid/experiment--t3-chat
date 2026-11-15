@@ -1466,7 +1466,6 @@ export async function channels_db_purge_workspace_batch(
 		"channels_inbox_jobs",
 		"channels_summary_jobs",
 		"channels_authority_jobs",
-		"channels_move_authority_proofs",
 		"channels_authority_versions",
 	] as const) {
 		const rows = await ctx.db

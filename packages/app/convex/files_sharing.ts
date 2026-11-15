@@ -612,7 +612,7 @@ export const get_node_share_state = query({
 			 */
 			canAddPeople: v.boolean(),
 			/**
-			 * Null for a live item. An item in Trash keeps the access of its delete time, so the dialog
+			 * Null for a live item. An item in Trash follows the access of its folder, so the dialog
 			 * offers no restrict or unrestrict. `restrictedFolderDeleted` is true when its restricted folder
 			 * is deleted for good: workspace roles give no access, but added people still can.
 			 */
@@ -1793,7 +1793,7 @@ export const unrestrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		// A Trash item keeps the area of its delete time. See `db_restrict_node`.
+		// A Trash item follows the area of its folder. See `db_restrict_node`.
 		if (node.archiveOperationId !== null) {
 			return Result({ _nay: { message: "This item is in Trash. Restore it before you change who can open it." } });
 		}

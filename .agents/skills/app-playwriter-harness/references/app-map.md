@@ -95,6 +95,14 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
   Threads use global saved totals. Ready counts say `Counts may be delayed`. An access repair says
   `Messages Updating…` and hides counts/dots until its permission check is current. The bell hides
   its whole combined total during that repair, but jobs and invites remain usable.
+- To check which access changes reset the totals, watch a second member's Messages link on Files
+  while the owner changes access (passed 2026-11-15 in `chitchat-qa/home` with `qa.perm.member`).
+  Sample `a[href$='/messages']` text, its `data-unread` and `document.title` every 100 ms into a
+  page variable, because the repair lasts under a second. Read the workspace row of
+  `channels_authority_versions` before and after. Restrict and unrestrict of one file: the revision
+  and the link do not change. The first Restrict of a plain folder: no change either. Unrestrict of
+  that folder: revision plus 1, the link shows `Messages Updating…` once (title `Bonobo Senate —
+  Messages updating`), then the old count returns. Remove the sampler when you are done.
 - Notifications has a `Messages` region (the 5 newest inbox items, `N unread`, and a `View all` link
   to Activity). It is hidden when the inbox is empty. The header subscribes to everything the popover
   shows, also while it is closed, so reopening shows rows at once. Only the first open after a page

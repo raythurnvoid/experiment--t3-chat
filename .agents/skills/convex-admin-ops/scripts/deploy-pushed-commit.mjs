@@ -1,7 +1,11 @@
-// Usage: vp env exec node deploy-pushed-commit.mjs <empty folder outside the repo> [--push]
+// Usage: vp env exec node deploy-pushed-commit.mjs <empty folder outside the repo> [--typecheck] [--push]
 // Pushes origin/main to the dev deployment from a clean worktree, so other agents' uncommitted
 // edits in the shared checkout never reach the server. See "Push Only A Pushed Commit" in
 // convex-admin-ops/SKILL.md. Without --push it only builds and removes the worktree.
+//
+// --typecheck runs `lint:tsc` in the worktree first and stops before the push when it fails. Use it
+// when the commit holds only some hunks of a file: the shared checkout's type check also saw the
+// other agent's hunks, so it did not check the commit itself.
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,6 +13,7 @@ import path from "node:path";
 const repo = path.resolve(import.meta.dirname, "../../../..");
 const dir = process.argv[2];
 const push = process.argv.includes("--push");
+const typecheck = process.argv.includes("--typecheck");
 if (!dir || !path.isAbsolute(dir) || fs.existsSync(dir) || path.resolve(dir).startsWith(repo + path.sep)) {
 	console.error("Pass an absolute folder that does not exist yet and is outside the repo.");
 	process.exit(1);
@@ -48,6 +53,12 @@ try {
 	const head = git(dir, "rev-parse", "HEAD");
 	if (head !== git(dir, "rev-parse", "origin/main")) throw new Error("origin/main moved. Run the script again.");
 	console.log(`worktree ready at ${head.slice(0, 8)}`);
+
+	if (typecheck) {
+		const result = pnpm("--dir packages/app run lint:tsc");
+		if (result.status !== 0) throw new Error(`Type check failed:\n${result.stdout}${result.stderr}`);
+		console.log("type check passed");
+	}
 
 	if (push) {
 		// A fresh worktree has no .env.local, so the CLI prints "Provisioned a dev deployment" and writes one

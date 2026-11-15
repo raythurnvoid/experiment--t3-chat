@@ -3455,21 +3455,6 @@ export const retry_now = internalMutation({
 	},
 });
 
-/**
- * Temporary, for ops: delete the old Messages proofs of Moves, 100 per call. Run it until `done` is
- * true. No code writes these rows any more. Remove this mutation together with the
- * `channels_move_authority_proofs` table.
- */
-export const erase_move_authority_proofs_batch = internalMutation({
-	args: {},
-	returns: v.object({ done: v.boolean() }),
-	handler: async (ctx) => {
-		const proofs = await ctx.db.query("channels_move_authority_proofs").take(100);
-		for (const proof of proofs) await ctx.db.delete("channels_move_authority_proofs", proof._id);
-		return { done: proofs.length < 100 };
-	},
-});
-
 async function db_can_wake(ctx: MutationCtx, cohortId: Id<"files_move_cohorts">) {
 	const cohort = await ctx.db.get("files_move_cohorts", cohortId);
 	if (!cohort || cohort.phase !== "complete") return false;
