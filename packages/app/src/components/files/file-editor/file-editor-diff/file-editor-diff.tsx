@@ -53,7 +53,7 @@ import {
 	type files_PendingTarget,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
-import { files_monaco_create_editor_model } from "@/lib/files-monaco.ts";
+import { files_monaco_create_editor_model, files_monaco_listen_selection_for_ai_chat } from "@/lib/files-monaco.ts";
 import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
 import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
@@ -2342,6 +2342,28 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
 	}, [mountedModifiedEditor]);
 
+	useEffect(() => {
+		const diffEditor = editorRef.current;
+		if (!mountedModifiedEditor || !diffEditor) {
+			return;
+		}
+
+		const cleanupOriginal = files_monaco_listen_selection_for_ai_chat(
+			diffEditor,
+			diffEditor.getOriginalEditor(),
+			"diff_original",
+		);
+		const cleanupModified = files_monaco_listen_selection_for_ai_chat(
+			diffEditor,
+			mountedModifiedEditor,
+			"diff_modified",
+		);
+		return () => {
+			cleanupOriginal();
+			cleanupModified();
+		};
+	}, [mountedModifiedEditor]);
+
 	// Preparation can settle the proposal before its action returns. The parent then unmounts
 	// Review immediately, so keep copies outside the editor before the models are disposed.
 	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
@@ -3974,6 +3996,28 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 
 		editorRef.current?.getOriginalEditor().updateOptions({ ariaLabel: "Original file content" });
 		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
+	}, [mountedModifiedEditor]);
+
+	useEffect(() => {
+		const diffEditor = editorRef.current;
+		if (!mountedModifiedEditor || !diffEditor) {
+			return;
+		}
+
+		const cleanupOriginal = files_monaco_listen_selection_for_ai_chat(
+			diffEditor,
+			diffEditor.getOriginalEditor(),
+			"diff_original",
+		);
+		const cleanupModified = files_monaco_listen_selection_for_ai_chat(
+			diffEditor,
+			mountedModifiedEditor,
+			"diff_modified",
+		);
+		return () => {
+			cleanupOriginal();
+			cleanupModified();
+		};
 	}, [mountedModifiedEditor]);
 
 	/**

@@ -29,9 +29,14 @@ import {
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
 import type { files_browser_StreamControlMessage, files_browser_StreamWebMessage } from "@/lib/files-browser-stream.ts";
 import { useNavigate } from "@tanstack/react-router";
-import { browser_web_normalize_url, type browser_web_UrlRefusal } from "common/browser-web-url.ts";
+import {
+	browser_web_normalize_url,
+	browser_web_url_host_matches,
+	type browser_web_UrlRefusal,
+} from "common/browser-web-url.ts";
 import { useConvex, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { ArrowLeft, ArrowRight, Bot, Clock, Hand, KeyRound, Play, RotateCw, Square, X } from "lucide-react";
@@ -358,6 +363,21 @@ const WebBrowserLive = memo(function WebBrowserLive(props: WebBrowserLive_Props)
 	const addressValue = addressDraft ?? location?.url ?? "";
 	const validationMessage = addressDraft === null ? undefined : web_browser_address_error(addressDraft);
 	const loading = location?.loading ?? false;
+	// Pages like about:blank have the origin "null".
+	const pageOrigin = location && URL.canParse(location.url) ? new URL(location.url).origin : null;
+
+	// Tell the chat panel the page the user sees. Send only the origin: a full address can hold tokens.
+	// Send nothing when the agent may not use the web or this site, like a bank on the blocked list.
+	useAiChatUiContextWrite({
+		browser:
+			location &&
+			pageOrigin?.startsWith("http") &&
+			agentAccess &&
+			preferences &&
+			!browser_web_url_host_matches(location.url, preferences.agentBlockedHosts)
+				? { origin: pageOrigin, title: location.title.trim().slice(0, 200) || null }
+				: null,
+	});
 
 	const timeLeft = [session.idleUntil, session.totalUntil].filter((value): value is number => value !== null);
 	const minutesLeft = timeLeft.length > 0 ? web_browser_minutes(Math.min(...timeLeft) - now) : null;

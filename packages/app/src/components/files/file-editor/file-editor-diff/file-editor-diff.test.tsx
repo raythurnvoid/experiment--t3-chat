@@ -141,6 +141,7 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 vi.mock("@/lib/files-monaco.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/files-monaco.ts")>();
 	return {
+		...original,
 		files_monaco_create_editor_model: (text: string, languageId: string) => {
 			const model = original.files_monaco_create_editor_model(text, languageId);
 			monacoHarness.createdModels.push(model as never);
@@ -166,6 +167,7 @@ vi.mock("@monaco-editor/react", async () => {
 						monacoHarness.changeListeners.push(listener);
 						return { dispose() {} };
 					},
+					onDidChangeCursorSelection: () => ({ dispose() {} }),
 					pushUndoStop: () => {},
 					executeEdits: () => false,
 					getDomNode: () => document.createElement("div"),

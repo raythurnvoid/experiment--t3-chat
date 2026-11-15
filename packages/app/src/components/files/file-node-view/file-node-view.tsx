@@ -2127,6 +2127,13 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 		if (option) onEditorModeChange(option.value);
 		else onFileViewChange(value);
 	});
+	const privateViewSelectValue = hasHtmlPreview ? activePrivateView : isPreview ? "preview" : editorMode;
+
+	// Tell the chat panel the shown view by the name the view picker shows, like the saved file view.
+	useAiChatUiContextWrite({
+		view: privateViewOptions.find((option) => option.value === privateViewSelectValue)?.label ?? null,
+	});
+
 	const handlePreviewSnapshotChange = useFn(() => setPreviewRevision((revision) => revision + 1));
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
 
@@ -2203,7 +2210,7 @@ const FileNodeViewPrivateContent = memo(function FileNodeViewPrivateContent(prop
 					{createPortal(
 						<FileNodeViewViewSelect
 							options={privateViewOptions}
-							value={hasHtmlPreview ? activePrivateView : isPreview ? "preview" : editorMode}
+							value={privateViewSelectValue}
 							onValueChange={handleViewChange}
 						/>,
 						viewSelectPortalHost,
@@ -6374,14 +6381,21 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 	}, [membershipId, searchPrivateNodeId, privateTargetView, handleEditorTargetChange]);
 
-	// Tell the chat panel which saved node is open. A private draft has no saved node, and the server
-	// drops an archived node, so neither one is sent.
+	// Tell the chat panel which node is open: the user's own private draft or a saved node. The server
+	// drops an archived node, so it is not sent.
 	useAiChatUiContextWrite({
-		node: isRootNodeSelected
-			? { fileNodeId: null, path: "/", kind: "folder" }
-			: resolvedNode && resolvedNode.archiveOperationId === null
-				? { fileNodeId: resolvedNode._id, path: resolvedNode.path, kind: resolvedNode.kind }
-				: null,
+		node: privateEntry
+			? {
+					fileNodeId: null,
+					pendingNodeId: privateEntry.node._id,
+					path: privateEntry.path,
+					kind: privateEntry.node.kind,
+				}
+			: isRootNodeSelected
+				? { fileNodeId: null, pendingNodeId: null, path: "/", kind: "folder" }
+				: resolvedNode && resolvedNode.archiveOperationId === null
+					? { fileNodeId: resolvedNode._id, pendingNodeId: null, path: resolvedNode.path, kind: resolvedNode.kind }
+					: null,
 	});
 
 	// The search this component last asked the router to write. The router applies a navigation

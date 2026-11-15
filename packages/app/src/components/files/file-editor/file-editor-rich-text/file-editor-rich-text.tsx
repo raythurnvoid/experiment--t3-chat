@@ -58,6 +58,7 @@ import {
 } from "@/lib/files.ts";
 import { files_tiptap_markdown_to_json } from "../../../../../shared/files-tiptap.ts";
 import { file_quotes_schema } from "../../../../../shared/file-quotes.ts";
+import { ai_chat_ui_context_clear_selection, ai_chat_ui_context_set_selection } from "@/lib/ai-chat-ui-context.ts";
 import { usePromiseValue } from "@/lib/async.ts";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import {
@@ -1076,6 +1077,12 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 		}
 	}, [editor, editable]);
 
+	useEffect(() => {
+		if (editor) {
+			return listen_selection_for_ai_chat(editor);
+		}
+	}, [editor]);
+
 	/**
 	 * Reject content that would push the document over the size cap. Every keystroke in this
 	 * editor persists, so pasted and dropped content has to be checked before it lands.
@@ -1549,6 +1556,27 @@ type FileEditorRichTextNonCollab_ClassNames =
 	| "FileEditorRichTextNonCollab-editor-content";
 
 /**
+ * Send the selected text to the chat screen info. Keep it after blur, because the user then clicks
+ * the chat input.
+ */
+function listen_selection_for_ai_chat(editor: Editor) {
+	const handleSelectionUpdate = () => {
+		// Only a user selection counts. Remote edits and restores also move the selection.
+		if (!editor.isFocused) return;
+		const { from, to } = editor.state.selection;
+		ai_chat_ui_context_set_selection(editor, {
+			text: editor.state.doc.textBetween(from, to, "\n"),
+			editor: "rich_text",
+		});
+	};
+	editor.on("selectionUpdate", handleSelectionUpdate);
+	return () => {
+		editor.off("selectionUpdate", handleSelectionUpdate);
+		ai_chat_ui_context_clear_selection(editor);
+	};
+}
+
+/**
  * Serialize the mounted editor the way `files_yjs_doc_get_text` writes a file: non-empty content
  * ends with exactly one `\n`. The stored bytes of a non-collaborative file come from THIS
  * serializer, so the dirty baseline, Save, and the comment save must all go through it.
@@ -2014,6 +2042,12 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			clearTimeout(dirtyCheckTimeoutRef.current);
 			dirtyCheckTimeoutRef.current = undefined;
 		};
+	}, [editor]);
+
+	useEffect(() => {
+		if (editor) {
+			return listen_selection_for_ai_chat(editor);
+		}
 	}, [editor]);
 
 	/**

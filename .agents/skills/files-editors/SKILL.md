@@ -290,6 +290,12 @@ Comments. Each target keeps the request until its normal composer is ready, then
 without replacing the draft. A first AI chat must exist before its composer accepts the quote.
 Message edits and queued AI edits keep the quote pending for the normal draft.
 
+Every editor (both rich text editors, Monaco, and both diff panes) also writes its focused selection
+to the agent chat screen info, without a button. Rich text uses `listen_selection_for_ai_chat`;
+Monaco uses `files_monaco_listen_selection_for_ai_chat` (`src/lib/files-monaco.ts`), which sends the
+primary selection only. Each editor clears only its own selection when it unmounts. Test stubs of
+the Monaco editor need `onDidChangeCursorSelection`. Rules: the `ai-chat-agent` skill, Screen info.
+
 Read-only rich editors show a quote-only selection menu. Quote in Comments still needs file
 content-write permission, even when a local read-only policy blocks text edits. Write actions
 remain hidden. Private pending files have no quote action. Code view has no selection bubble,

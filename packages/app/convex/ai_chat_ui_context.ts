@@ -3,7 +3,10 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 import { access_control_db_authorize_node } from "./access_control.ts";
 import { channels_db_get_access } from "./channels.ts";
+import { files_browser_db_get_preferences } from "./files_browser.ts";
+import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import { ai_chat_ui_context_validate_parts, type ai_chat_UiContext } from "../shared/ai-chat-ui-context.ts";
+import { browser_web_url_host_matches } from "common/browser-web-url.ts";
 
 async function get_readable_node(
 	ctx: QueryCtx | MutationCtx,
@@ -19,6 +22,27 @@ async function get_readable_node(
 		permission: "content.read",
 	});
 	return !read._nay && read._yay.fileNode.archiveOperationId === null ? read._yay.fileNode : null;
+}
+
+/**
+ * The sender's own private draft, with the path the sender's draft view shows. The reader finds only
+ * the sender's drafts and checks access, so a guessed id of another member's draft finds nothing.
+ * The reader stops after its read budget; a draft that needs more reads gets no screen info.
+ */
+async function get_own_draft(
+	ctx: QueryCtx | MutationCtx,
+	membership: Doc<"organizations_workspaces_users">,
+	pendingNodeId: string,
+) {
+	const id = ctx.db.normalizeId("files_pending_nodes", pendingNodeId);
+	if (!id) return null;
+	const reader = await files_visible_db_create_reader(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: membership.userId,
+	});
+	const entry = await reader.resolveTarget({ kind: "private", id });
+	return entry && !reader.exhausted ? entry : null;
 }
 
 /**
@@ -107,15 +131,43 @@ export async function ai_chat_ui_context_db_rewrite_parts(
 	const context = ai_chat_ui_context_validate_parts(args.parts);
 	if (context._nay) return context;
 	const parts = args.parts as unknown[];
-	if (!context._yay?.node && !context._yay?.channel) return Result({ _yay: parts });
+	if (!context._yay?.node && !context._yay?.channel && !context._yay?.selection && !context._yay?.browser) {
+		return Result({ _yay: parts });
+	}
 
 	let node: ai_chat_UiContext["node"] = null;
-	// A null id is the workspace root, which has no node doc.
-	if (context._yay.node?.fileNodeId === null) {
-		node = context._yay.node.path === "/" && context._yay.node.kind === "folder" ? context._yay.node : null;
-	} else if (context._yay.node) {
-		const fileNode = await get_readable_node(ctx, args.membership, context._yay.node.fileNodeId);
-		node = fileNode ? { fileNodeId: fileNode._id, path: fileNode.path, kind: fileNode.kind } : null;
+	const sentNode = context._yay.node;
+	if (sentNode?.pendingNodeId) {
+		// A draft saved or discarded meanwhile has no pending doc, so it finds nothing.
+		const draft = await get_own_draft(ctx, args.membership, sentNode.pendingNodeId);
+		node =
+			draft?.kind === "private"
+				? { fileNodeId: null, pendingNodeId: draft.node._id, path: draft.path, kind: draft.node.kind }
+				: null;
+	} else if (sentNode?.fileNodeId === null) {
+		// Both ids null is the workspace root, which has no node doc.
+		node = sentNode.path === "/" && sentNode.kind === "folder" ? sentNode : null;
+	} else if (sentNode?.fileNodeId) {
+		const fileNode = await get_readable_node(ctx, args.membership, sentNode.fileNodeId);
+		node = fileNode
+			? { fileNodeId: fileNode._id, pendingNodeId: null, path: fileNode.path, kind: fileNode.kind }
+			: null;
+	}
+
+	// Selected text says it comes from the open file. Keep it only with a file the sender can read.
+	const selection = node?.kind === "file" ? context._yay.selection : null;
+
+	// The browser checks this too, but the saved rule wins: preferences can change in another tab.
+	let browser = context._yay.browser;
+	if (browser) {
+		const preferences = await files_browser_db_get_preferences(ctx, {
+			userId: args.membership.userId,
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+		});
+		if (!preferences.webAgentAccess || browser_web_url_host_matches(browser.origin, preferences.agentBlockedHosts)) {
+			browser = null;
+		}
 	}
 
 	let channel: ai_chat_UiContext["channel"] = null;
@@ -136,21 +188,22 @@ export async function ai_chat_ui_context_db_rewrite_parts(
 		};
 	}
 
-	const data: ai_chat_UiContext = { ...context._yay, node, channel };
+	const data: ai_chat_UiContext = { ...context._yay, node, channel, selection, browser };
 	return Result({
 		_yay: parts.flatMap((part) => {
 			if (typeof part !== "object" || part === null || !("type" in part) || part.type !== "data-ui-context") {
 				return [part];
 			}
-			// Info with no node, plugin or channel says nothing, so drop the whole part.
-			return data.node || data.plugin || data.channel ? [{ ...part, data }] : [];
+			// Info with no node, plugin, channel or browser page says nothing, so drop the whole part.
+			return data.node || data.plugin || data.channel || data.browser ? [{ ...part, data }] : [];
 		}),
 	});
 }
 
 /**
  * History reads keep the sent path and channel name, and clear a node id or channel ids the reader
- * can no longer open, like file quotes.
+ * can no longer open, like file quotes. They keep a draft id as stored: a private draft opens only
+ * for its owner, and only the owner reads the chat. They keep selected text, like quote text.
  */
 export async function ai_chat_ui_context_db_shape(
 	ctx: QueryCtx | MutationCtx,

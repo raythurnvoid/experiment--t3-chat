@@ -12,7 +12,7 @@ import {
 	type files_YjsRootKind,
 	type files_PendingTarget,
 } from "@/lib/files.ts";
-import { files_monaco_create_editor_model } from "@/lib/files-monaco.ts";
+import { files_monaco_create_editor_model, files_monaco_listen_selection_for_ai_chat } from "@/lib/files-monaco.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
 import { files_text_diff_TOO_LARGE_MESSAGE } from "../../../../../shared/files-text-diff.ts";
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../../../../shared/files-tiptap.ts";
@@ -954,6 +954,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	useEffect(() => {
 		if (isActive) mountedEditor?.layout();
 	}, [isActive, mountedEditor]);
+
+	useEffect(() => {
+		if (mountedEditor) {
+			return files_monaco_listen_selection_for_ai_chat(mountedEditor, mountedEditor, "plain_text");
+		}
+	}, [mountedEditor]);
 
 	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
 	// of rebuilding its model, which would drop the cursor and undo history.

@@ -242,7 +242,7 @@ Typing `@` in any AI chat composer (thread, message edit, file-editor agent side
 
 Every chat composer except the `/chat` page shows what the user has open, and the next message sends it to the agent. Verified 2026-10-30:
 
-- The chip row is `.AiChatUiContext` (`aria-label="Screen info sent to the agent"`) right above the composer. Its text is the label: `/documents/notes.md · Rich text` for a file, `/documents` for a folder, `Mail (gmail)` for a plugin page. Switching the view changes the label right away.
+- The chip row is `.AiChatUiContext` (`aria-label="Screen info sent to the agent"`) right above the composer. Its text is the label: `/documents/notes.md · Rich text` for a file, `/documents` for a folder, `Mail (gmail)` for a plugin page, `/drafts/new.md (draft) · Rich text` for the user's own private draft, `Example Domain (example.com)` on the Browser page. A selection in the open file's editor adds `· 2 lines selected` (`(first 4 KB)` when cut). The rich text editor clears its highlight when focus moves to the chat input, but the chip keeps the selection. Switching the view changes the label right away.
 - `/chat` has no open file, so it has no chip (`.AiChatUiContext` count 0). Use that as the negative control.
 - Remove is the chip's button named "Don't send screen info". It hides the chip and moves focus to the composer. The chip comes back when the screen changes (another file, view, or plugin page).
 - A sent message shows `.AiChatMessagePartUiContext` above its text. The stored part is `data-ui-context` in `ai_chat_runs.branch_page`; its `path` and `kind` come from the database, not from the browser.
