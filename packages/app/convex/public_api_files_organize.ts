@@ -527,9 +527,8 @@ function get_refusal_error_code(refusal: { name?: string | null; message: string
 	}
 	if (refusal.name === "read_only") return "read_only" as const;
 	if (refusal.name === "move_busy") return "move_busy" as const;
-	// `busy`: another job holds these items. The restore check names an item that a purge has started
-	// by its message only.
-	if (refusal.name === "busy" || refusal.message === "This item is being deleted.") return "path_busy" as const;
+	// `busy`: another job holds these items, or a purge has started the item.
+	if (refusal.name === "busy") return "path_busy" as const;
 	return "conflict" as const;
 }
 
@@ -3404,7 +3403,13 @@ export const get_job = internalQuery({
 					...(args.cursor ? [] : run.origin.refused),
 					...items.map((item) =>
 						part === "failed"
-							? { path: item.sourcePath, message: item.errorMessage ?? "Failed", errorCode: "conflict" as const }
+							? {
+									path: item.sourcePath,
+									message: item.errorMessage ?? "Failed",
+									// Only an API Move saves a code on a failed item, for a refused permission.
+									errorCode:
+										item.errorCode === "permission_denied" ? ("permission_denied" as const) : ("conflict" as const),
+								}
 							: { path: item.sourcePath, message: "Permission denied", errorCode: "permission_denied" as const },
 					),
 				],

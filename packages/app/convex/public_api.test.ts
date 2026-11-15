@@ -6198,7 +6198,11 @@ describe("locked and missing paths", () => {
 					body: {
 						status: "partial",
 						refused: [
-							{ path: "/secret/h01.md", message: "You need Can manage on the shared folder to move this out of it." },
+							{
+								path: "/secret/h01.md",
+								message: "You need Can manage on the shared folder to move this out of it.",
+								errorCode: "permission_denied",
+							},
 						],
 					},
 				});
@@ -6225,7 +6229,7 @@ describe("locked and missing paths", () => {
 				await finish_move(t, intoSecretJobId);
 				expect(await post(t, "/api/v1/files/jobs/get", inside.credential, { jobId: intoSecretJobId })).toMatchObject({
 					status: 200,
-					body: { refused: [{ path: "/notes/b.md", message: "Permission denied" }] },
+					body: { refused: [{ path: "/notes/b.md", message: "Permission denied", errorCode: "permission_denied" }] },
 				});
 
 				// Control: the person behind the key may move it out.

@@ -21,6 +21,7 @@ import { files_saved_placement_db_get_node } from "../server/files-saved-placeme
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key } from "./r2_assets.ts";
+import * as rate_limiter from "./rate_limiter.ts";
 import {
 	r2Objects,
 	mock_transfer_storage,
@@ -265,6 +266,28 @@ describe("start", () => {
 			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: started._yay.runId }),
 		).toMatchObject({ step: "discover", activity: { progress: { discovered: count } } });
 		expect(await t.run((ctx) => ctx.db.query("files_transfer_items").collect())).toHaveLength(count);
+	});
+
+	test("answers the rate limit wait instead of failing", async () => {
+		const fixture = await create_folder_fixture(["/source"]);
+		const { db, asUser, folders } = fixture;
+		vi.spyOn(rate_limiter, "rate_limiter_limit_by_key").mockResolvedValue({
+			message: "Rate limit exceeded",
+			retryAfterMs: 1234,
+		});
+
+		const started = await asUser.mutation(api.files_transfer.accept_input, {
+			membershipId: db.membershipId,
+			requestId: "rate-limited",
+			kind: "copy",
+			expectedSourceCount: 1,
+			sourceIds: [folders.get("/source")!],
+			targetParentId: folders.get("/target")!,
+		});
+
+		expect(started).toEqual({
+			_nay: { name: "rate_limited", message: "Rate limit exceeded", data: { retryAfterMs: 1234 } },
+		});
 	});
 });
 

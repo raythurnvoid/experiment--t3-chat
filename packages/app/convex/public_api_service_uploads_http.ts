@@ -50,7 +50,7 @@ function upload_failure(failure: { name?: string; message: string }) {
 	if (failure.name === ("oversized_upload" satisfies public_api_service_uploads_RefusalName)) {
 		return { status: 409, body: { message, errorCode: "oversized_upload" } } as const;
 	}
-	// Give each replay refusal its own code, so a service can tell them apart without reading the text.
+	// Give each of these refusals its own code, so a service can tell them apart without reading the text.
 	if (failure.name === ("file_exists" satisfies public_api_service_uploads_RefusalName)) {
 		return { status: 409, body: { message, errorCode: "file_exists" } } as const;
 	}

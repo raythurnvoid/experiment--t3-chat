@@ -4469,13 +4469,13 @@ describe("service upload archive", () => {
 		);
 		// A real Move needs a whole Move job. Answer the Move check for the note instead, and run the real
 		// check for every other node.
-		const check_node_write = move_reservations.files_move_reservations_db_check_node_write;
+		const checkNodeWrite = move_reservations.files_move_reservations_db_check_node_write;
 		const moveCheck = vi
 			.spyOn(move_reservations, "files_move_reservations_db_check_node_write")
 			.mockImplementation(async (db, args) =>
 				args.target.kind === "saved" && args.target.id === note._id
 					? Result({ _nay: { name: "move_busy", message: "This item is being moved. Try again when the Move ends." } })
-					: await check_node_write(db, args),
+					: await checkNodeWrite(db, args),
 			);
 		// Later tests get the same node ids, so the spy must not outlive this test.
 		onTestFinished(() => moveCheck.mockRestore());

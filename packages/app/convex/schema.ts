@@ -437,7 +437,8 @@ export const file_quote_validator = v.object({ fileNodeId: v.union(v.string(), v
 
 /**
  * The `errorCode` of one refused item in a public API files job (delete, restore, move, copy). It is
- * saved with the item, so a retry and `jobs/get` answer the same code.
+ * saved with the item, so a retry and `jobs/get` answer the same code. The plugin archive results use
+ * these codes too.
  */
 export const files_refused_error_code_validator = v.union(
 	v.literal("permission_denied"),

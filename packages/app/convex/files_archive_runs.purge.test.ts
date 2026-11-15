@@ -504,7 +504,7 @@ describe("files_nodes.purge_nodes", () => {
 			await step(f, purgeJob.runId);
 		}
 		const restored = await restore(f, [olderId]);
-		expect(restored._nay?.message).toBe("This item is being deleted.");
+		expect(restored._nay).toMatchObject({ name: "busy", message: "This item is being deleted." });
 
 		expect((await step_to_end(f, purgeJob)).status).toBe("succeeded");
 		expect(await list_workspace_paths(f)).toEqual([]);

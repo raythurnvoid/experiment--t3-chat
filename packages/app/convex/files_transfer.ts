@@ -1883,7 +1883,13 @@ export const accept_input = mutation({
 	},
 	returns: v_result({
 		_yay: v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }),
-		_nay: { data: v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }) },
+		// A busy transfer answers its run, and the rate limit answers its wait.
+		_nay: {
+			data: v.union(
+				v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }),
+				v.object({ retryAfterMs: v.number() }),
+			),
+		},
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -1944,7 +1950,13 @@ export const start_for_agent = internalMutation({
 	},
 	returns: v_result({
 		_yay: v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }),
-		_nay: { data: v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }) },
+		// A busy transfer answers its run, and the rate limit answers its wait.
+		_nay: {
+			data: v.union(
+				v.object({ runId: v.id("files_transfer_runs"), activityId: v.id("activities") }),
+				v.object({ retryAfterMs: v.number() }),
+			),
+		},
 	}),
 	handler: async (ctx, args) => {
 		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
@@ -3589,12 +3601,13 @@ export const settle_cohort = internalMutation({
 				});
 				return null;
 			}
-			// An API move refuses each item alone, like `files/delete`. The item keeps the refusal, and
-			// `files/jobs/get` lists it. The other items go on.
+			// An API move refuses each item alone, like `files/delete`. The item keeps the refusal and its
+			// code, and `files/jobs/get` lists it. The other items go on.
 			if (run.origin.kind === "api" && cohort.errorCode === "permission_denied") {
 				await ctx.db.patch("files_transfer_items", item._id, {
 					state: "failed",
 					errorMessage: cohort.errorMessage ?? "Permission denied",
+					errorCode: "permission_denied",
 				});
 				await ctx.db.patch("activities", activity._id, {
 					progress: { ...activity.progress, failed: activity.progress.failed + 1 },

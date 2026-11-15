@@ -551,7 +551,7 @@ async function db_check_writable_nodes(
 				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
 				.collect();
 			if (node.purgeRunId || queueRows.some((row) => row.purge !== undefined))
-				return { kind: "failed", nay: { message: "This item is being deleted." } } as const;
+				return { kind: "failed", nay: { name: "busy", message: "This item is being deleted." } } as const;
 			if (
 				!(await files_write_policy_db_is_within_scope(ctx, {
 					organizationId: membership.organizationId,
