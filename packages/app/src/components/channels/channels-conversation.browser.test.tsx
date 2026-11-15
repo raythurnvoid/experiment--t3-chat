@@ -176,8 +176,8 @@ function fixture(): Pick<ComponentProps<typeof ChannelsConversation>, "channel" 
 
 // Stand in for the Messages shell: a Thread tab host beside the conversation, which covers the
 // conversation when narrow.
-function Conversation(props: { width: number; narrow: boolean }) {
-	const [search, setSearch] = useState<ChannelsSearch>({});
+function Conversation(props: { width: number; narrow: boolean; initialSearch?: ChannelsSearch }) {
+	const [search, setSearch] = useState<ChannelsSearch>(props.initialSearch ?? {});
 	const [threadHost, setThreadHost] = useState<HTMLDivElement | null>(null);
 	const panelOpener = useRef<HTMLElement | null>(null);
 	const covered = props.narrow && !!search.thread;
@@ -315,6 +315,17 @@ describe("ChannelsConversation", () => {
 			Math.abs(anchor.getBoundingClientRect().top - list.getBoundingClientRect().top - savedOffset),
 			"Back must restore the channel's visible message after narrow reflow",
 		).toBeLessThan(2);
+	});
+
+	test("closing a thread that a link opened focuses its root message", async () => {
+		await page.viewport(1600, 900);
+		render(<Conversation width={1200} narrow={false} initialSearch={{ thread: "message-1" }} />);
+		await screen.findByRole("textbox", { name: "Thread reply" });
+		await userEvent.click(screen.getByRole("button", { name: "Close thread" }));
+		const root = screen
+			.getByRole("log", { name: "Messages in #general" })
+			.querySelector<HTMLElement>('article[data-message-id="message-1"]');
+		await waitFor(() => expect(document.activeElement, "with no opener, Back must focus the root message").toBe(root));
 	});
 
 	test("an open thread with an empty saved title still sends valid screen info", async () => {

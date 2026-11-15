@@ -52,7 +52,7 @@ import type { ChannelsDialogKind } from "./channels-dialogs.tsx";
 import type { ChannelsSearch } from "./channels.tsx";
 import { ChannelsPosts } from "./channels-posts.tsx";
 import type { file_quotes_Quote } from "../../../shared/file-quotes.ts";
-import { ChannelsLayoutContext } from "./channels-layout-context.ts";
+import { ChannelsLayoutContext, channels_focus_opener } from "./channels-layout-context.ts";
 import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
 
 type Channel = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.channels.get_channel>>;
@@ -76,6 +76,7 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 }) {
 	const { channel, state, search, onNavigate, onDialog } = props;
 	const layout = useContext(ChannelsLayoutContext);
+	const section = useRef<HTMLElement>(null);
 	const localOpener = useRef<HTMLElement | null>(null);
 	// Share the opener with the panel Back button, which can close the thread too.
 	const opener = layout?.panelOpener ?? localOpener;
@@ -124,7 +125,8 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	});
 	const closeThread = useFn(() => {
 		onNavigate(document._id);
-		requestAnimationFrame(() => opener.current?.focus({ preventScroll: true }));
+		// Search only this section. The thread renders outside it, so its own copy of the root never matches.
+		channels_focus_opener(opener, section.current, rootId);
 	});
 	const jump = useFn(
 		(messageId: app_convex_Id<"channels_messages">, threadRootId: app_convex_Id<"channels_messages"> | null) => {
@@ -265,6 +267,7 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 		);
 	return (
 		<section
+			ref={section}
 			className={"ChannelsConversation" satisfies ChannelsConversation_ClassNames}
 			aria-label={name}
 			{...({

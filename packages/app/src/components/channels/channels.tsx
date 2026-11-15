@@ -24,7 +24,7 @@ import { ChannelsSidebar } from "./channels-sidebar.tsx";
 import { ChannelsDialogs, type ChannelsDialogKind } from "./channels-dialogs.tsx";
 import { ChannelsConversation } from "./channels-conversation.tsx";
 import { ChannelsActivity, ChannelsThreads } from "./channels-feed.tsx";
-import { ChannelsLayoutContext } from "./channels-layout-context.ts";
+import { ChannelsLayoutContext, channels_focus_opener } from "./channels-layout-context.ts";
 import { ChannelsPaneHeader } from "./channels-pane-header.tsx";
 import { ChannelsPickerError } from "./channels-picker.tsx";
 import { useChannelsPickerFocus } from "./channels-picker-hooks.ts";
@@ -160,7 +160,8 @@ const ChannelsContent = memo(function ChannelsContent(props: {
 		setNarrowPanel(false);
 		// The panel stays open while a thread is open, so Back also closes the thread.
 		if (rootId && selectedId) open(selectedId);
-		requestAnimationFrame(() => panelOpener.current?.focus({ preventScroll: true }));
+		// The conversation comes before the panel in the page, so the first match is its copy of the root.
+		channels_focus_opener(panelOpener, region.current, rootId);
 	});
 	const showThread = useFn(() => setTab("thread"));
 	const changeTab = useFn((id: string | null | undefined) => {

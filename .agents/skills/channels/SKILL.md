@@ -134,7 +134,9 @@ has Thread and Agent tabs. From 820px it is always a column, 360–480px wide (d
 channel list follows the user's own open flag, and shows as a column only from 944px (list 220 +
 conversation 360 + panel 360). Below that it opens as a drawer. Below 820px the panel covers the
 conversation while a thread is open, or after the header Agent button. Its Back closes the panel
-and the thread, and returns focus to the opener (the Agent button or Reply in thread).
+and the thread, and returns focus to the opener (the Agent button or Reply in thread). A thread
+opened from a link or a reload has no opener, so closing it focuses its root message in the
+conversation, or the message box when that message is not loaded (`channels_focus_opener`).
 
 A new thread selects Thread. A tab the user picks holds while the same thread stays open. No thread
 falls back to Agent, and Reply in thread selects Thread again. A thread link opens only after its
