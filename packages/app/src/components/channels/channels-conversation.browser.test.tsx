@@ -10,13 +10,44 @@ import type { ChannelsSearch } from "./channels.tsx";
 import type { ChannelsMessage } from "./channels-message-window.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { ai_chat_ui_context_get_shown } from "@/lib/ai-chat-ui-context.ts";
+import { ai_chat_ui_context_validate_parts } from "../../../shared/ai-chat-ui-context.ts";
+
+// The saved title of the open thread. Undefined means the root has no thread doc.
+let threadTitle: string | null | undefined;
 
 vi.mock("convex/react", async (importOriginal) => ({
 	...(await importOriginal<typeof import("convex/react")>()),
 	useQuery: (query: FunctionReference<"query">, args: unknown) => {
 		if (args === "skip") return undefined;
 		const name = getFunctionName(query);
-		if (name.endsWith("get_thread_by_root")) return { root: message(1) };
+		if (name.endsWith("get_thread_by_root"))
+			return {
+				root: {
+					...message(1),
+					thread:
+						threadTitle === undefined
+							? null
+							: {
+									_id: "thread" as app_convex_Id<"channels_threads">,
+									_creationTime: 1,
+									channelId: "channel" as app_convex_Id<"channels">,
+									organizationId: "org" as app_convex_Id<"organizations">,
+									workspaceId: "workspace" as app_convex_Id<"organizations_workspaces">,
+									rootMessageId: message(1).message._id,
+									title: threadTitle,
+									anchor: null,
+									lastReplySequence: 2,
+									lastActivitySequence: 2,
+									replyCount: 2,
+									recentReplierUserIds: [],
+									lastActivityAt: 1,
+									isResolved: false,
+									resolvedAt: null,
+									resolvedBy: null,
+								},
+				},
+			};
 		if (name.endsWith("get_thread_state")) return { follower: null, unreadCount: 0 };
 		if (name.endsWith("list_message_reactions")) return [];
 		return { displayName: "Ana", avatarUrl: null };
@@ -181,7 +212,10 @@ function Conversation(props: { width: number; narrow: boolean }) {
 	);
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+	cleanup();
+	threadTitle = undefined;
+});
 
 describe("ChannelsConversation", () => {
 	test("message actions stay beside the row and opening More does not add height", async () => {
@@ -281,5 +315,21 @@ describe("ChannelsConversation", () => {
 			Math.abs(anchor.getBoundingClientRect().top - list.getBoundingClientRect().top - savedOffset),
 			"Back must restore the channel's visible message after narrow reflow",
 		).toBeLessThan(2);
+	});
+
+	test("an open thread with an empty saved title still sends valid screen info", async () => {
+		threadTitle = "";
+		await page.viewport(1600, 900);
+		render(<Conversation width={1200} narrow={false} />);
+		const list = await screen.findByRole("log", { name: "Messages in #general" });
+		list.querySelectorAll<HTMLElement>("article")[0]!.focus({ preventScroll: true });
+		await userEvent.keyboard("t");
+		await screen.findByRole("textbox", { name: "Thread reply" });
+		await waitFor(() => expect(ai_chat_ui_context_get_shown()?.channel?.threadRootId).toBeTruthy());
+		const parts = [{ type: "data-ui-context", data: ai_chat_ui_context_get_shown() }];
+		expect(
+			ai_chat_ui_context_validate_parts(parts)._nay,
+			"the server refuses the whole message when its screen info is invalid",
+		).toBeUndefined();
 	});
 });

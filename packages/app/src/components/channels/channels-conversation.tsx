@@ -106,13 +106,14 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	const shownThread = thread?.root.message.channelId === document._id ? thread.root : null;
 	// Write here, not in the shared pane: Files comments reuse `ChannelsConversationPane`.
 	// The server replaces the names with saved ones, so the browser copy only has to be valid.
+	// A saved thread title can be empty, and the screen info schema refuses an empty string.
 	useAiChatUiContextWrite({
 		channel: {
 			channelId: document._id,
 			kind: document.kind,
 			name: name || "Direct message",
 			threadRootId: shownThread?.message._id ?? null,
-			threadTitle: shownThread?.thread?.title ?? null,
+			threadTitle: shownThread?.thread?.title || null,
 		},
 	});
 	const openThread = useFn((id: app_convex_Id<"channels_messages">) => {
