@@ -41,6 +41,40 @@
 			color: var(--color-fg-11);
 		}
 	}
+	/* Same 44px secondary bar as the Files sidebar tabs. */
+	.ChannelsContent-panel-toolbar {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: 0 0 auto;
+		min-height: 44px;
+		padding: 3px 16px;
+		background: var(--color-base-1-03);
+		border-bottom: 1px solid var(--color-fg-02);
+	}
+	.ChannelsContent-panel-tabs {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+	}
+	.ChannelsContent-panel-tab {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		min-height: 0;
+		&[hidden] {
+			display: none;
+		}
+	}
+	.ChannelsContent-panel-thread {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		&:not(:empty) {
+			flex: 1;
+		}
+	}
 	.ChannelsContent-status {
 		padding: 8px 16px;
 		font-size: 15px;

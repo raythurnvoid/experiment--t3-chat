@@ -8,10 +8,11 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import { getFunctionName } from "convex/server";
-import { Channels } from "./channels.tsx";
+import { Channels, type ChannelsSearch } from "./channels.tsx";
 import { ChannelsSearchView } from "./channels-search.tsx";
 import {
 	AppChannelsProvider,
@@ -34,6 +35,7 @@ const model = vi.hoisted(() => ({
 	search: vi.fn(),
 	deniedFile: false,
 	locked: false,
+	setSearch: null as ((search: ChannelsSearch) => void) | null,
 }));
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => ({ membershipId: "member", organizationName: "qa", workspaceName: "home" }) },
@@ -42,12 +44,23 @@ vi.mock("@/components/app-auth.tsx", () => ({ AppAuthProvider: { useAuthenticate
 vi.mock("@/components/app-hotkeys.tsx", () => ({ AppHotkeysProvider: { useHotkey: () => {} } }));
 vi.mock("./channels-people.ts", () => ({ useChannelsDirectName: () => "Ana", useChannelsProfiles: () => [] }));
 vi.mock("./channels-conversation.tsx", () => ({ ChannelsConversation: () => <p>Selected conversation</p> }));
+vi.mock("@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx", () => ({
+	FileEditorSidebarAgent: (props: { isActive: boolean }) => <p>Agent chat {props.isActive ? "active" : "hidden"}</p>,
+}));
 vi.mock("@/lib/storage.ts", async (importOriginal) => {
 	const { useState } = await import("react");
 	return {
 		...(await importOriginal<typeof import("@/lib/storage.ts")>()),
 		useAppLocalStorageStateValue: (key: string) =>
-			useState(key.includes("channels_open") ? true : key.includes("sidebar_width") ? 240 : null),
+			useState(
+				key.includes("channels_open")
+					? true
+					: key.includes("sidebar_width")
+						? 240
+						: key.includes("thread_width")
+							? 380
+							: null,
+			),
 	};
 });
 vi.mock("@/lib/app-convex-client.ts", async (importOriginal) => ({
@@ -185,10 +198,14 @@ function navigate(mode: ChannelsNavigationMode = "open") {
 }
 function Conversation() {
 	const { channelId } = route.useParams();
+	const [search, setSearch] = useState<ChannelsSearch>({});
+	useEffect(() => {
+		model.setSearch = setSearch;
+	}, []);
 	return (
 		<Channels
 			channelId={channelId}
-			search={{}}
+			search={search}
 			onNavigate={(_id, _search, mode = "open") => {
 				if (model.delayNavigation && mode === "alreadyOpened")
 					model.resumeNavigation = () => {
@@ -379,6 +396,41 @@ test("collapse, hiding and the drawer keep only the visible section owners mount
 	expect([...model.activePages.values()]).toEqual([0, 1, 1, 1]);
 	fireEvent.click(screen.getByRole("button", { name: "Hide channels" }));
 	await waitFor(() => expect([...model.activePages.values()]).toEqual([0, 0, 0, 0]));
+});
+
+test("the panel selects Thread for a new thread, keeps a picked tab, and covers the conversation when narrow", async () => {
+	model.hidden = false;
+	router = makeRouter(`/w/qa/home/messages/${model.id}`);
+	const view = render(<RouterProvider router={router} />);
+	const selected = (name: string) => screen.getByRole("tab", { name }).getAttribute("aria-selected");
+	await waitFor(() => expect(selected("Agent")).toBe("true"));
+	expect(screen.getByText("Agent chat active")).toBeTruthy();
+
+	act(() => model.setSearch!({ thread: "root-1" }));
+	await waitFor(() => expect(selected("Thread"), "a new thread must select the Thread tab").toBe("true"));
+	await userEvent.click(screen.getByRole("tab", { name: "Agent" }));
+	await waitFor(() => expect(selected("Agent"), "a picked tab holds while the same thread stays open").toBe("true"));
+	act(() => model.setSearch!({ thread: "root-2" }));
+	await waitFor(() => expect(selected("Thread")).toBe("true"));
+	act(() => model.setSearch!({}));
+	await waitFor(() => expect(selected("Agent"), "closing the thread must fall back to Agent").toBe("true"));
+
+	const shell = view.container.querySelector<HTMLElement>('[style*="1200px"]')!;
+	shell.style.width = "700px";
+	await waitFor(() => expect(view.container.querySelector('[data-layout="single"]')).toBeTruthy());
+	await screen.findByText("Agent chat hidden");
+	// The test conversation has no header, so use the shell's own header while the channel loads.
+	act(() => {
+		model.channelReady = false;
+		changed();
+	});
+	const toggle = await screen.findByRole("button", { name: "Agent" });
+	await userEvent.click(toggle);
+	await screen.findByText("Agent chat active");
+	expect(getComputedStyle(screen.getByText("Loading channel…").closest<HTMLElement>(".MyPanel")!).display).toBe("none");
+	await userEvent.click(screen.getByRole("button", { name: "Back to channel" }));
+	await screen.findByText("Agent chat hidden");
+	await waitFor(() => expect(document.activeElement, "Back must return focus to the Agent button").toBe(toggle));
 });
 
 test("message search keeps closed DM and file choices and never opens them", async () => {

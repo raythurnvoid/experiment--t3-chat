@@ -5,6 +5,7 @@ import { getFunctionName, type FunctionReference } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { ChannelsConversation } from "./channels-conversation.tsx";
+import { ChannelsLayoutContext } from "./channels-layout-context.ts";
 import type { ChannelsSearch } from "./channels.tsx";
 import type { ChannelsMessage } from "./channels-message-window.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
@@ -142,19 +143,38 @@ function fixture(): Pick<ComponentProps<typeof ChannelsConversation>, "channel" 
 	};
 }
 
+// Stand in for the Messages shell: a Thread tab host beside the conversation, which covers the
+// conversation when narrow.
 function Conversation(props: { width: number; narrow: boolean }) {
 	const [search, setSearch] = useState<ChannelsSearch>({});
+	const [threadHost, setThreadHost] = useState<HTMLDivElement | null>(null);
+	const covered = props.narrow && !!search.thread;
 	return (
-		<div style={{ width: props.width, height: 700 }}>
-			<ChannelsConversation
-				{...fixture()}
-				width={props.width}
-				narrow={props.narrow}
-				search={search}
-				onNavigate={(_id, search) => setSearch(search ?? {})}
-				onDialog={() => {}}
-			/>
-		</div>
+		<ChannelsLayoutContext
+			value={{
+				sidebarVisible: true,
+				drawerOpen: false,
+				openSidebar: () => {},
+				narrow: props.narrow,
+				threadHost,
+				openPanel: null,
+			}}
+		>
+			<div style={{ display: "flex", width: props.width, height: 700 }}>
+				<div style={{ display: covered ? "none" : "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+					<ChannelsConversation
+						{...fixture()}
+						search={search}
+						onNavigate={(_id, search) => setSearch(search ?? {})}
+						onDialog={() => {}}
+					/>
+				</div>
+				<div
+					ref={setThreadHost}
+					style={{ display: search.thread ? "flex" : "none", flexDirection: "column", width: covered ? "100%" : 380 }}
+				/>
+			</div>
+		</ChannelsLayoutContext>
 	);
 }
 
@@ -220,9 +240,8 @@ describe("ChannelsConversation", () => {
 		await waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
 	});
 
-	test("opening and resizing a thread keeps the channel draft and scroll, with one thread scroll area", async () => {
+	test("opening a thread keeps the channel draft and scroll, with one thread scroll area", async () => {
 		await page.viewport(1600, 900);
-		app_local_storage_set_value("app_state::channels_thread_width", 380);
 		app_local_storage_set_value("app_state::channels_drafts::scope::membership", {});
 		const view = render(<Conversation width={1200} narrow={false} />);
 		const editor = await screen.findByRole("textbox", { name: "Message" });
@@ -244,14 +263,13 @@ describe("ChannelsConversation", () => {
 			"opening a thread must keep the visible message in place",
 		).toBe(savedOffset);
 		const thread = view.container.querySelector<HTMLElement>('[data-pane="thread"]')!;
-		await waitFor(() => expect(Math.abs(thread.getBoundingClientRect().width - 380)).toBeLessThan(2));
+		expect(thread.closest("section"), "the thread must render in the panel host, not in the conversation").toBeNull();
 		const root = thread.querySelector<HTMLElement>("[data-thread-root]")!;
 		expect(screen.getByRole("log", { name: "Thread replies" }).contains(root)).toBe(true);
 		expect(getComputedStyle(root).overflowY, "the root must share the reply scroll").toBe("visible");
 		view.rerender(<Conversation width={500} narrow={true} />);
 		await waitFor(() => expect(thread.getBoundingClientRect().width).toBe(500));
 		expect(view.container.contains(editor), "a narrow thread must keep the channel draft mounted").toBe(true);
-		expect(getComputedStyle(list.closest<HTMLElement>(".MyPanel")!).display).toBe("none");
 		await userEvent.click(screen.getByRole("button", { name: "Back to channel" }));
 		await waitFor(() => expect(editor.getBoundingClientRect().width).toBeGreaterThan(400));
 		await waitFor(() => expect(document.activeElement, "Back must return focus to its opener").toBe(threadAction));

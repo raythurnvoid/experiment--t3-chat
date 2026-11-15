@@ -1,6 +1,7 @@
 import "./channels-pane-header.css";
 import { memo, useContext, type ReactNode } from "react";
-import { ArrowLeft, Menu } from "lucide-react";
+import { ArrowLeft, Bot, Menu } from "lucide-react";
+import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 
 import { ChannelsLayoutContext } from "./channels-layout-context.ts";
@@ -29,6 +30,12 @@ export const ChannelsPaneHeader = memo(function ChannelsPaneHeader(props: {
 			) : null}
 			<div className={"ChannelsPaneHeader-title" satisfies ChannelsPaneHeader_ClassNames}>{title}</div>
 			{children}
+			{showSidebarToggle && !onBack && layout?.openPanel ? (
+				<MyButton aria-expanded={false} onClick={(event) => layout.openPanel!(event.currentTarget)}>
+					<Bot size={16} />
+					Agent
+				</MyButton>
+			) : null}
 		</header>
 	);
 });

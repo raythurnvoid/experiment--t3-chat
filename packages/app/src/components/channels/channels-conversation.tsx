@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useConvexConnectionState, useQuery } from "convex/react";
 import { FileText, Hash, Lock, Menu, MoreHorizontal, Users, X } from "lucide-react";
-import type { ImperativePanelHandle } from "react-resizable-panels";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
@@ -28,7 +28,6 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import {
 	app_convex,
 	app_convex_api,
@@ -38,11 +37,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useAiChatUiContextWrite } from "@/lib/ai-chat-ui-context.ts";
-import {
-	app_local_storage_get_value,
-	app_local_storage_set_value,
-	useAppLocalStorageStateValue,
-} from "@/lib/storage.ts";
+import { app_local_storage_get_value, app_local_storage_set_value } from "@/lib/storage.ts";
 import { url_path_file_by_node_id, url_path_messages } from "@/lib/urls.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
@@ -76,18 +71,13 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 	channel: Channel;
 	state: ChannelState;
 	search: ChannelsSearch;
-	narrow: boolean;
-	width: number;
 	onNavigate: (id: app_convex_Id<"channels">, search?: ChannelsSearch) => void;
 	onDialog: (kind: ChannelsDialogKind) => void;
 }) {
-	const { channel, state, search, narrow, width, onNavigate, onDialog } = props;
-	const region = useRef<HTMLElement>(null);
-	const threadPanel = useRef<ImperativePanelHandle>(null);
+	const { channel, state, search, onNavigate, onDialog } = props;
 	const opener = useRef<HTMLElement | null>(null);
-	const [paneWidth, setPaneWidth] = useState(width);
-	const [threadWidth, setThreadWidth] = useAppLocalStorageStateValue("app_state::channels_thread_width");
-	const threadLayout = useRef(0);
+	const layout = useContext(ChannelsLayoutContext);
+	const narrow = layout?.narrow ?? false;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const document = channel.channel;
@@ -140,19 +130,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 			}),
 	);
 
-	useEffect(() => {
-		if (!region.current) return;
-		const observer = new ResizeObserver(([entry]) => setPaneWidth(entry!.contentRect.width));
-		observer.observe(region.current);
-		return () => observer.disconnect();
-	}, []);
-	const split = !!rootId && !narrow && paneWidth >= 922;
-	const available = Math.max(1, paneWidth - 2);
-	const maximumThread = Math.min(480, Math.max(360, available - 560));
-	const actualThreadWidth = Math.min(threadWidth, maximumThread);
-	useEffect(() => {
-		if (split) threadPanel.current?.resize((actualThreadWidth / available) * 100);
-	}, [split, actualThreadWidth, available]);
 	const header = (
 		<ChannelsPaneHeader
 			title={
@@ -260,21 +237,21 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				jumpMessageId={search.message}
 				resolvable={resolvable}
 				onClose={closeThread}
-				back={!split}
-				notice={!split ? notice : undefined}
+				back={narrow}
+				notice={narrow ? notice : undefined}
 				onThread={openThread}
 				onJump={jump}
 			/>
 		) : (
 			<>
-				<ChannelsPaneHeader title="Thread" showSidebarToggle={false} onBack={!split ? closeThread : undefined}>
-					{split && (
+				<ChannelsPaneHeader title="Thread" showSidebarToggle={false} onBack={narrow ? closeThread : undefined}>
+					{!narrow && (
 						<MyIconButton tooltip="Close thread" onClick={closeThread}>
 							<X />
 						</MyIconButton>
 					)}
 				</ChannelsPaneHeader>
-				{!split && notice}
+				{narrow && notice}
 				<p className={"ChannelsConversation-notice" satisfies ChannelsConversation_ClassNames}>
 					{thread === undefined ? "Loading thread…" : "Thread not found"}
 				</p>
@@ -282,7 +259,6 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 		);
 	return (
 		<section
-			ref={region}
 			className={"ChannelsConversation" satisfies ChannelsConversation_ClassNames}
 			aria-label={name}
 			{...({
@@ -290,51 +266,20 @@ export const ChannelsConversation = memo(function ChannelsConversation(props: {
 				"data-can-post": String(channel.canPost),
 			} satisfies ChannelsConversation_CustomAttributes)}
 		>
-			<MyPanelGroup
-				direction="horizontal"
-				defaultLayout={[100 - (380 / available) * 100, (380 / available) * 100]}
-				onLayout={(layout) => {
-					threadLayout.current = layout[1]!;
-				}}
-			>
-				<MyPanel
-					order={1}
-					isOpen={!rootId || split}
-					closeBehavior="hidden"
-					minSize={split ? (560 / available) * 100 : 0}
-				>
-					{main}
-				</MyPanel>
-				<MyPanelResizeHandle
-					isOpen={split}
-					closeBehavior="hidden"
-					aria-label="Resize conversation and thread"
-					onKeyUp={(event) => {
-						if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
-							setThreadWidth(Math.max(360, Math.min(maximumThread, (threadLayout.current * available) / 100)));
-					}}
-					onDragging={(dragging) => {
-						if (!dragging)
-							setThreadWidth(Math.max(360, Math.min(maximumThread, (threadLayout.current * available) / 100)));
-					}}
-				/>
-				<MyPanel
-					ref={threadPanel}
-					order={2}
-					isOpen={!!rootId}
-					closeBehavior="hidden"
-					defaultSize={split ? (actualThreadWidth / available) * 100 : 40}
-					minSize={split ? (360 / available) * 100 : 0}
-					maxSize={split ? (maximumThread / available) * 100 : 100}
-				>
+			{main}
+			{/* Render the thread into the Thread tab of the Messages panel. This component still owns it, for the
+			    opener focus, the jump target and the notice. */}
+			{rootId &&
+				layout?.threadHost &&
+				createPortal(
 					<aside
 						aria-label="Thread"
 						className={"ChannelsConversation-thread" satisfies ChannelsConversation_ClassNames}
 					>
 						{replies}
-					</aside>
-				</MyPanel>
-			</MyPanelGroup>
+					</aside>,
+					layout.threadHost,
+				)}
 		</section>
 	);
 });
