@@ -497,6 +497,8 @@ describe("/api/chat screen info", () => {
 				acceptedCapabilities: ["agent.view-context"],
 			}),
 		);
+		// A thread with no title gets one after this reply, and the title is stored too.
+		await args.t.run((ctx) => ctx.db.patch("ai_chat_threads", args.threadId, { title: null }));
 		const token = `plu_${"a".repeat(64)}`;
 		const response = await send(
 			args,
@@ -516,6 +518,32 @@ describe("/api/chat screen info", () => {
 		expect(modelInput, "a plugin token must never reach the model").not.toContain(token);
 		const stored = await args.t.run((ctx) => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
 		expect(JSON.stringify(stored), "plugin text must not be stored").not.toContain("PLUGIN-SECRET-TEXT");
+		const titleInput = JSON.stringify(
+			(model.streamText.mock.calls[1]![0] as Parameters<typeof streamText>[0]).messages,
+		);
+		expect(titleInput).toContain("What is this?");
+		expect(titleInput, "the stored title must not come from plugin text").not.toContain("PLUGIN-SECRET-TEXT");
+	});
+
+	test("still sends when the plugin text is too big, without the text", async () => {
+		const args = await setup();
+		await args.t.run((ctx) =>
+			insert_skill_plugin(ctx, {
+				membership: args.membership,
+				pluginName: "gmail",
+				description: "Mail",
+				status: "enabled",
+				acceptedCapabilities: ["agent.view-context"],
+			}),
+		);
+		const response = await send(args, gmail_screen, gmail_text(`PLUGIN-SECRET-TEXT ${"x".repeat(17 * 1024)}`));
+		expect(response.status, await response.text()).toBe(200);
+
+		const modelInput = JSON.stringify(
+			(model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages,
+		);
+		expect(modelInput).toContain("What is this?");
+		expect(modelInput, "too big plugin text must not reach the model").not.toContain("PLUGIN-SECRET-TEXT");
 	});
 
 	test("drops the plugin text of a plugin without the consent", async () => {

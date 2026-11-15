@@ -2810,7 +2810,7 @@ describe("RoutePluginsPluginPage", () => {
 	});
 
 	test("the agent reads a view context only from this frame and only with the consent", async () => {
-		const props_for = (agentViewContext: boolean, ref: Ref<PluginsUiFrame_Ref>) =>
+		const props_for = (hasAgentViewContext: boolean, ref: Ref<PluginsUiFrame_Ref>) =>
 			({
 				ref,
 				membershipId: "membership_1",
@@ -2837,7 +2837,7 @@ describe("RoutePluginsPluginPage", () => {
 					workspaceId: "ws_1",
 					file: { fileNodeId: "node_1", name: "a.png", path: "/a.png", contentType: "image/png" },
 				}),
-				agentViewContext,
+				hasAgentViewContext,
 				onError: () => {},
 			}) as unknown as ComponentProps<typeof PluginsUiFrame>;
 		const shown = { content: [{ type: "text", text: "Paused at 0:12" }] };

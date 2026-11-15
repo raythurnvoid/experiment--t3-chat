@@ -1513,6 +1513,11 @@ describe("client.agent", () => {
 		client.agent.setContext({ content: [{ type: "text", text: "0:02" }] });
 		await vi.advanceTimersByTimeAsync(500);
 		expect(sent("bonobo:update-model-context"), "an equal value is not sent again").toHaveLength(1);
+		for (let second = 3; second <= 6; second++) {
+			client.agent.setContext({ content: [{ type: "text", text: `0:0${second}` }] });
+			await vi.advanceTimersByTimeAsync(300);
+		}
+		expect(sent("bonobo:update-model-context"), "a view that never stops changing still sends").toHaveLength(3);
 		vi.useRealTimers();
 
 		client.agent.setContextProvider(() => ({ content: [{ type: "text", text: "Inbox" }] }));

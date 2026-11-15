@@ -2435,9 +2435,10 @@ const chat_body_validator = z.object({
 
 	/**
 	 * What the open plugin page or file view says it shows. It reaches the model with this turn's
-	 * trigger message only and is never stored. Null when no plugin shares its view.
+	 * trigger message only and is never stored. Null when no plugin shares its view. A bad value
+	 * also reads as null, because a send is never refused for plugin text.
 	 */
-	pluginContext: ai_chat_plugin_context_schema.nullable(),
+	pluginContext: ai_chat_plugin_context_schema.nullable().catch(null),
 });
 
 export type ai_chat_http_chat_Body = z.infer<typeof chat_body_validator>;
@@ -2523,15 +2524,12 @@ function estimate_tokens(value: unknown) {
  * Add the plugin text to the run's trigger, the last message, in memory only. Put it right after the
  * screen info part, so the model reads what the screen shows first.
  */
-function add_plugin_context_part(messages: ai_chat_UiMessage[], pluginContext: ai_chat_PluginContext | null) {
+function add_plugin_context_part(messages: ai_chat_UiMessage[], pluginContextText: string | null) {
 	const trigger = messages.at(-1);
-	if (!pluginContext || trigger?.role !== "user") return messages;
+	if (!pluginContextText || trigger?.role !== "user") return messages;
 
 	const uiContextIndex = trigger.parts.findIndex((part) => part.type === "data-ui-context");
-	const parts = trigger.parts.toSpliced(uiContextIndex + 1, 0, {
-		type: "text",
-		text: ai_chat_plugin_context_to_model_text(pluginContext),
-	});
+	const parts = trigger.parts.toSpliced(uiContextIndex + 1, 0, { type: "text", text: pluginContextText });
 	return [...messages.slice(0, -1), { ...trigger, parts }];
 }
 
@@ -2789,10 +2787,11 @@ async function create_agent_turn_stream(args: {
 	const { ctx, workspaceSystem, threadId, createdThreadId, membership, billedUser, run } = args;
 	const { systemPrompt, tools, validationTools, activeTools, toolBudget, jobWait, observations } = args.agent;
 	const abortSignal = args.abortController.signal;
+	const pluginContextText = args.pluginContext ? ai_chat_plugin_context_to_model_text(args.pluginContext) : null;
 
 	// A compaction at the start of the stream below replaces these.
 	let modelMessages = await build_model_messages(
-		add_plugin_context_part(args.history.messages, args.pluginContext),
+		add_plugin_context_part(args.history.messages, pluginContextText),
 		validationTools,
 	);
 
@@ -2951,7 +2950,7 @@ async function create_agent_turn_stream(args: {
 			// After an abort, still call streamText below. Its abort path ends the run.
 			if (compacted) {
 				modelMessages = await build_model_messages(
-					add_plugin_context_part(compacted.messages, args.pluginContext),
+					add_plugin_context_part(compacted.messages, pluginContextText),
 					validationTools,
 				);
 			}
@@ -3240,8 +3239,16 @@ async function create_agent_turn_stream(args: {
 
 				// End with a user turn that asks for the title. GPT-6 Luna answers the last user message
 				// of a chat that ends on an assistant turn instead of writing a title.
+				// The title is stored and the plugin text never is, so leave the plugin text out.
 				const titleMessages: ModelMessage[] = [
-					...sanitize_observation_title_messages([...modelMessages, ...response1.messages]),
+					...sanitize_observation_title_messages([...modelMessages, ...response1.messages]).map((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? {
+									...message,
+									content: message.content.filter((part) => !(part.type === "text" && part.text === pluginContextText)),
+								}
+							: message,
+					),
 					{ role: "user", content: "Write the title for the conversation above." },
 				];
 				const titleResult = streamText({

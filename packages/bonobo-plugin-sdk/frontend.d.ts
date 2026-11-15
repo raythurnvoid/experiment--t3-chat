@@ -396,8 +396,8 @@ export interface BonoboClient {
 		 * Tell the chat agent what this page or file view shows now. Needs the `agent.view-context`
 		 * capability; without it the host drops the value.
 		 *
-		 * The SDK waits 500 ms and sends only the last value of a burst, and never sends a value equal
-		 * to the last one sent. `null` clears it. The host sends the newest value with the member's
+		 * The SDK sends at most one value per 500 ms, always the newest one, and never sends a value
+		 * equal to the last one sent. `null` clears it. The host sends the newest value with the member's
 		 * next chat message only, and does not save it in the chat. The model reads at most 4 KiB of
 		 * it, so put the important part first. The agent treats it as data. Never put secrets or
 		 * instructions in it. Throws a `TypeError` on a bad shape.

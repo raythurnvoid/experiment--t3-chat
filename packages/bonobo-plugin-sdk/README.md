@@ -740,7 +740,7 @@ const unregister = client.agent.setContextProvider(() => ({
 }));
 ```
 
-- `setContext` waits 500 ms and sends only the last value of a burst. It never sends a value equal to the last one sent. `null` clears it.
+- `setContext` sends at most one value per 500 ms, always the newest one, also while the view keeps changing. It never sends a value equal to the last one sent. `null` clears it.
 - The host asks the provider only while one is set, and waits at most 2 seconds. Then it uses the last pushed value. A thrown error or a bad value sends nothing.
 - The text goes with the member's next chat message only. It is not saved in the chat, and a later message does not see it. A message sent while the page is in a hidden browser tab uses the last pushed value.
 - The model reads at most 4 KiB, so put the important part first. The host drops a value over 16 KiB as JSON.

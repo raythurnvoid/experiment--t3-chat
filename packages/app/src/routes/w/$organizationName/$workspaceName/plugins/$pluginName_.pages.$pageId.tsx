@@ -185,7 +185,7 @@ function RoutePluginsPluginPage() {
 			pageTitle={page.title}
 			entry={page.entry}
 			hasAgent={page.hasAgent}
-			agentViewContext={plugin.agentViewContext}
+			hasAgentViewContext={plugin.hasAgentViewContext}
 			pageInstanceId={pageInstanceId}
 			onRetry={handleRetry}
 		/>
@@ -259,7 +259,7 @@ type RoutePluginsPluginPageFrame_Props = {
 	 * True when the installation accepted `agent.view-context`. The chat may then read what the page
 	 * says it shows.
 	 */
-	agentViewContext: boolean;
+	hasAgentViewContext: boolean;
 	/**
 	 * This tab's random id. The frame takes only the calls the chat of this tab sent.
 	 */
@@ -336,7 +336,7 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 		pageTitle,
 		entry,
 		hasAgent,
-		agentViewContext,
+		hasAgentViewContext,
 		pageInstanceId,
 		onRetry,
 	} = props;
@@ -350,13 +350,13 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 	const agentToolWaitersRef = useRef(new Map<string, (result: PluginsUiFrame_AgentToolResult) => void>());
 	// Names the message inside the alert, so the Retry button can point at it and say what failed.
 	const errorMessageId = `RoutePluginsPluginPageFrame-${useId()}-error`;
-
-	useAiChatUiContextPluginSource(agentViewContext ? { pluginName, title: pageTitle, kind: "page" } : null, frameRef);
 	const [sessionError, setSessionError] = useState<string | null>(null);
 	const [isFrameStarted, setIsFrameStarted] = useState(false);
 	// False for the first commit, so the status region below enters the page empty. See the effect
 	// that turns it true.
 	const [hasStatusRegionMounted, setHasStatusRegionMounted] = useState(false);
+
+	useAiChatUiContextPluginSource(hasAgentViewContext ? { pluginName, title: pageTitle, kind: "page" } : null, frameRef);
 
 	const statusMessage = hasStatusRegionMounted
 		? isFrameStarted
@@ -508,11 +508,11 @@ const RoutePluginsPluginPageFrame = memo(function RoutePluginsPluginPageFrame(
 					entry={entry}
 					title={pageTitle}
 					kindLabel="plugin page"
+					hasAgentViewContext={hasAgentViewContext}
 					mintSession={mintSession}
 					getInitContext={getInitContext}
 					onStarted={() => setIsFrameStarted(true)}
 					onAgentToolResult={handleAgentToolResult}
-					agentViewContext={agentViewContext}
 					// The state setter is the handler: the frame hands over the sentence and this
 					// component shows it. A setter identity never changes, and the frame's bridge effect
 					// lists `onError` in its dependencies, so a changing one would tear the frame down.

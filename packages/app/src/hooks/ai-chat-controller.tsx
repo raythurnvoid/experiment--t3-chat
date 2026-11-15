@@ -470,9 +470,11 @@ async function get_request_plugin_context(messages: ai_chat_UiMessage[]) {
 	// A send ends with the new user message. A regenerate ends with the stored user message it answers
 	// again. Edit and retry keep the screen info of the message they replace.
 	const triggerMessage = messages.at(-1)?.role === "user" ? messages.at(-1) : undefined;
-	const plugin = triggerMessage?.parts.find((part) => part.type === "data-ui-context")?.data.plugin ?? null;
-	const context = await ai_chat_ui_context_read_plugin_context(plugin);
-	return context && plugin ? { pluginName: plugin.pluginName, kind: plugin.kind, ...context } : null;
+	const uiContext = triggerMessage?.parts.find((part) => part.type === "data-ui-context")?.data ?? null;
+	const context = await ai_chat_ui_context_read_plugin_context(uiContext);
+	return context && uiContext?.plugin
+		? { pluginName: uiContext.plugin.pluginName, kind: uiContext.plugin.kind, ...context }
+		: null;
 }
 
 function message_has_visible_parts(message: ai_chat_UiMessage) {

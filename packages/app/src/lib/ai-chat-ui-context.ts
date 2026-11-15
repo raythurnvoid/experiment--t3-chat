@@ -167,22 +167,36 @@ export function useAiChatUiContextPluginSource(
 }
 
 /**
- * The plugin text to send with a message whose screen info names `plugin`, or null.
+ * Does the screen still show the plugin view of `context`, with its chip? A file view keeps its
+ * title when the user opens another file in it, so compare the file too.
+ */
+function is_plugin_view_shown(context: ai_chat_UiContext) {
+	const shown = ai_chat_ui_context_get_shown();
+	return (
+		!!shown &&
+		is_same_plugin(shown.plugin, context.plugin) &&
+		shown.node?.fileNodeId === context.node?.fileNodeId &&
+		shown.node?.pendingNodeId === context.node?.pendingNodeId
+	);
+}
+
+/**
+ * The plugin text to send with a message whose screen info is `context`, or null.
  *
  * Send it only when that plugin view is still open and the user did not remove the chip. A removed
  * chip means nothing about the screen is sent, plugin text included.
  */
-export async function ai_chat_ui_context_read_plugin_context(plugin: ai_chat_UiContext["plugin"]) {
+export async function ai_chat_ui_context_read_plugin_context(context: ai_chat_UiContext | null) {
 	const source = pluginContextSource;
-	if (
-		!source ||
-		!is_same_plugin(source.plugin, plugin) ||
-		!is_same_plugin(ai_chat_ui_context_get_shown()?.plugin ?? null, plugin)
-	) {
+	if (!context || !source || !is_same_plugin(source.plugin, context.plugin) || !is_plugin_view_shown(context)) {
 		return null;
 	}
 
-	return (await source.frameRef.current?.readAgentViewContext()) ?? null;
+	const viewContext = (await source.frameRef.current?.readAgentViewContext()) ?? null;
+
+	// The page can take up to 2 seconds to answer. Check again, because meanwhile the user may have
+	// removed the chip or opened another file.
+	return pluginContextSource === source && is_plugin_view_shown(context) ? viewContext : null;
 }
 
 function get_channel_label(channel: NonNullable<ai_chat_UiContext["channel"]>) {
@@ -247,21 +261,35 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("ai_chat_ui_context_read_plugin_context", () => {
-		test("sends no plugin text after the user removed the chip", async () => {
+		test("sends no plugin text after the user opened another file or removed the chip", async () => {
 			const { renderHook } = await import("@testing-library/react");
-			const plugin = { pluginName: "gmail", title: "Mail", kind: "page" as const };
-			const viewContext = { content: [{ type: "text" as const, text: "Inbox" }], structuredContent: null };
+			const plugin = { pluginName: "video-player", title: "Player", kind: "file_view" as const };
+			const node = { fileNodeId: "node_a", pendingNodeId: null, path: "/a.mp4", kind: "file" as const };
+			const uiContext = { node, view: null, plugin, channel: null, selection: null, browser: null };
+			const viewContext = { content: [{ type: "text" as const, text: "Paused at 0:12" }], structuredContent: null };
 			const frameRef = {
 				current: { postAgentToolCall: () => true, readAgentViewContext: () => Promise.resolve(viewContext) },
 			};
-			useAiChatUiContextStore.setState({ node: null, plugin, removedKey: null });
+			useAiChatUiContextStore.setState({ node, plugin, removedKey: null });
 			const hook = renderHook(() => useAiChatUiContextPluginSource(plugin, frameRef));
 
-			expect(await ai_chat_ui_context_read_plugin_context(plugin)).toEqual(viewContext);
-			ai_chat_ui_context_remove(ai_chat_ui_context_get_shown()!);
-			expect(await ai_chat_ui_context_read_plugin_context(plugin), "a removed chip sends nothing").toBeNull();
+			expect(await ai_chat_ui_context_read_plugin_context(uiContext)).toEqual(viewContext);
+			useAiChatUiContextStore.setState({ node: { ...node, fileNodeId: "node_b", path: "/b.mp4" } });
+			expect(
+				await ai_chat_ui_context_read_plugin_context(uiContext),
+				"text about another file must not join this message",
+			).toBeNull();
+			useAiChatUiContextStore.setState({ node });
+			frameRef.current.readAgentViewContext = () => {
+				ai_chat_ui_context_remove(ai_chat_ui_context_get_shown()!);
+				return Promise.resolve(viewContext);
+			};
+			expect(
+				await ai_chat_ui_context_read_plugin_context(uiContext),
+				"a chip removed while the page answers sends nothing",
+			).toBeNull();
 			hook.unmount();
-			useAiChatUiContextStore.setState({ plugin: null, removedKey: null });
+			useAiChatUiContextStore.setState({ node: null, plugin: null, removedKey: null });
 		});
 	});
 }

@@ -33,8 +33,9 @@ const bonobo_convex_api = /**
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 const READY_RETRY_MS = 500;
 const REFRESH_DEADLINE_MS = 10_000;
-// A view can change many times a second (a playing video). Send only the last value of each burst.
-const CONTEXT_DEBOUNCE_MS = 500;
+// A view can change many times a second (a playing video). Send at most one view context per
+// 500 ms, always the newest one.
+const CONTEXT_THROTTLE_MS = 500;
 // Convex pauses its socket while setAuth fetches. Run this check before its longer-lived timers so
 // a tab that wakes after a long clock gap cannot reconnect with the dead session first.
 const AUTH_WAKE_POLL_MS = 1_000;
@@ -141,21 +142,6 @@ function is_ui_context(value) {
 }
 
 /**
- * Reads the host origin and frame nonce from the URL fragment. The fragment is available to the
- * page but is not sent in the asset request, cache key, or referrer.
- *
- * Why the host passes its origin at all: `postMessage` needs a target origin, and the SDK must
- * never send with `"*"`. The same SDK file runs under a localhost host and under the deployed
- * host, so it cannot hardcode the value, and it cannot discover it reliably either
- * (`document.referrer` depends on the referrer policy, `location.ancestorOrigins` is not in
- * Firefox). A wrong value only makes the SDK talk to nobody; it never grants anything. The value
- * is not authentication of the embedder. CSP `frame-ancestors` on the asset response decides who
- * may embed the frame, and only the host's session mint can produce a token.
- *
- * The checks below are format checks, not an allowlist: exactly these two keys, an origin with
- * no path or query, a UUIDv4 nonce.
- */
-/**
  * True for a view context the host accepts: null, or an object with optional text blocks and an
  * optional plain object. MCP Apps allows other block types; the host keeps only text for now.
  *
@@ -180,6 +166,22 @@ function is_agent_context(value) {
 			(typeof structuredContent === "object" && structuredContent !== null && !Array.isArray(structuredContent)))
 	);
 }
+
+/**
+ * Reads the host origin and frame nonce from the URL fragment. The fragment is available to the
+ * page but is not sent in the asset request, cache key, or referrer.
+ *
+ * Why the host passes its origin at all: `postMessage` needs a target origin, and the SDK must
+ * never send with `"*"`. The same SDK file runs under a localhost host and under the deployed
+ * host, so it cannot hardcode the value, and it cannot discover it reliably either
+ * (`document.referrer` depends on the referrer policy, `location.ancestorOrigins` is not in
+ * Firefox). A wrong value only makes the SDK talk to nobody; it never grants anything. The value
+ * is not authentication of the embedder. CSP `frame-ancestors` on the asset response decides who
+ * may embed the frame, and only the host's session mint can produce a token.
+ *
+ * The checks below are format checks, not an allowlist: exactly these two keys, an origin with
+ * no path or query, a UUIDv4 nonce.
+ */
 
 function read_bridge_bootstrap() {
 	const fragment = window.location.hash.slice(1);
@@ -296,9 +298,12 @@ export async function bonobo_connect() {
 	 * @type {(() => unknown) | null}
 	 */
 	let contextProvider = null;
-	// The JSON of the last view context posted to the host, and the timer of the next one.
+	// The JSON of the last view context posted to the host, the newest one the page set, and the
+	// timer that posts it.
 	/** @type {string | null} */
 	let lastContextSent = null;
+	/** @type {string | null} */
+	let pendingContext = null;
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	let contextTimer;
 
@@ -711,20 +716,25 @@ export async function bonobo_connect() {
 									'setContext needs null or { content?: [{ type: "text", text }], structuredContent?: object }',
 								);
 							}
-							const serialized = JSON.stringify(context);
-							clearTimeout(contextTimer);
-							// The host already has this value, so a later equal value sends nothing.
-							if (serialized === lastContextSent) {
+							// Keep a copy: the page may change its object before the timer fires.
+							pendingContext = JSON.stringify(context);
+							// A running timer posts the newest value when it fires. Do not restart it, or a view
+							// that changes faster than the timer would never send anything.
+							if (contextTimer !== undefined) {
 								return;
 							}
 							contextTimer = setTimeout(() => {
-								lastContextSent = serialized;
-								// Post a copy: the page may change its object before the timer fires.
+								contextTimer = undefined;
+								// The host already has this value.
+								if (pendingContext === null || pendingContext === lastContextSent) {
+									return;
+								}
+								lastContextSent = pendingContext;
 								window.parent.postMessage(
-									{ type: "bonobo:update-model-context", nonce, context: JSON.parse(serialized) },
+									{ type: "bonobo:update-model-context", nonce, context: JSON.parse(pendingContext) },
 									parentOrigin,
 								);
-							}, CONTEXT_DEBOUNCE_MS);
+							}, CONTEXT_THROTTLE_MS);
 						},
 						setContextProvider(provider) {
 							if (provider !== null && typeof provider !== "function") {

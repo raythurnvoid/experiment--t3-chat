@@ -71,6 +71,12 @@ const MAX_READY_MESSAGES = 64;
 // tells the whole story.
 const REMINT_MIN_GAP_MS = 5 * 60_000;
 
+// The host waits at most this long for a provider before a send, then uses the last pushed value.
+const AGENT_VIEW_CONTEXT_PULL_TIMEOUT_MS = 2_000;
+
+// The server takes at most 16 KiB of plugin text. Drop bigger values here instead of sending them.
+const AGENT_VIEW_CONTEXT_MAX_JSON_BYTES = 16 * 1024;
+
 // #region theme
 /**
  * The app's numbered colour scales from `app.css`, as `<scale>: <step count>`. Each scale declares
@@ -178,12 +184,6 @@ function is_bridge_message_id(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
 
-// The host waits at most this long for a provider before a send, then uses the last pushed value.
-const AGENT_VIEW_CONTEXT_PULL_TIMEOUT_MS = 2_000;
-
-// The server takes at most 16 KiB of plugin text. Drop bigger values here instead of sending them.
-const AGENT_VIEW_CONTEXT_MAX_JSON_BYTES = 16 * 1024;
-
 /**
  * Check a view context the page sent. It is untrusted data, so keep only text blocks and a plain
  * object. A bad or too big value answers null, so the agent never sees an older value instead.
@@ -217,7 +217,13 @@ function read_agent_view_context(value: unknown): PluginsUiFrame_AgentViewContex
 		),
 		structuredContent: (structuredContent as Record<string, unknown> | undefined) ?? null,
 	};
-	const json = JSON.stringify(context);
+	// A BigInt or a loop inside structuredContent makes JSON.stringify throw. Treat it as a bad value.
+	let json: string;
+	try {
+		json = JSON.stringify(context);
+	} catch {
+		return null;
+	}
 	return new TextEncoder().encode(json).byteLength <= AGENT_VIEW_CONTEXT_MAX_JSON_BYTES ? context : null;
 }
 
@@ -277,7 +283,7 @@ export type PluginsUiFrame_AgentToolResult =
  * What a plugin page or file view says it shows, in the MCP Apps `ui/update-model-context` shape.
  * It is still untrusted data from the plugin.
  */
-export type PluginsUiFrame_AgentViewContext = {
+type PluginsUiFrame_AgentViewContext = {
 	content: Array<{ type: "text"; text: string }>;
 	structuredContent: Record<string, unknown> | null;
 };
@@ -290,7 +296,7 @@ export type PluginsUiFrame_Ref = {
 	postAgentToolCall: (call: { callId: string; toolName: string; input: unknown }) => boolean;
 	/**
 	 * Read what the page says it shows, for the next chat message. Asks the page's provider when it
-	 * has one, else answers the last value it pushed. Null without `agentViewContext`.
+	 * has one, else answers the last value it pushed. Null without `hasAgentViewContext`.
 	 */
 	readAgentViewContext: () => Promise<PluginsUiFrame_AgentViewContext | null>;
 };
@@ -307,6 +313,11 @@ export type PluginsUiFrame_Props = {
 	 * Human label used inside frame error messages.
 	 */
 	kindLabel: "plugin page" | "plugin view";
+	/**
+	 * True when the installation accepted `agent.view-context`. Without it `readAgentViewContext`
+	 * answers null and never asks the page. The frame reads it from a ref, like `onStarted`.
+	 */
+	hasAgentViewContext: boolean;
 	/**
 	 * Mints this frame's session. Called once while the iframe loads, and again when a token
 	 * refresh finds the session gone, to replace it for the same frame. Wrap in `useFn`: a new
@@ -353,11 +364,6 @@ export type PluginsUiFrame_Props = {
 	 * a plugin page with agent tools sends calls. The frame reads it from a ref, like `onStarted`.
 	 */
 	onAgentToolResult?: (result: PluginsUiFrame_AgentToolResult) => void;
-	/**
-	 * True when the installation accepted `agent.view-context`. Without it the frame drops every view
-	 * context message and never asks the page. The frame reads it from a ref, like `onStarted`.
-	 */
-	agentViewContext: boolean;
 	onError: (message: string) => void;
 };
 
@@ -443,11 +449,11 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		entry,
 		title,
 		kindLabel,
+		hasAgentViewContext,
 		mintSession,
 		getInitContext,
 		onStarted,
 		onAgentToolResult,
-		agentViewContext,
 		onError,
 	} = props;
 	// The frame only mounts for an authenticated member, and the SDK requires `userId` in the init
@@ -475,7 +481,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	const onAgentToolResultRef = useRef(onAgentToolResult);
 	// Kept out of the bridge effect for the same reason. The live plugin list can turn it off while the
 	// frame runs (a disable or an upgrade), and the frame must stop sharing at once.
-	const agentViewContextRef = useRef(agentViewContext);
+	const hasAgentViewContextRef = useRef(hasAgentViewContext);
 
 	// Keep the ref pointing at the current callback. This is a plain effect, so on mount it runs
 	// AFTER the layout effect below installs the bridge. That is safe: the first bonobo:ready is a
@@ -490,8 +496,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	}, [onAgentToolResult]);
 
 	useEffect(() => {
-		agentViewContextRef.current = agentViewContext;
-	}, [agentViewContext]);
+		hasAgentViewContextRef.current = hasAgentViewContext;
+	}, [hasAgentViewContext]);
 
 	// Attach the message and load listeners before assigning src so the first page event cannot be missed.
 	useLayoutEffect(() => {
@@ -592,7 +598,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 
 		readAgentViewContextRef.current = async () => {
 			// Without the `agent.view-context` consent nothing the page sent reaches the chat.
-			if (!agentViewContextRef.current || !frameReady || !initMessage) {
+			if (!hasAgentViewContextRef.current || !frameReady || !initMessage) {
 				return null;
 			}
 			// A queued send can run in a hidden tab. The browser can delay its timers by up to a minute

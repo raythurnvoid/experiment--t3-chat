@@ -1710,7 +1710,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 							fileViewId={activePluginView.fileView.id}
 							fileViewTitle={activePluginView.fileView.title}
 							entry={activePluginView.fileView.entry}
-							agentViewContext={activePluginView.plugin.agentViewContext}
+							hasAgentViewContext={activePluginView.plugin.hasAgentViewContext}
 						/>
 					</div>
 				)}
@@ -2531,11 +2531,12 @@ type FileNodeViewPluginView_Props = {
 	 * True when the installation accepted `agent.view-context`. The chat may then read what the view
 	 * says it shows.
 	 */
-	agentViewContext: boolean;
+	hasAgentViewContext: boolean;
 };
 
 const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileNodeViewPluginView_Props) {
-	const { node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry, agentViewContext } = props;
+	const { node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry, hasAgentViewContext } =
+		props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const sectionRef = useRef<HTMLElement | null>(null);
 	// Incremented by Retry. It is part of the frame key below, so each attempt gets a fresh frame.
@@ -2597,7 +2598,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 				fileViewId={fileViewId}
 				fileViewTitle={fileViewTitle}
 				entry={entry}
-				agentViewContext={agentViewContext}
+				hasAgentViewContext={hasAgentViewContext}
 				onRetry={handleRetry}
 			/>
 		</section>
@@ -2624,7 +2625,7 @@ type FileNodeViewPluginViewFrame_Props = {
 	fileViewId: string;
 	fileViewTitle: string;
 	entry: string;
-	agentViewContext: boolean;
+	hasAgentViewContext: boolean;
 	onRetry: () => void;
 };
 
@@ -2647,7 +2648,7 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 		fileViewId,
 		fileViewTitle,
 		entry,
-		agentViewContext,
+		hasAgentViewContext,
 		onRetry,
 	} = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
@@ -2664,7 +2665,7 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 	const readyMessage = `${fileViewTitle} is ready.`;
 
 	useAiChatUiContextPluginSource(
-		agentViewContext ? { pluginName, title: fileViewTitle, kind: "file_view" } : null,
+		hasAgentViewContext ? { pluginName, title: fileViewTitle, kind: "file_view" } : null,
 		frameRef,
 	);
 
@@ -2767,10 +2768,10 @@ const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
 					entry={entry}
 					title={fileViewTitle}
 					kindLabel="plugin view"
+					hasAgentViewContext={hasAgentViewContext}
 					mintSession={mintSession}
 					getInitContext={getInitContext}
 					onStarted={() => setIsFrameStarted(true)}
-					agentViewContext={agentViewContext}
 					// The state setter is the handler: the frame hands over the sentence and this component
 					// shows it. A setter identity never changes, and the frame's bridge effect lists
 					// `onError` in its dependencies, so a changing one would tear the frame down.

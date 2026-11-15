@@ -200,8 +200,15 @@ export const ai_chat_plugin_context_schema = z
 		structuredContent: z.record(z.string(), z.unknown()).nullable(),
 	})
 	.strict()
-	// The host frame drops a bigger value too, so only a forged request reaches this refusal.
-	.refine((context) => files_get_utf8_byte_size(JSON.stringify(context)) <= 16 * 1024, "Plugin text is too big");
+	// Measure the same JSON the host frame measures, so a value the frame lets through passes here.
+	.refine(
+		(context) =>
+			files_get_utf8_byte_size(
+				JSON.stringify({ content: context.content, structuredContent: context.structuredContent }),
+			) <=
+			16 * 1024,
+		"Plugin text is too big",
+	);
 
 export type ai_chat_PluginContext = z.infer<typeof ai_chat_plugin_context_schema>;
 
