@@ -85,7 +85,7 @@ export async function files_nodes_ai_http_contextual_prompt(ctx: ActionCtx, requ
 		if (body._nay) {
 			return {
 				status: 400,
-				body: body._nay,
+				body: { message: body._nay.message },
 			} as const;
 		}
 

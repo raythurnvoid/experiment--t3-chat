@@ -3352,7 +3352,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		if (requestParseResult._nay) {
 			return {
 				status: 400,
-				body: requestParseResult._nay,
+				body: { message: requestParseResult._nay.message },
 			} as const;
 		}
 

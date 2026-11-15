@@ -2115,7 +2115,7 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 		if (body._nay) {
 			return {
 				status: 400,
-				body: body._nay,
+				body: { message: body._nay.message },
 			} as const;
 		}
 

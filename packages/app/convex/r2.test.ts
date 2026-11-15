@@ -5762,6 +5762,24 @@ describe("r2_http_event authentication", () => {
 	});
 });
 
+describe("r2_http_event body", () => {
+	test("answers a bad body with only a message, without the parser's error details", async () => {
+		const t = test_convex();
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ cloudflareMessageId: "message_bad_body", attempts: "one" }),
+		});
+
+		expect(response.status).toBe(400);
+		expect(Object.keys(await response.json())).toEqual(["message"]);
+	});
+});
+
 describe("record_untracked_asset_event", () => {
 	test("deletes the exact late PUT key after the mount and asset docs are gone", async () => {
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
