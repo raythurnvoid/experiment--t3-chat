@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.8";
+	const VERSION = "0.6.9";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -648,8 +648,26 @@
 					const style = getComputedStyle(element);
 					const visuallyHidden = style.clipPath === "inset(50%)" || style.clip === "rect(0px, 0px, 0px, 0px)";
 
-					if (!visuallyHidden && (rect.width < minTargetSize || rect.height < minTargetSize)) {
-						smallTargets.push({ ...described, width: Math.round(rect.width), height: Math.round(rect.height) });
+					// A click on a child also activates the control, so measure the control and its children
+					// together. An inline <a> around a padded inline-flex span (every MyLink button variant)
+					// has a 19px-tall box of its own, while its click area is the 36px span. Seen 2026-11-15
+					// on the plugins breadcrumb.
+					let targetLeft = rect.left;
+					let targetTop = rect.top;
+					let targetRight = rect.right;
+					let targetBottom = rect.bottom;
+					for (const child of element.querySelectorAll("*")) {
+						const childRect = child.getBoundingClientRect();
+						if (childRect.width === 0 || childRect.height === 0) continue;
+						targetLeft = Math.min(targetLeft, childRect.left);
+						targetTop = Math.min(targetTop, childRect.top);
+						targetRight = Math.max(targetRight, childRect.right);
+						targetBottom = Math.max(targetBottom, childRect.bottom);
+					}
+					const targetWidth = targetRight - targetLeft;
+					const targetHeight = targetBottom - targetTop;
+					if (!visuallyHidden && (targetWidth < minTargetSize || targetHeight < minTargetSize)) {
+						smallTargets.push({ ...described, width: Math.round(targetWidth), height: Math.round(targetHeight) });
 					}
 
 					const inViewport =

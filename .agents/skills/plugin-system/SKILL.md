@@ -1046,8 +1046,14 @@ Gmail 0.4.3 (`19ac807ae7305ff0e9cc773151f8c94c48dd42c3`, version doc
 `hn7vp64x69v41wqvmgevj8fam98j9f9a`) and Council Worker `4e8e946` (version
 `3d75a809-fc40-4e8b-b0d8-d8b854334d3e`, room revision `council-room-852bc22c`) now read the host
 `errorCode` instead of message text. Gmail passed review and 513 tests, and its backend is
-deployed. Its only install, in `personal`, stays on 0.4.2 for now. That is safe because the backend
-is shared by every install. Council passed 736 tests; no D1 migration was pending.
+deployed. Council passed 736 tests; no D1 migration was pending.
+
+Gmail 0.4.4 (`b123426a7861b4a73982f54d41b0b9d1790919c4`, version doc
+`hn7g60sh88j28g8tk47e5dqxc18j828w`) was published on 2026-11-15. It changes only page CSS: the "Old
+mail to save" select is now a 36px target (it was 17px tall). The backend did not change, so it was
+not deployed again. The review ended twice with "could not finish its assessment" and passed on the
+third try of the same commit. The only install, `personal/home`, went 0.4.2 → 0.4.3 → 0.4.4, each
+with no new permissions. The live audit of the page found no small targets.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
