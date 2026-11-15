@@ -9746,6 +9746,8 @@ const app_convex_schema = defineSchema({
 		revision: v.number(),
 		editedAt: v.union(v.number(), v.null()),
 		deletedAt: v.union(v.number(), v.null()),
+		/** Temporary optional until `backfill_channels_messages_listed` runs. */
+		listed: v.optional(v.boolean()),
 	})
 		.index("by_channel_mainSequence", ["channelId", "mainSequence"])
 		.index("by_threadRoot_threadSequence", ["threadRootId", "threadSequence"])

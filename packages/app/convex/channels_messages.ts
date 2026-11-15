@@ -893,6 +893,7 @@ export const send_message = mutation({
 			revision: 0,
 			editedAt: null,
 			deletedAt: null,
+			listed: true,
 		});
 		for (const upload of uploads) {
 			await ctx.db.patch("channels_uploads", upload._id, { messageId });
@@ -2370,6 +2371,8 @@ export const delete_message = mutation({
 			hasAttachments: false,
 			replyTo: null,
 			deletedAt: Date.now(),
+			// A deleted root stays in the list while it has replies, so the thread keeps a place.
+			listed: message.threadRootId === null && (thread?.replyCount ?? 0) > 0,
 			revision: message.revision + 1,
 		});
 		await Promise.all(counts.map((count) => ctx.db.delete("channels_reaction_counts", count._id)));
@@ -2400,7 +2403,11 @@ export const delete_message = mutation({
 			}
 			if (message.threadRootId !== null && thread.replyCount === 1) {
 				const root = await ctx.db.get("channels_messages", thread.rootMessageId);
-				if (root?.deletedAt !== null) await delete_thread_state(ctx, thread);
+				// The last reply is gone, so a deleted root leaves the list too.
+				if (root?.deletedAt !== null) {
+					await ctx.db.patch("channels_messages", thread.rootMessageId, { listed: false });
+					await delete_thread_state(ctx, thread);
+				}
 			}
 			await channels_notifications_db_enqueue_thread(ctx, thread);
 		}
