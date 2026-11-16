@@ -1556,7 +1556,7 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * One chat tool call that the member's open browser tab must answer: a `view_snapshot` of the
-	 * screen, or a plugin page tool call.
+	 * screen, a `view_screenshot` picture, or a plugin page tool call.
 	 *
 	 * The chat runs on the server and cannot reach the browser. So the tool writes this doc, the tab
 	 * that sent the chat message reads it, answers, and writes the result here. The waiting tool then

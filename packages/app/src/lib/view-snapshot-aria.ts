@@ -684,8 +684,9 @@ export type AriaWalkOptions = {
 
 type ClipBox = { top: number; left: number; bottom: number; right: number };
 
-// `scrollBox` is the element that cuts the box, or null for the page itself.
-type Clip = { box: ClipBox; scrollBox: Element | null };
+// `scrollBox` is the element that cuts the box, or null for the page itself. `scrolls` is false inside a
+// fixed box: scrolling the page never moves it, so skipped content there gets no scroll hint.
+type Clip = { box: ClipBox; scrollBox: Element | null; scrolls: boolean };
 
 export function generateAriaTree(rootElement: Element, walk: AriaWalkOptions): AriaSnapshot {
 	// Delete refs of elements that left the page, so the lookup map does not grow forever.
@@ -701,7 +702,9 @@ export function generateAriaTree(rootElement: Element, walk: AriaWalkOptions): A
 	const pageClip: Clip = {
 		box: { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth },
 		scrollBox: null,
+		scrolls: true,
 	};
+	const fixedClip: Clip = { ...pageClip, scrolls: false };
 
 	const snapshot: AriaSnapshot = {
 		root: {
@@ -719,6 +722,8 @@ export function generateAriaTree(rootElement: Element, walk: AriaWalkOptions): A
 	setAriaNodeElement(snapshot.root, rootElement);
 
 	const addScrollHint = (clip: Clip, rect: DOMRect) => {
+		if (!clip.scrolls) return;
+
 		const directions = scrollHints.get(clip.scrollBox) ?? new Set<string>();
 		if (rect.top >= clip.box.bottom) directions.add("below");
 		else if (rect.bottom <= clip.box.top) directions.add("above");
@@ -753,7 +758,9 @@ export function generateAriaTree(rootElement: Element, walk: AriaWalkOptions): A
 		if (clip) {
 			const style = getElementComputedStyle(element);
 			const position = style?.position;
-			if (position === "fixed" || position === "absolute") childClip = pageClip;
+			if (position === "fixed") childClip = fixedClip;
+			// An absolute box inside a fixed box moves with that box, not with the page.
+			else if (position === "absolute") childClip = clip.scrolls ? pageClip : fixedClip;
 			if (style && style.display !== "contents") {
 				const rect = element.getBoundingClientRect();
 				const outside =
@@ -776,6 +783,7 @@ export function generateAriaTree(rootElement: Element, walk: AriaWalkOptions): A
 							right: Math.min(childClip.box.right, rect.right),
 						},
 						scrollBox: element,
+						scrolls: true,
 					};
 				}
 			}

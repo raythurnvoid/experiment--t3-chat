@@ -1,6 +1,50 @@
+import { act, render } from "@testing-library/react";
+import { createElement } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { Id } from "../../../convex/_generated/dataModel.ts";
+
+// The responder reads its tenant, its pending calls, and the snapshot build from these. `set`
+// renders the responder again, like a live query update or a route change would.
+const tab = vi.hoisted(() => {
+	const listeners = new Set<() => void>();
+	const value = {
+		version: 0,
+		membershipId: "membership_a",
+		pendingCalls: [] as unknown[],
+		finishBuild: null as ((built: unknown) => void) | null,
+		subscribe: (listener: () => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		set: (next: { membershipId?: string; pendingCalls?: unknown[] }) => {
+			Object.assign(value, next, { version: value.version + 1 });
+			for (const listener of listeners) listener();
+		},
+	};
+	return value;
+});
+
+vi.mock("convex/react", async () => {
+	const { useSyncExternalStore } = await import("react");
+	return {
+		useQuery: () => {
+			useSyncExternalStore(tab.subscribe, () => tab.version);
+			return tab.pendingCalls;
+		},
+	};
+});
+
+vi.mock("@/lib/app-tenant-context.tsx", () => ({
+	AppTenantProvider: { useContext: () => ({ membershipId: tab.membershipId }) },
+}));
+
+vi.mock("@/lib/view-snapshot.ts", () => ({
+	view_snapshot_build: () =>
+		new Promise((resolve) => {
+			tab.finishBuild = resolve;
+		}),
+}));
 
 const calls: string[] = [];
 const mutationMock = vi.fn(async (name: string, _args: unknown) => {
@@ -63,5 +107,50 @@ describe("AiChatUiCallResponder.answerScreenshotCall", () => {
 			result: { ok: false, reason: "denied" },
 		});
 		expect(answered).toBe(true);
+	});
+});
+
+describe("AiChatUiCallResponder", () => {
+	const snapshot_call = (callId: string) => ({
+		callId,
+		toolCallId: `tool_${callId}`,
+		request: { kind: "view_snapshot", region: "screen", ref: null },
+	});
+
+	const built = (text: string) => ({ _yay: { text, truncated: false, buildMs: 1, plugins: [] } });
+
+	// Read the resolver through a function: TypeScript narrows `tab.finishBuild` to null after the reset below.
+	const finish_build = (text: string) => tab.finishBuild?.(built(text));
+
+	// The responder stays mounted when the tab opens another workspace. A screen read that was still
+	// building then reads the new workspace, and must not save it into the old workspace's chat.
+	test("sends no screen text after the tab moved to another workspace", async () => {
+		tab.set({ pendingCalls: [snapshot_call("call_same")] });
+		const view = render(createElement(AiChatUiCallResponder));
+		await vi.waitFor(() => expect(tab.finishBuild).not.toBeNull());
+		finish_build("Workspace A screen");
+		await vi.waitFor(() =>
+			expect(mutationMock, "a tab that stayed sends its screen").toHaveBeenLastCalledWith(
+				"ai_chat_ui_calls.complete_call",
+				expect.objectContaining({ result: expect.objectContaining({ ok: true, output: "Workspace A screen" }) }),
+			),
+		);
+
+		tab.finishBuild = null;
+		act(() => tab.set({ pendingCalls: [snapshot_call("call_moved")] }));
+		await vi.waitFor(() => expect(tab.finishBuild).not.toBeNull());
+		act(() => tab.set({ membershipId: "membership_b", pendingCalls: [] }));
+		finish_build("Workspace B screen");
+		await vi.waitFor(() =>
+			expect(mutationMock, "a tab that moved sends no screen").toHaveBeenLastCalledWith(
+				"ai_chat_ui_calls.complete_call",
+				{
+					membershipId: "membership_a",
+					callId: "call_moved",
+					result: { ok: false, error: "The app tab moved to another workspace while it read the screen." },
+				},
+			),
+		);
+		view.unmount();
 	});
 });

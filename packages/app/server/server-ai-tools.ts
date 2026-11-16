@@ -54,7 +54,7 @@ import {
 } from "./files-ingestion.ts";
 import { ai_chat_tool_output_keep, ai_chat_tool_output_reserve } from "./ai-chat-tool-output.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
-import { files_node_has_editable_text_content } from "../shared/files.ts";
+import { files_get_utf8_byte_size, files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT, type ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { secret_shaped_text_REGEX } from "../shared/secret-shaped-text.ts";
 import { ai_chat_image_header, type ai_chat_Observation } from "./ai-chat-file-tools.ts";
@@ -2252,11 +2252,8 @@ const PAGE_TOOL_WAIT_MS = 45_000;
 const UI_CALL_POLL_MS = 400;
 
 /**
- * Wait for the tab's answer to one UI call, and delete the call doc when done. Null when the tab did
- * not answer before the deadline. See `convex/ai_chat_ui_calls.ts`.
- */
-/**
- * Wait for the tab's answer to one UI call, then delete the call doc.
+ * Wait for the tab's answer to one UI call, then delete the call doc. Null when the tab did not
+ * answer in time. See `convex/ai_chat_ui_calls.ts`.
  *
  * Stop at `deadline`, or as soon as a call nobody took passes its `expiresAt`: after that time no
  * tab can take it. `pendingPollMs` lets a call that waits for a person poll less often.
@@ -2423,7 +2420,7 @@ export function ai_chat_tool_create_view_snapshot(
 			kind: "view_snapshot_result",
 			status,
 			truncated: snapshot?.truncated ?? false,
-			bytes: new TextEncoder().encode(output).byteLength,
+			bytes: files_get_utf8_byte_size(output),
 			buildMs: snapshot?.buildMs ?? null,
 			plugins: snapshot?.plugins ?? [],
 		},
@@ -2540,7 +2537,11 @@ export function ai_chat_tool_create_view_screenshot(
 		execute: async ({ reason }, options) => {
 			const threadId = args.getThreadId();
 			if (!args.uiTab || !threadId) {
-				return errored("unavailable", "errored", "No open Bonobo Senate tab is linked to this reply, so the user cannot be asked.");
+				return errored(
+					"unavailable",
+					"errored",
+					"No open Bonobo Senate tab is linked to this reply, so the user cannot be asked.",
+				);
 			}
 			if (declined) {
 				return errored("declined", "errored", "The user declined. Do not ask again in this turn.");
@@ -2553,7 +2554,10 @@ export function ai_chat_tool_create_view_screenshot(
 			// The member needs time to notice the card, then the browser asks what to share.
 			const now = Date.now();
 			const expiresAt = Math.min(now + VIEW_SCREENSHOT_CLAIM_MS, args.uiTab.runDeadline - 70_000);
-			const deadline = Math.min(expiresAt + ai_chat_ui_calls_SCREENSHOT_CAPTURE_GRACE_MS, args.uiTab.runDeadline - 5_000);
+			const deadline = Math.min(
+				expiresAt + ai_chat_ui_calls_SCREENSHOT_CAPTURE_GRACE_MS,
+				args.uiTab.runDeadline - 5_000,
+			);
 			if (expiresAt <= now) {
 				return errored("unavailable", "timed_out", "The reply has too little time left to ask the user for a picture.");
 			}
@@ -2579,19 +2583,35 @@ export function ai_chat_tool_create_view_screenshot(
 				return ai_chat_file_result({ title: "Screenshot", status: "cancelled" });
 			}
 			if (!answer) {
-				return errored("unavailable", "timed_out", "The user did not answer. Continue without the picture, or ask in text.");
+				return errored(
+					"unavailable",
+					"timed_out",
+					"The user did not answer. Continue without the picture, or ask in text.",
+				);
 			}
 			if (!("image" in answer)) {
 				const refusal = "reason" in answer ? answer.reason : "failed";
 				if (refusal === "declined" || refusal === "denied") {
 					declined = true;
-					return errored("declined", "errored", "The user declined to share the screen. Do not ask again in this turn.");
+					return errored(
+						"declined",
+						"errored",
+						"The user declined to share the screen. Do not ask again in this turn.",
+					);
 				}
 				if (refusal === "unsupported") {
-					return errored("browser_unsupported", "errored", "The user's browser cannot share only this tab. Continue without the picture.");
+					return errored(
+						"browser_unsupported",
+						"errored",
+						"The user's browser cannot share only this tab. Continue without the picture.",
+					);
 				}
 				if (refusal === "wrong_surface") {
-					return errored("wrong_surface", "errored", "The user shared something other than this tab, so nothing was sent.");
+					return errored(
+						"wrong_surface",
+						"errored",
+						"The user shared something other than this tab, so nothing was sent.",
+					);
 				}
 				if (refusal === "too_large") {
 					return errored("limit", "errored", "The picture was too large to send.");

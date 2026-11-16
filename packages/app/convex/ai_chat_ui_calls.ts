@@ -26,10 +26,16 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 
 /**
- * When the scheduled delete removes a call doc. The chat tool waits at most 45 seconds and deletes
- * the doc itself, so this delete only matters when its action died first.
+ * When the scheduled delete removes a call doc. The chat tool deletes the doc itself when it stops
+ * waiting, so this delete only matters when its action died first. A screenshot call waits longer,
+ * so its delete comes later (see `create_call`).
  */
 const CALL_CLEANUP_DELAY_MS = 120_000;
+
+/**
+ * The extra time a screenshot call's delete waits after the chat tool's last possible wait.
+ */
+const SCREENSHOT_CLEANUP_MARGIN_MS = 60_000;
 
 /**
  * After the member takes a screenshot call, the chat tool waits this long for the picture: the
@@ -115,7 +121,7 @@ export const create_call = internalMutation({
 			args.request.kind === "view_screenshot"
 				? Math.max(
 						CALL_CLEANUP_DELAY_MS,
-						args.expiresAt + ai_chat_ui_calls_SCREENSHOT_CAPTURE_GRACE_MS + 60_000 - Date.now(),
+						args.expiresAt + ai_chat_ui_calls_SCREENSHOT_CAPTURE_GRACE_MS + SCREENSHOT_CLEANUP_MARGIN_MS - Date.now(),
 					)
 				: CALL_CLEANUP_DELAY_MS;
 		await ctx.scheduler.runAfter(cleanupDelayMs, internal.ai_chat_ui_calls.delete_call, { callId });

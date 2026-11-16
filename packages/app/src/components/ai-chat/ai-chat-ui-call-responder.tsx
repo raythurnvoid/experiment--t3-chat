@@ -2,14 +2,14 @@ import { useQuery } from "convex/react";
 import { memo, useEffect, useRef } from "react";
 
 import type { PluginsUiFrame_AgentToolResult } from "@/components/plugins-ui-frame.tsx";
-import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
+import { useFn } from "@/hooks/utils-hooks.ts";
+import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { ai_chat_ui_context_get_shown } from "@/lib/ai-chat-ui-context.ts";
 import { ai_chat_ui_instance_get_id } from "@/lib/ai-chat-ui-instance.ts";
 import { ai_chat_screen_capture_frame, ai_chat_screen_capture_is_supported } from "@/lib/ai-chat-screen-capture.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
-import type { Id } from "../../../convex/_generated/dataModel.ts";
 
 type UiCall = FunctionReturnType<typeof app_convex_api.ai_chat_ui_calls.list_pending>[number];
 
@@ -101,8 +101,12 @@ async function answer_ui_call(call: UiCall): Promise<UiCallResult> {
  *
  * A refused claim means the call already ended or was taken, so there is nothing to do.
  */
-async function relay_ui_call(args: { membershipId: Id<"organizations_workspaces_users">; call: UiCall }) {
-	const { membershipId, call } = args;
+async function relay_ui_call(args: {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	call: UiCall;
+	isCurrentMembership: (membershipId: app_convex_Id<"organizations_workspaces_users">) => boolean;
+}) {
+	const { membershipId, call, isCurrentMembership } = args;
 
 	const claimed = await app_convex.mutation(app_convex_api.ai_chat_ui_calls.claim_call, {
 		membershipId,
@@ -124,10 +128,17 @@ async function relay_ui_call(args: { membershipId: Id<"organizations_workspaces_
 		};
 	});
 
+	// A build can wait for a plugin frame. If the tab moved to another workspace meanwhile, the build
+	// read that workspace's screen. Send nothing from it, because the call belongs to the old one.
+	const answer: UiCallResult =
+		call.request.kind === "view_snapshot" && !isCurrentMembership(membershipId)
+			? { ok: false, error: "The app tab moved to another workspace while it read the screen." }
+			: result;
+
 	const completed = await app_convex.mutation(app_convex_api.ai_chat_ui_calls.complete_call, {
 		membershipId,
 		callId: call.callId,
-		result,
+		result: answer,
 	});
 	if (completed._nay) {
 		console.error("[AiChatUiCallResponder.relay_ui_call] Failed to save the answer", {
@@ -147,8 +158,8 @@ async function relay_ui_call(args: { membershipId: Id<"organizations_workspaces_
  * dropped.
  */
 async function answer_screenshot_call(args: {
-	membershipId: Id<"organizations_workspaces_users">;
-	callId: Id<"ai_chat_ui_calls">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	callId: app_convex_Id<"ai_chat_ui_calls">;
 	share: boolean;
 }) {
 	const { membershipId, callId, share } = args;
@@ -160,6 +171,13 @@ async function answer_screenshot_call(args: {
 	const picture = await capture;
 	if (claimed._nay) {
 		return false;
+	}
+	// The agent gets only the reason name. Keep the cause in the console so a failure can be explained.
+	if (picture?._nay?.name === "failed") {
+		console.error("[AiChatUiCallResponder.answer_screenshot_call] Failed to take the picture", {
+			error: picture._nay,
+			callId,
+		});
 	}
 
 	const result: UiCallResult = !share
@@ -186,8 +204,9 @@ async function answer_screenshot_call(args: {
 
 /**
  * Answer the calls the chat agent sends to this tab: `view_snapshot` and plugin page tools. The chat
- * card answers `view_screenshot` after the member's click. Mount it once in the workspace layout. The list is read for this workspace only, so a tab that shows another
- * workspace never puts that screen into the chat.
+ * card answers `view_screenshot` after the member's click. Mount it once in the workspace layout.
+ * The list is read for this workspace only, so a tab that shows another workspace never puts that
+ * screen into the chat.
  */
 const AiChatUiCallResponder = Object.assign(
 	memo(function AiChatUiCallResponder() {
@@ -201,6 +220,11 @@ const AiChatUiCallResponder = Object.assign(
 			uiInstanceId: ai_chat_ui_instance_get_id(),
 		});
 
+		// This component stays mounted when the tab opens another workspace, so read the latest value.
+		const isCurrentMembership = useFn((callMembershipId: app_convex_Id<"organizations_workspaces_users">) => {
+			return callMembershipId === membershipId;
+		});
+
 		useEffect(() => {
 			for (const call of pendingCalls ?? []) {
 				if (
@@ -211,11 +235,11 @@ const AiChatUiCallResponder = Object.assign(
 				}
 				seenCallIdsRef.current.add(call.callId);
 
-				relay_ui_call({ membershipId, call }).catch((error: unknown) => {
-					console.error("[AiChatUiCallResponder] Unexpected call error", { error, callId: call.callId });
+				relay_ui_call({ membershipId, call, isCurrentMembership }).catch((error: unknown) => {
+					console.error("[AiChatUiCallResponder.relay_ui_call] Unexpected call error", { error, callId: call.callId });
 				});
 			}
-		}, [pendingCalls, membershipId]);
+		}, [pendingCalls, membershipId, isCurrentMembership]);
 
 		return null;
 	}),

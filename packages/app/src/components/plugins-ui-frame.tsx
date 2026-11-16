@@ -604,17 +604,23 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			if (!hasAgentViewContextRef.current || !frameReady || !initMessage) {
 				return null;
 			}
+			// The last pushed value describes the whole page, not the part `ref` names. So a read of one
+			// part that gets no answer gets nothing, not the whole-page text.
+			const fallback = ref === null ? lastViewContext : null;
 			// A queued send can run in a hidden tab. The browser can delay its timers by up to a minute
 			// there, so the timeout would block the queue much longer. Use the last pushed value.
-			if (!hasContextProvider || document.visibilityState === "hidden") {
-				return lastViewContext;
+			//
+			// Still ask for a snapshot in a hidden tab. Many pages only answer when asked and never push,
+			// so the last pushed value would be empty. The snapshot call has its own 10 second deadline.
+			if (!hasContextProvider || (detail === "summary" && document.visibilityState === "hidden")) {
+				return fallback;
 			}
 
 			const requestId = crypto.randomUUID();
 			return await new Promise<PluginsUiFrame_AgentViewContext | null>((resolve) => {
 				const timeout = setTimeout(() => {
 					contextWaiters.delete(requestId);
-					resolve(lastViewContext);
+					resolve(fallback);
 				}, AGENT_VIEW_CONTEXT_PULL_TIMEOUT_MS);
 				contextWaiters.set(requestId, (context) => {
 					clearTimeout(timeout);

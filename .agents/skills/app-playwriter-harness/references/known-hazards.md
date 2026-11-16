@@ -40,6 +40,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 - **File upload / folder import** — try `setInputFiles` under a Windows relay first; use the fallback under Playwriter Availability only after an actual failure.
 - **Screenshots / downloads** — check the relay host first. Absolute Windows paths work with a Windows relay; use the Buffer transfer recipe under Playwriter Availability for a WSL relay.
+- **Screen sharing (`getDisplayMedia`)** — needs a scratch Chrome with an auto-answer flag and the occlusion flags; see "Tab capture in a scratch Chrome".
 - **Toasts** — bottom-edge action buttons need an offset click, and a toast must be read in the same execute call as the click that causes it (Playwriter Availability, Interaction Discipline).
 - **Tooltips / hovercards / selects** — tooltips, `MyPopover`, `MyMenu`, the hovercard, `MySelect`, `MySearchSelect`, and `MyCombobox` are all native (`native-popovers`); see their entries under Interaction Discipline.
 - **Dialogs** — many stay mounted while closed; never trust the first `[role=dialog]` match (Interaction Discipline).
@@ -1044,6 +1045,15 @@ vp env exec pnpx playwriter session new --direct 127.0.0.1:9223
 `--direct` also accepts a `ws://`/`wss://` endpoint, or `1` to auto-discover Chrome on 9222. Screen
 recording is unavailable in this mode. Probe `http://127.0.0.1:<port>/json/version` first to confirm the
 browser is still up, since a dead scratch browser and a wrong flag fail the same way.
+
+## Tab capture in a scratch Chrome: a covered window sends no frames
+
+Checked 2026-11-16 on Chrome for Testing 155 (`~/.playwriter/browsers/chrome-155.*`) for the chat screenshot card.
+
+- `--auto-accept-this-tab-capture` answers the `getDisplayMedia` prompt with the current tab; `--auto-reject-this-tab-capture` refuses it (`NotAllowedError`). Without one of them the prompt waits for a real click and the check hangs.
+- Chrome stops painting a window that other windows cover, and a tab capture then gets no frames at all: the video never fires `requestVideoFrameCallback`, while DOM reads and `visibilityState` still look normal. Start the scratch Chrome with `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion` so frames keep flowing behind the user's windows. Do not bring the window forward on the user's desktop to fix it.
+- Region Capture's `cropTo` lives on `BrowserCaptureMediaStreamTrack.prototype`, not on `MediaStreamTrack.prototype`, in Chrome 155 and Edge 157. A support probe that checks `MediaStreamTrack` says "unsupported" in every browser.
+- To see a covered scratch window, use Win32 `PrintWindow` with flag 2 (`PW_RENDERFULLCONTENT`) on its window handle. Do not use `Graphics.CopyFromScreen`: it copies whatever is on top at those pixels, which can be another app with the user's private content. Delete any such capture at once.
 
 ## App State
 

@@ -696,6 +696,24 @@ await state.page.evaluate(async ({ membershipId, target }) => {
 
 Verify the Download button itself. Capture the Blob passed to `URL.createObjectURL` while still calling the original function, then restore the spy. Compare its complete bytes with the fixture. Also read the matching native file using the actual download filename. In extension mode, `download.saveAs()` can fail even when the browser wrote the file to `~/Downloads`; see the download entry in [known-hazards.md](known-hazards.md). Do not treat that relay error as a failed app download, or treat a Blob check alone as proof of the native file. Keep owned downloads and evidence in the personal task folder.
 
+## Screen tools: `view_snapshot` and `view_screenshot`
+
+Spec: "UI calls and screen snapshots" in `.agents/skills/ai-chat-agent/SKILL.md`. Recipes verified 2026-11-16.
+
+**Read a screen without a model turn.** A model turn costs tokens. To check what a tab answers, create the UI call yourself:
+
+1. Read the tab id and the membership ids from page context: `(await import("/src/lib/ai-chat-ui-instance.ts")).ai_chat_ui_instance_get_id()`, and `organizations.get_membership_by_organization_workspace_name` through `(await import("/src/lib/app-convex-client.ts")).app_convex`. Read them again after every navigation or reload: the tab id changes on every page load, and a call for the old id stays `pending` forever.
+2. From `packages/app`, run `convex run ai_chat_ui_calls:create_call` with `organizationId`, `workspaceId`, `userId`, `threadId` (any thread of that member), `uiInstanceId`, a unique `toolCallId`, `request` (for example `{"kind":"view_snapshot","region":"screen","ref":null}` or `"region":"files_tree"`) and `expiresAt` (now plus 40 s).
+3. Poll `ai_chat_ui_calls:get_call { callId }` until it has a `result`, then always run `ai_chat_ui_calls:delete_call { callId }`. The result `output` is the exact text the model would read, before the server's secret scrub.
+
+`convex run` through `cmd.exe` drops bare quotes, so pass the JSON as one argument wrapped in `"` with its inner quotes escaped. Save outputs in the task folder; a screen can hold private file text.
+
+**Prove a `timeout` answer.** Closing or reloading the sending tab does not give one: it drops `/api/chat`, and the run stops (see the spec). CDP `Page.setWebLifecycleState` "frozen" did not stop the tab from answering either. What works: in the sending tab, replace `app_convex.mutation` with a wrapper that never resolves for `getFunctionName(ref) === "ai_chat_ui_calls:claim_call"` (`getFunctionName` from `await import("/@id/convex/server")`), and keep the original on `window`. Ask the agent for a snapshot; after about 10 s the card says "failed" and names the timeout. Then `delete` the own `mutation` property and the saved original, and check `Object.prototype.hasOwnProperty.call(app_convex, "mutation")` is false.
+
+**Screenshot card.** `[data-screenshot-state]` reads `asking`, `waiting`, `sharing`, `declining`, `ended` or `done`. While `asking`, the card has the buttons `Share this tab` and `Decline`, and `[role=status]` holds the status line. The reply is done when `button[aria-label="Stop generating"]` is gone.
+
+**Share needs a scratch Chrome.** The browser prompt cannot be answered through CDP, and the extension Edge is the user's browser. Run the Share and denied paths in Playwriter's Chrome for Testing with a seeded member account (see `clerk-test-accounts.md`), started with `--auto-accept-this-tab-capture` (or `--auto-reject-this-tab-capture` for the denied path) plus the occlusion flags in `known-hazards.md` ("Tab capture in a scratch Chrome"). The auto flags always pick the current tab, so the `wrong_surface` path stays unit-test only. Check `(await import("/src/lib/ai-chat-screen-capture.ts")).ai_chat_screen_capture_is_supported()` is true before you ask; when it is false the tab answers `unsupported` without showing buttons.
+
 ## Workspace instructions and skills
 
 Use an owned QA workspace. Import the five files under [assets/files/agent-skills](../assets/files/agent-skills/) through Files, keeping the `.agents/skills/plan-and-review` folder layout. They provide root and nested AGENTS, a portable skill, a reference, and a saved JavaScript check. See the [skills spec](../../ai-chat-skills/SKILL.md) for the feature gate and limits.

@@ -1225,7 +1225,11 @@ const AiChatMessagePartToolScreenshot = memo(function AiChatMessagePartToolScree
 	// old or untrusted, so show no status from it. A screenshot never has files or debug text.
 	const parsed = ai_chat_file_result_schema.safeParse(result);
 	const expected = parsed.success
-		? ai_chat_file_result({ title: "Screenshot", status: parsed.data.metadata.status, reason: parsed.data.metadata.reason })
+		? ai_chat_file_result({
+				title: "Screenshot",
+				status: parsed.data.metadata.status,
+				reason: parsed.data.metadata.reason,
+			})
 		: null;
 	const output =
 		parsed.success &&
@@ -1237,14 +1241,24 @@ const AiChatMessagePartToolScreenshot = memo(function AiChatMessagePartToolScree
 			: null;
 
 	const isRunning = toolState === "input-streaming" || toolState === "input-available";
+	// A stopped turn leaves the part without output. Its call is gone, so do not wait for it.
 	const screenshotState: AiChatMessagePartToolScreenshot_CustomAttributes["data-screenshot-state"] = !isRunning
 		? "done"
-		: phase !== "idle"
-			? phase
-			: call
-				? "asking"
-				: "waiting";
+		: !isChatRunning
+			? "ended"
+			: phase !== "idle"
+				? phase
+				: call
+					? "asking"
+					: "waiting";
 	const isFailure = output !== null && (output.metadata.status === "errored" || output.metadata.status === "timed_out");
+	// The shared reason labels talk about files. A screenshot has no file, so say what happened to the picture.
+	const pictureReason =
+		output?.metadata.reason === "unavailable"
+			? "The picture was not taken."
+			: output?.metadata.reason === "unsupported_image"
+				? "The picture was not valid."
+				: null;
 	const status = {
 		asking: "Nothing is sent before you choose.",
 		sharing: "Pick this tab in the browser prompt.",
@@ -1252,6 +1266,9 @@ const AiChatMessagePartToolScreenshot = memo(function AiChatMessagePartToolScree
 		ended: "This request already ended, so nothing was sent.",
 		waiting: "Waiting for an answer in the tab that sent this message.",
 		done:
+			(output && pictureReason
+				? `${file_result_status_text({ ...output.metadata, reason: null }, "Screenshot")} ${pictureReason}`
+				: null) ??
 			(output ? file_result_status_text(output.metadata, "Screenshot") : null) ??
 			(toolState === "output-error" || toolState === "output-denied"
 				? "The request could not finish."
@@ -1294,7 +1311,9 @@ const AiChatMessagePartToolScreenshot = memo(function AiChatMessagePartToolScree
 				{screenshotState === "asking" && call && (
 					<>
 						{/* The reason is model text, so show it as plain text. */}
-						<p className={"AiChatMessagePartToolScreenshot-reason" satisfies AiChatMessagePartToolScreenshot_ClassNames}>
+						<p
+							className={"AiChatMessagePartToolScreenshot-reason" satisfies AiChatMessagePartToolScreenshot_ClassNames}
+						>
 							The agent asks for one picture of this tab: {call.reason}
 						</p>
 						<div

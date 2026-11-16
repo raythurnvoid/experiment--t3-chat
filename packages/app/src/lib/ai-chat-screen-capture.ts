@@ -5,6 +5,7 @@ import { Result } from "common/errors-as-values-utils.ts";
  */
 declare global {
 	var CropTarget: { fromElement(element: Element): Promise<object> } | undefined;
+	var BrowserCaptureMediaStreamTrack: { prototype: object } | undefined;
 	interface MediaStreamTrack {
 		cropTo?(cropTarget: object | null): Promise<void>;
 	}
@@ -18,20 +19,30 @@ const MAX_EDGE_PX = 1568;
 const SMALL_EDGE_PX = 1024;
 
 /**
- * The relay row stores the picture as base64. Keep it far below the 1 MiB Convex document limit,
+ * How long to wait for the first frame after sharing starts. A visible tab sends one in well under a
+ * second.
+ */
+const FRAME_WAIT_MS = 5_000;
+
+/**
+ * The call doc stores the picture as base64. Keep it far below the 1 MiB Convex document limit,
  * like the chat image attachments.
  */
-export const ai_chat_screen_capture_MAX_BASE64_CHARS = 700 * 1024;
+const MAX_BASE64_CHARS = 700 * 1024;
 
 /**
  * True when this browser can share only this tab. Firefox, Safari, and phones cannot crop a shared
  * tab to one element, so the agent must not ask them for a picture.
+ *
+ * `cropTo` lives on `BrowserCaptureMediaStreamTrack`, the track type a tab capture returns. Plain
+ * `MediaStreamTrack` does not have it, also in Chrome and Edge.
  */
 export function ai_chat_screen_capture_is_supported() {
 	return (
 		typeof globalThis.CropTarget !== "undefined" &&
 		typeof navigator.mediaDevices?.getDisplayMedia === "function" &&
-		"cropTo" in MediaStreamTrack.prototype
+		typeof globalThis.BrowserCaptureMediaStreamTrack !== "undefined" &&
+		"cropTo" in globalThis.BrowserCaptureMediaStreamTrack.prototype
 	);
 }
 
@@ -96,18 +107,25 @@ export async function ai_chat_screen_capture_frame(target: Element) {
 
 		video.muted = true;
 		video.srcObject = stream;
-		await video.play();
 		// The first frame after `play()` can be from before the crop. Wait for a new frame.
-		await new Promise<void>((resolve) => video.requestVideoFrameCallback(() => resolve()));
+		//
+		// A covered or minimized window can stop sending frames. Do not wait forever with sharing on.
+		const gotFrame = await Promise.race([
+			video.play().then(() => new Promise<boolean>((resolve) => video.requestVideoFrameCallback(() => resolve(true)))),
+			new Promise<boolean>((resolve) => setTimeout(() => resolve(false), FRAME_WAIT_MS)),
+		]);
+		if (!gotFrame) {
+			return Result({ _nay: { name: "failed", message: "No picture arrived from the shared tab" } });
+		}
 
-		// Try smaller pictures until one fits the row.
+		// Try smaller pictures until one fits the call doc.
 		for (const [maxEdge, quality] of [
 			[MAX_EDGE_PX, 0.85],
 			[MAX_EDGE_PX, 0.7],
 			[SMALL_EDGE_PX, 0.7],
 		] as const) {
 			const picture = encode_jpeg(video, maxEdge, quality);
-			if (picture.base64.length <= ai_chat_screen_capture_MAX_BASE64_CHARS) {
+			if (picture.base64.length <= MAX_BASE64_CHARS) {
 				return Result({ _yay: { mediaType: "image/jpeg" as const, ...picture } });
 			}
 		}

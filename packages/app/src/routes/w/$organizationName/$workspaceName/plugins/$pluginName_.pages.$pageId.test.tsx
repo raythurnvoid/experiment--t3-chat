@@ -2887,7 +2887,7 @@ describe("RoutePluginsPluginPage", () => {
 		expect(await deniedRef.current?.readAgentViewContext(), "no consent, no view context").toBeNull();
 	});
 
-	test("the screen snapshot asks this frame for its view, only with the consent", async () => {
+	test("the screen snapshot asks this frame for its view, also in a hidden tab, only with the consent", async () => {
 		const registerSpy = vi.spyOn(AiChatUiCallResponder, "registerSnapshotFrame");
 		const props_for = (hasAgentViewContext: boolean) =>
 			({
@@ -2925,6 +2925,8 @@ describe("RoutePluginsPluginPage", () => {
 		const frame = registerSpy.mock.calls.findLast((call) => call[0] === iframe)?.[1];
 		if (!frame) throw new Error("the frame did not register for snapshots");
 
+		// The agent can read a tab the member left. A page that only answers when asked must still be asked.
+		const visibilitySpy = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
 		postMessageMock.mockClear();
 		const described = frame.describe("e3");
 		const request = postMessageMock.mock.calls[0]?.[0] as { type: string; requestId: string };
@@ -2943,9 +2945,25 @@ describe("RoutePluginsPluginPage", () => {
 			nonce,
 			requestId: request.requestId,
 			ok: true,
-			context: { content: [{ type: "text", text: "- list" }, { type: "text", text: "  - listitem [ref=e3]" }] },
+			context: {
+				content: [
+					{ type: "text", text: "- list" },
+					{ type: "text", text: "  - listitem [ref=e3]" },
+				],
+			},
 		});
 		expect(await described).toBe("- list\n  - listitem [ref=e3]");
+		visibilitySpy.mockRestore();
+
+		// A page without a provider has only its pushed whole-page text. A read of one part gets nothing.
+		post_from_frame({
+			type: "bonobo:update-model-context",
+			nonce,
+			context: { content: [{ type: "text", text: "Whole page" }] },
+		});
+		post_from_frame({ type: "bonobo:context-provider", nonce, enabled: false });
+		expect(await frame.describe(null)).toBe("Whole page");
+		expect(await frame.describe("e3"), "a part read must not get the whole-page text").toBeNull();
 		view.unmount();
 
 		// Without the consent the frame is never asked.

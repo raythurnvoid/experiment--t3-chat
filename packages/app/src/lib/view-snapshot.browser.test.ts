@@ -42,6 +42,25 @@ describe("view_snapshot_build", () => {
 		expect(text).not.toContain("Ignored chat panel text");
 		expect(text).toMatch(/treeitem "Locked folder".*\[locked\]/);
 		expect(text).not.toContain("Paragraph far below the window");
+		expect(text).toContain("[more content below on this page: scroll to see it]");
+	});
+
+	test("gives no scroll hint for a fixed panel parked outside the window", async () => {
+		// Like a closed drawer: page scrolling never brings it into view.
+		document.body.innerHTML = `
+			<p>Visible paragraph</p>
+			<div style="position: fixed; top: 100vh; left: 0">
+				<p>Closed drawer text</p>
+				<div style="position: absolute; top: 20px"><p>Drawer menu text</p></div>
+			</div>
+		`;
+
+		const { text } = await build_screen(no_frames);
+
+		expect(text).toContain("Visible paragraph");
+		expect(text).not.toContain("Closed drawer text");
+		expect(text).not.toContain("Drawer menu text");
+		expect(text).not.toContain("more content");
 	});
 
 	test("cuts a screen over 32 KiB on a line boundary", async () => {

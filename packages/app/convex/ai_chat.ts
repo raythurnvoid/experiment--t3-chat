@@ -2478,8 +2478,8 @@ const chat_body_validator = z.object({
 
 	/**
 	 * The sending browser tab's random id. Only that tab answers `view_snapshot` and page tool calls.
-	 * Null means no tab can answer. A missing or bad value also reads as null, so a tab opened before a
-	 * deploy can still send.
+	 * Null means no tab can answer. A missing or bad value also reads as null, so a send is never
+	 * refused for it.
 	 */
 	uiInstanceId: z.string().min(1).max(64).nullable().catch(null),
 

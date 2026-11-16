@@ -745,7 +745,7 @@ const unregister = client.agent.setContextProvider(() => ({
 - `setContext` sends at most one value per 500 ms, always the newest one, also while the view keeps changing. It never sends a value equal to the last one sent. `null` clears it.
 - The host asks the provider only while one is set, and waits at most 2 seconds. Then it uses the last pushed value. A thrown error or a bad value sends nothing.
 - The provider gets `{ detail, ref }`. `detail: "summary"` comes right before a chat message: keep it short. `detail: "snapshot"` comes when the agent reads the member's screen with `view_snapshot`: describe what the page shows as an indented list, and give parts the agent may ask about a ref like `[ref=e3]`. `ref` is such a ref when the agent asks for that part only, else `null`. The host shows the text under the plugin's frame, marked as reported by the plugin, cuts it at 8 KiB, and renames your refs so they cannot clash with the app's own.
-- Unlike the summary, a screen read is saved with the chat, like any tool result.
+- Unlike the summary, a screen read is saved with the chat, like any tool result. The host asks for it also while the page is in a hidden browser tab, so answer the `"snapshot"` request even if you never push.
 - The text goes with the member's next chat message only. It is not saved in the chat, and a later message does not see it. A message sent while the page is in a hidden browser tab uses the last pushed value.
 - The model reads at most 4 KiB, so put the important part first. The host drops a value over 16 KiB as JSON.
 - The agent treats the text as data from the plugin. Never put secrets or instructions in it. The host removes control characters and text shaped like a token.

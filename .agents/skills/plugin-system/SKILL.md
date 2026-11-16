@@ -574,7 +574,7 @@ How one call travels:
 
 Rules:
 
-- Calls are owned by one member, one workspace, and one tab. `list_pending` reads the `by_user_instance_workspace_status` range. It throws `Unauthenticated` without auth, and answers `[]` without membership. `claim_call` and `complete_call` answer `Unauthorized` without membership and `Not found` for another member, organization, or workspace. `claim_call` also refuses a page call whose installation is gone or off. Nobody else sees a call. The same table carries `view_snapshot` calls; see "UI calls" in `../ai-chat-agent/SKILL.md`.
+- Calls are owned by one member, one workspace, and one tab. `list_pending` reads the `by_user_instance_workspace_status` range. It throws `Unauthenticated` without auth, and answers `[]` without membership. `claim_call` and `complete_call` answer `Unauthorized` without membership and `Not found` for another member, organization, or workspace. `claim_call` also refuses a page call whose installation is gone or off. Nobody else sees a call. The same table carries `view_snapshot` and `view_screenshot` calls; see "UI calls" in `../ai-chat-agent/SKILL.md`.
 - Tool output is plugin data. The system prompt tells the agent to treat `page__` results as untrusted data, like MCP results.
 - A stored assistant message may hold `page__` parts only in replies the server wrote, and their output must match `ai_chat_page_tool_output_schema` (see `has_valid_file_tool_parts` in `convex/ai_chat.ts`).
 - A call doc is useful until its `expiresAt`, at most 45 seconds. A scheduled `delete_call` removes it after 120 seconds in case the tool never deleted it. Thread deletion and the workspace purge delete the rest. Uninstall and member removal rely on that scheduled delete.
@@ -590,7 +590,7 @@ How it travels:
 
 1. The page pushes with `client.agent.setContext` (`bonobo:update-model-context`, the SDK sends at most one value per 500 ms, always the newest, and drops a value equal to the last one sent), or sets a provider with `client.agent.setContextProvider` (`bonobo:context-provider { enabled }`).
 2. `PluginsUiFrame` keeps only the newest pushed value, in memory, checked by `read_agent_view_context` (text blocks, at most 32, a plain object, at most 16 KiB as JSON; a bad value clears it). It answers `readAgentViewContext()` only when its `hasAgentViewContext` prop is true. That prop comes from the live `list_ui_pages` / `list_file_views` field `hasAgentViewContext`, so a disable or an upgrade stops sharing at once.
-3. The mount point registers the frame with `useAiChatUiContextPluginSource` (`src/lib/ai-chat-ui-context.ts`, one slot, because one plugin frame is mounted at a time). Right before a send, `get_request_plugin_context` in `ai-chat-controller.tsx` reads it, only when the trigger message's screen info names the same plugin view and file as the screen shows, and the member did not remove the chip. It checks again after the page answers, because the member can open another file or remove the chip during the wait. With a provider the host posts `bonobo:context-request { requestId }` and waits at most 2 seconds for `bonobo:context-result`, then uses the last pushed value. A hidden tab never asks; it uses the last pushed value.
+3. The mount point registers the frame with `useAiChatUiContextPluginSource` (`src/lib/ai-chat-ui-context.ts`, one slot, because one plugin frame is mounted at a time). Right before a send, `get_request_plugin_context` in `ai-chat-controller.tsx` reads it, only when the trigger message's screen info names the same plugin view and file as the screen shows, and the member did not remove the chip. It checks again after the page answers, because the member can open another file or remove the chip during the wait. With a provider the host posts `bonobo:context-request { requestId }` and waits at most 2 seconds for `bonobo:context-result`, then uses the last pushed value. Before a chat message, a hidden tab does not ask and uses the last pushed value, because the browser can delay its timers there by up to a minute. A screen read (`view_snapshot`, `detail: "snapshot"`) still asks in a hidden tab, because many pages only answer when asked and never push; that read has its own 10 second limit.
 4. The text goes in the `/api/chat` body as `pluginContext`, never in the message parts. The server keeps it only when the trigger's stored screen info has the same `pluginName` and `kind`, and `plugins_page_tools.has_turn_view_context` says the installation is enabled, accepted `agent.view-context`, and its version is ready and passed. Otherwise it is dropped and the send goes on. A value that fails the body schema (for example over 16 KiB) also reads as null, so a send is never refused for plugin text. The frame and the server measure the same JSON (`content` and `structuredContent` only).
 5. `add_plugin_context_part` in `convex/ai_chat.ts` adds it to the trigger message in memory, after the screen info part, at both model-message builds (the compaction rebuild reads the history again). `ai_chat_plugin_context_to_model_text` removes control and format characters, replaces token-shaped text (`shared/secret-shaped-text.ts`, which includes `plu_`, `plr_` and `psg_`) with `[secret]`, cuts to 4 KiB, and writes one quoted string inside `<plugin_context plugin="…" kind="…">`. A job wakeup sends none.
 
@@ -602,6 +602,8 @@ Rules:
 - The composer chip shows "shares its view" while a registered frame may share. Removing the chip sends neither the screen info nor the plugin text.
 - One consent label covers the install dialog and the Access screen: "Let the chat agent read what its pages and file views show".
 - Safe only while one plugin frame is mounted at a time (see the frame isolation note above): a second frame could post as this one.
+- A screen read of one part (`ref` set) that gets no answer prints nothing for the frame. It never falls back to the last pushed value, because that value describes the whole page.
+- A screenshot (`view_screenshot`) is not covered by this consent: it is a picture the member chose to share after a click, so it shows the frame's pixels also without `agent.view-context`. See "UI calls and screen snapshots" in `../ai-chat-agent/SKILL.md`.
 
 The SDK's `fetchRaw` returns the HTTP status, headers and unread response body. Use it for `files/read`, following `X-File-Next-Cursor` until absent. Decode text with one streaming UTF-8 decoder across all pages. `fetchJson` accepts only JSON routes. Both methods share the same token refresh and one 401 retry.
 
@@ -1088,6 +1090,12 @@ chat message, and `get_view` is gone. The backend did not change, so it was not 
 what its pages and file views show" as new. Live check in Ask mode: the request carried the Mail
 view, the agent named the account, folder and draft state with no tool call, a request after
 removing the chip carried `pluginContext: null`, and no stored message or title held the view text.
+
+SDK 0.28.0 (NOT mirrored yet) passes `{ detail, ref }` to the context provider, so a page can answer
+the agent's screen read (`view_snapshot`) with a detailed list and refs. No plugin pins it yet:
+Gmail 0.5.0 stays on 0.27.0, whose provider ignores the argument and answers both requests with its
+summary. The host works with both. Mirror it, then re-pin and republish, when a plugin first needs
+`detail` or `ref`.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing

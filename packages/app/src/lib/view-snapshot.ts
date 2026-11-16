@@ -8,7 +8,7 @@ import {
 	type AriaWalkOptions,
 } from "./view-snapshot-aria.ts";
 
-export type ViewSnapshotRequest = { region: "screen" | "files_tree"; ref: string | null };
+type ViewSnapshotRequest = { region: "screen" | "files_tree"; ref: string | null };
 
 /**
  * Ask the plugin in an iframe to describe its view. Answer null for an iframe that is not a plugin
