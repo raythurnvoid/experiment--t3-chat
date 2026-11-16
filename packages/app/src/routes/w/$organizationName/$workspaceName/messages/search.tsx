@@ -14,16 +14,18 @@ function RouteChannelsSearch() {
 	const navigate = Route.useNavigate();
 	const filters = Route.useSearch();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
-	const open = useFn((channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
-		navigate({
-			to: "/w/$organizationName/$workspaceName/messages/$channelId",
-			params: { organizationName, workspaceName, channelId },
-			search,
-			state: channels_navigation_state(mode),
-		}).catch((error: unknown) => {
-			console.error("[RouteChannelsSearch.open] Failed to open channel", { error });
-		});
-	});
+	const open = useFn(
+		(channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/messages/$channelId",
+				params: { organizationName, workspaceName, channelId },
+				search,
+				state: channels_navigation_state(mode),
+			}).catch((error: unknown) => {
+				console.error("[RouteChannelsSearch.open] Failed to open channel", { error });
+			});
+		},
+	);
 	const search = useFn((filters: ChannelsSearchFilters) => {
 		navigate({
 			to: "/w/$organizationName/$workspaceName/messages/search",

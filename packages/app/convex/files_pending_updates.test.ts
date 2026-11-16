@@ -122,8 +122,12 @@ describe("save_file_pending_update", () => {
 			await t.run((ctx) => ctx.db.get("activities", activityId)),
 			"The native Save finishes before its work count is checked",
 		).toMatchObject({ status: "succeeded", progress: { completed: 1, failed: 0, blocked: 0 } });
-		const receipt = await t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts")
-			.withIndex("by_privateNode", (q) => q.eq("privateNodeId", draft.target.id)).unique());
+		const receipt = await t.run((ctx) =>
+			ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_privateNode", (q) => q.eq("privateNodeId", draft.target.id))
+				.unique(),
+		);
 		if (!receipt) throw new Error("Expected the published file");
 		const chunks = await t.run((ctx) =>
 			ctx.db
@@ -2345,7 +2349,9 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 				async (ctx) =>
 					(await ctx.db.query("files_pending_update_operation_batches").collect()).filter(
 						(batch) =>
-							batch.target.kind === "saved" && batch.target.id === seeded.nodeId && (batch.expiresAt === undefined || batch.expiresAt > Date.now()),
+							batch.target.kind === "saved" &&
+							batch.target.id === seeded.nodeId &&
+							(batch.expiresAt === undefined || batch.expiresAt > Date.now()),
 					).length,
 			);
 		const count_active_temporary_states = () =>
@@ -2898,7 +2904,7 @@ describe("pending content version reads", () => {
 					userId,
 					fileNodeId: seeded.nodeId,
 					lastSequenceSaved: 9,
-				pendingContentVersion: 1,
+					pendingContentVersion: 1,
 					updatedAt: 123,
 				});
 			return {
@@ -2945,9 +2951,7 @@ describe("pending content version reads", () => {
 
 		await t.run(async (ctx) => {
 			for (const doc of before.docs) {
-				expect(await ctx.db.get("files_pending_updates", doc._id)).toEqual(
-					doc,
-				);
+				expect(await ctx.db.get("files_pending_updates", doc._id)).toEqual(doc);
 			}
 			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toEqual(before.states);
 			expect(await ctx.db.query("files_pending_update_yjs_state_pages").collect()).toEqual(before.pages);
@@ -3108,9 +3112,7 @@ describe("get_file_pending_update", () => {
 					queryArgs,
 				);
 				expect(prepared._nay).toBeUndefined();
-				expect(
-					files_pending_update_content_is_stale(prepared._yay!.pendingUpdate!, node!),
-				).toBe(false);
+				expect(files_pending_update_content_is_stale(prepared._yay!.pendingUpdate!, node!)).toBe(false);
 				expect(await asUser.query(api.files_pending_target.get_file_pending_update, queryArgs)).toEqual({
 					...prepared._yay?.pendingUpdate,
 					currentYjsLastSequenceId,
@@ -3350,7 +3352,10 @@ describe("pending text after restore and collaborative edits", () => {
 			const prepared = result._yay?.pendingUpdate;
 			if (!prepared) throw new Error("Expected the prepared proposal");
 			expect(
-				files_pending_update_content_is_stale(prepared, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+				files_pending_update_content_is_stale(
+					prepared,
+					(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+				),
 			).toBe(false);
 			expect(prepared.content?.rootKind).toBe(rootKind);
 			const mergedStaged = current.replace("120", "150");

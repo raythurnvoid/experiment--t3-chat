@@ -176,9 +176,13 @@ describe("copy_transfer_file scopes", () => {
 			});
 			expect(data._yay).not.toHaveProperty("organizationId");
 			expect(data._yay).not.toHaveProperty("workspaceId");
-			const captureMap = await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "capture", id: copy.item._id }));
+			const captureMap = await f.t.run((ctx) =>
+				files_metadata_maps_db_read(ctx.db, { kind: "capture", id: copy.item._id }),
+			);
 			expect(captureMap, "The Copy capture owns the full map in the activity scope").toMatchObject({
-				organizationId: copy.item.organizationId, workspaceId: copy.item.workspaceId, entries,
+				organizationId: copy.item.organizationId,
+				workspaceId: copy.item.workspaceId,
+				entries,
 			});
 			await f.t.action(internal.files_nodes_content.copy_transfer_file, {
 				itemId: copy.item._id,
@@ -283,7 +287,8 @@ describe("copy_transfer_file scopes", () => {
 			{
 				...scope,
 				target,
-				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!
+					.pendingContentVersion,
 			},
 		);
 		if (batch._nay) throw new Error(batch._nay.message);

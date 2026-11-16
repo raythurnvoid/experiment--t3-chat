@@ -117,9 +117,7 @@ describe("Save ordinary rich-text media", () => {
 				const unit = await f.t.run(async (ctx) => {
 					const item = await ctx.db
 						.query("files_pending_update_run_items")
-						.withIndex("by_run_pendingUpdate", (q) =>
-							q.eq("runId", result!.run._id).eq("pendingUpdateId", pending._id),
-						)
+						.withIndex("by_run_pendingUpdate", (q) => q.eq("runId", result!.run._id).eq("pendingUpdateId", pending._id))
 						.unique();
 					return await ctx.db.get("files_pending_update_run_units", item!.unitId!);
 				});
@@ -185,7 +183,10 @@ describe("Save ordinary rich-text media", () => {
 		if (!replacement.pendingReplacement) throw new Error("Expected media replacement");
 		const pending = await private_text(f, { staged: `![Photo](${image.src})\n` });
 		const result = await bulk_save({ f, selected: [pending, replacement] });
-		expect(result?.activity, result?.errors).toMatchObject({ status: "succeeded", progress: { completed: 2, blocked: 0 } });
+		expect(result?.activity, result?.errors).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 2, blocked: 0 },
+		});
 		expect(result?.run.unitCount, "the link joins the replacement in one unit").toBe(1);
 		// Save resolves the private alias to the saved file and proves the replacement it selected.
 		const content = await f.t.run(async (ctx) => {

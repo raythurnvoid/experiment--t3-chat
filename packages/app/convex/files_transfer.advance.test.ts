@@ -117,11 +117,7 @@ describe("advance", () => {
 						.first(),
 				)
 			)?.errorMessage,
-		).toBe(
-			state === "Free"
-				? "File uploads need a paid plan"
-				: "This workspace has reached its storage limit",
-		);
+		).toBe(state === "Free" ? "File uploads need a paid plan" : "This workspace has reached its storage limit");
 	});
 
 	test.each(["saved", "private", "replacement", "review"] as const)(
@@ -767,10 +763,7 @@ describe("advance", () => {
 			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: item._id, attempt: item.attempt });
 			expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item._id))).toMatchObject({
 				state: "failed",
-				errorMessage:
-					index === 0
-						? "The source file is still saving. Try again."
-						: "File uploads need a paid plan",
+				errorMessage: index === 0 ? "The source file is still saving. Try again." : "File uploads need a paid plan",
 			});
 			await t.mutation(internal.files_transfer.handle_copy_complete, {
 				workId: item.workId,
@@ -919,10 +912,10 @@ describe("advance", () => {
 		expect(
 			(
 				await test_move_nodes(t, member.asUser, {
-						membershipId: member.membershipId,
-						itemIds: [folders.get("/source/folder-00")!],
-						targetParentId: folders.get("/target")!,
-					})
+					membershipId: member.membershipId,
+					itemIds: [folders.get("/source/folder-00")!],
+					targetParentId: folders.get("/target")!,
+				})
 			)._nay,
 		).toBeUndefined();
 
@@ -1319,10 +1312,9 @@ describe("resolve_conflicts", () => {
 			).toBe("awaiting_input");
 			return;
 		}
-		expect(
-			resolved,
-			"Replace accepts the reviewed saved file while its owner has a text draft",
-		).toEqual({ _yay: null });
+		expect(resolved, "Replace accepts the reviewed saved file while its owner has a text draft").toEqual({
+			_yay: null,
+		});
 		const finished = await finish_copy_with_workers(fixture, runId);
 		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", item.itemId))).toMatchObject({
 			state: "completed",

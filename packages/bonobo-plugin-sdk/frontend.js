@@ -21,9 +21,10 @@ import { anyApi } from "convex/server";
  *
  * @type {import("bonobo-plugin-sdk/convex-api").BonoboConvexApi}
  */
-const bonobo_convex_api = /**
- * @type {any}
- */ (anyApi);
+const bonobo_convex_api =
+	/**
+	 * @type {any}
+	 */ (anyApi);
 
 /**
  * `getToken` refreshes when the token is expired or expires within this margin. The Convex auth
@@ -56,9 +57,10 @@ function read_theme(value) {
 	if (typeof value !== "object" || value === null) {
 		return null;
 	}
-	const candidate = /**
-	 * @type {{ mode?: unknown, tokens?: unknown }}
-	 */ (value);
+	const candidate =
+		/**
+		 * @type {{ mode?: unknown, tokens?: unknown }}
+		 */ (value);
 	if (candidate.mode !== "light" && candidate.mode !== "dark") {
 		return null;
 	}
@@ -744,7 +746,10 @@ export async function bonobo_connect() {
 							contextProvider = provider;
 							// The host asks only while a provider is set. So a page without one never makes a
 							// chat message wait for the host's timeout.
-							window.parent.postMessage({ type: "bonobo:context-provider", nonce, enabled: provider !== null }, parentOrigin);
+							window.parent.postMessage(
+								{ type: "bonobo:context-provider", nonce, enabled: provider !== null },
+								parentOrigin,
+							);
 							return () => {
 								if (provider !== null && contextProvider === provider) {
 									contextProvider = null;
@@ -811,7 +816,13 @@ export async function bonobo_connect() {
 						window.parent.postMessage({ type: "bonobo:agent-tool-result", nonce, callId, ...answer }, parentOrigin);
 					} catch {
 						window.parent.postMessage(
-							{ type: "bonobo:agent-tool-result", nonce, callId, ok: false, error: "The tool output could not be sent" },
+							{
+								type: "bonobo:agent-tool-result",
+								nonce,
+								callId,
+								ok: false,
+								error: "The tool output could not be sent",
+							},
 							parentOrigin,
 						);
 					}
@@ -843,7 +854,13 @@ export async function bonobo_connect() {
 						window.parent.postMessage({ type: "bonobo:context-result", nonce, requestId, ...answer }, parentOrigin);
 					} catch {
 						window.parent.postMessage(
-							{ type: "bonobo:context-result", nonce, requestId, ok: false, error: "The view context could not be sent" },
+							{
+								type: "bonobo:context-result",
+								nonce,
+								requestId,
+								ok: false,
+								error: "The view context could not be sent",
+							},
 							parentOrigin,
 						);
 					}

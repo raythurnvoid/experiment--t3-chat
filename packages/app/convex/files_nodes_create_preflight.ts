@@ -1,10 +1,6 @@
 // Check creation before uploads. The final transaction repeats these checks.
 
-import {
-	internalQuery,
-	type MutationCtx,
-	type QueryCtx,
-} from "./_generated/server.js";
+import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RegisteredQuery } from "convex/server";
 import { path_join } from "../server/server-utils.ts";
@@ -77,7 +73,8 @@ export async function files_nodes_create_db_resolve_destination(
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", currentParentId)
 						.eq("name", name)
 						.eq("archiveOperationId", null),
@@ -165,7 +162,8 @@ export const get_create_file_node_write_preflight = internalQuery({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", args.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", prefixPath)
 						.eq("archiveOperationId", null),
 				)

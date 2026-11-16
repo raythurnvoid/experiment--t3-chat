@@ -148,11 +148,11 @@ describe("public Move scale", () => {
 								q
 									.eq("pendingUpdateId", pendingUpdate!._id)
 									.eq("moveView.cohortId", undefined)
-									.eq("moveView.view", undefined)
+									.eq("moveView.view", undefined),
 							)
-							.unique()
+							.unique(),
 					),
-					"the pending move creates an owner place before Move"
+					"the pending move creates an owner place before Move",
 				).not.toBeNull();
 				// Run ready overlay work. Running all future timers would expire the draft before Move.
 				vi.advanceTimersByTime(0);
@@ -164,7 +164,7 @@ describe("public Move scale", () => {
 			if (pendingUpdate) {
 				const afterDraft = await asUser.query(api.files_pending_target.get_file_pending_update, {
 					membershipId: db.membershipId,
-						target: { kind: "saved", id: item.nodeId },
+					target: { kind: "saved", id: item.nodeId },
 				});
 				expect(afterDraft, "Move keeps the owner's content branch").toMatchObject({
 					_id: pendingUpdate._id,
@@ -181,7 +181,7 @@ describe("public Move scale", () => {
 							q
 								.eq("pendingUpdateId", pendingUpdate!._id)
 								.eq("moveView.cohortId", undefined)
-								.eq("moveView.view", undefined)
+								.eq("moveView.view", undefined),
 						)
 						.unique();
 					expect(place, "the owner keeps its pending path after Move").toMatchObject({
@@ -191,10 +191,7 @@ describe("public Move scale", () => {
 					const fields = await ctx.db
 						.query("files_pending_place_fields")
 						.withIndex("by_place", (q) =>
-							q
-								.eq("placeId", place._id)
-								.eq("moveView.cohortId", undefined)
-								.eq("moveView.view", undefined)
+							q.eq("placeId", place._id).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
 						)
 						.collect();
 					expect(fields, "the owner keeps every metadata field join").toHaveLength(before.length);
@@ -217,6 +214,6 @@ describe("public Move scale", () => {
 			).toBeLessThan(files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS);
 			console.info("Move scale capped metadata", JSON.stringify(Object.fromEntries(peaks)));
 		},
-		7_200_000
+		7_200_000,
 	);
 });

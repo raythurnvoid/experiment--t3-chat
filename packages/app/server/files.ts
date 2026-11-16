@@ -332,7 +332,8 @@ export async function files_db_get_visible_node_by_path(
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
 				.eq("organizationId", organizationId)
-				.eq("workspaceId", workspaceId).eq("moveCohortId", undefined)
+				.eq("workspaceId", workspaceId)
+				.eq("moveCohortId", undefined)
 				.eq("path", args.path)
 				.eq("archiveOperationId", null),
 		)

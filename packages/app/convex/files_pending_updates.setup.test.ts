@@ -695,7 +695,10 @@ export async function expect_consumed_pending_content_cleanup_for_test(
 	const stateIds = [content.baseStateId, content.stagedStateId, content.unstagedStateId];
 	const quotaIds = await t.run(async (ctx) => {
 		const states = await Promise.all(stateIds.map((id) => ctx.db.get("files_pending_update_yjs_states", id)));
-		expect(states.map((state) => state?.owner.kind), assertion).toEqual(["retired", "retired", "retired"]);
+		expect(
+			states.map((state) => state?.owner.kind),
+			assertion,
+		).toEqual(["retired", "retired", "retired"]);
 		const ids = new Set<Id<"quotas">>();
 		for (const state of states) {
 			if (!state) throw new Error("Expected a retired draft state");
@@ -751,9 +754,11 @@ export async function expect_consumed_pending_content_cleanup_for_test(
 							.query("files_private_storage_reservations")
 							.withIndex("by_userQuota_settlement", (q) => q.eq("userQuotaId", id).eq("settlement.kind", "held"))
 							.collect()
-						: await ctx.db
+					: await ctx.db
 							.query("files_private_storage_reservations")
-							.withIndex("by_workspaceQuota_settlement", (q) => q.eq("workspaceQuotaId", id).eq("settlement.kind", "held"))
+							.withIndex("by_workspaceQuota_settlement", (q) =>
+								q.eq("workspaceQuotaId", id).eq("settlement.kind", "held"),
+							)
 							.collect();
 			expect(held.every((receipt) => receipt.cohortContentId === undefined)).toBe(true);
 			expect(quota.usedCount, "Private byte counters match the remaining held receipts").toBe(
@@ -815,14 +820,17 @@ export async function expire_pending_update_for_test(
 	const draft = await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId));
 	if (!draft) throw new Error("Expected a draft");
 	const expiresAt = await t.run(async (ctx) => {
-		const holds = await ctx.db.query("files_pending_holds")
-			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId)).collect();
+		const holds = await ctx.db
+			.query("files_pending_holds")
+			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+			.collect();
 		let deadline = draft.expiresAt;
 		for (const hold of holds) {
 			if (hold.role === "source" || hold.role === "preparing_output") continue;
-			const run = hold.producer.kind === "files_transfer_run"
-				? await ctx.db.get("files_transfer_runs", hold.producer.id)
-				: await ctx.db.get("files_pending_update_runs", hold.producer.id);
+			const run =
+				hold.producer.kind === "files_transfer_run"
+					? await ctx.db.get("files_transfer_runs", hold.producer.id)
+					: await ctx.db.get("files_pending_update_runs", hold.producer.id);
 			deadline = Math.max(deadline, run?.outputReviewUntil ?? 0);
 		}
 		return deadline;
@@ -933,7 +941,8 @@ export async function upsert_file_pending_update_internal_for_test(args: {
 	const batch = await args.t.mutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
-			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+				.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1041,7 +1050,8 @@ export async function upsert_file_pending_update_public_for_test(
 	// Mirror the client flow: one batch, one bounded text per staging call, then the finishing
 	// action that carries only ids. A staging refusal already retired the batch server-side.
 	const batch = await asIdentity.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
-		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
+		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+			.pendingContentVersion,
 		membershipId: args.membershipId,
 		target: { kind: "saved", id: args.nodeId },
 	});
@@ -1096,7 +1106,8 @@ export async function persist_file_pending_update_rebased_state_for_test(
 	// batch, then run the finishing action that carries only ids. A refusal at any staging step
 	// already retired the batch server-side, so return it directly.
 	const batch = await asIdentity.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
-		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
+		expectedPendingContentVersion: (await asIdentity.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+			.pendingContentVersion,
 		membershipId: args.membershipId,
 		target: { kind: "saved", id: args.nodeId },
 	});
@@ -1164,7 +1175,8 @@ export async function stage_and_seal_input_family_for_test(args: {
 	const batch = await args.t.mutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
-			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await args.t.run((ctx) => ctx.db.get("files_nodes", args.nodeId)))!
+				.pendingContentVersion,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1282,7 +1294,8 @@ export async function seal_output_family_for_test(
 	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
 ) {
 	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
-		expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
+		expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!
+			.pendingContentVersion,
 		organizationId: seeded.organizationId,
 		workspaceId: seeded.workspaceId,
 		userId: seeded.userId,
@@ -1632,7 +1645,10 @@ export async function accept_as_member(args: {
 
 export async function read_seeded_pending_row(
 	t: ReturnType<typeof test_convex>,
-	seeded: Pick<Awaited<ReturnType<typeof seed_non_collaborative_file>>, "organizationId" | "workspaceId" | "userId" | "nodeId">,
+	seeded: Pick<
+		Awaited<ReturnType<typeof seed_non_collaborative_file>>,
+		"organizationId" | "workspaceId" | "userId" | "nodeId"
+	>,
 ) {
 	const row = await t.run((ctx) =>
 		read_pending_update_row({

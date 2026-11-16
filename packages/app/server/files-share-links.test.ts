@@ -82,9 +82,7 @@ test("a before-only token stays readable until the switch and then grants nothin
 test("the public token reads the selected content head once during preparation", async () => {
 	const f = await linked_fixture();
 	await f.t.run(async (ctx) => {
-		const head = f.saved.contentHeadId
-			? await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId)
-			: null;
+		const head = f.saved.contentHeadId ? await ctx.db.get("files_saved_content_heads", f.saved.contentHeadId) : null;
 		if (!head) throw new Error("Expected the saved content owner");
 		const chunk = await ctx.db
 			.query("files_text_chunks")

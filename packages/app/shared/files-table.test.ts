@@ -145,14 +145,20 @@ describe("files_table_filter_matches", () => {
 
 	test("compares lower-case file.extension without removing a leading dot", () => {
 		expect(
-			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "is", value: "MD" }, facts: FACTS }),
+			files_table_filter_matches({
+				filter: { kind: "extension", field: "extension", op: "is", value: "MD" },
+				facts: FACTS,
+			}),
 		).toBe(true);
 		expect(
-			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "is", value: ".md" }, facts: FACTS }),
+			files_table_filter_matches({
+				filter: { kind: "extension", field: "extension", op: "is", value: ".md" },
+				facts: FACTS,
+			}),
 		).toBe(false);
-		expect(files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "missing" }, facts: FACTS })).toBe(
-			false,
-		);
+		expect(
+			files_table_filter_matches({ filter: { kind: "extension", field: "extension", op: "missing" }, facts: FACTS }),
+		).toBe(false);
 		expect(
 			files_table_filter_matches({
 				filter: { kind: "extension", field: "extension", op: "missing" },

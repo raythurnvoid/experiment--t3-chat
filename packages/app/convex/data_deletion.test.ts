@@ -6370,7 +6370,11 @@ describe("process_workspace_deletion_request", () => {
 			workspaceId: user.defaultWorkspaceId,
 			userId: user.userId,
 		};
-		const nodeId = await data_deletion_test_seed_shared_folder(t, { ...scope, readerIds: [user.userId], name: "shared" });
+		const nodeId = await data_deletion_test_seed_shared_folder(t, {
+			...scope,
+			readerIds: [user.userId],
+			name: "shared",
+		});
 		// A stray row, like one a dashboard edit leaves behind: no flush ever reaches it again.
 		await t.run(async (ctx) => {
 			const { _id, _creationTime, ...row } = (await ctx.db
@@ -6455,7 +6459,10 @@ describe("process_workspace_deletion_request", () => {
 					(["access_control_permission_grants", "files_share_rows", "files_nodes"] as const).map(
 						async (table) =>
 							(await ctx.db.query(table).collect()).filter(
-								(doc) => doc.workspaceId === scope.workspaceId && (table !== "access_control_permission_grants" || ("resourceKind" in doc && doc.resourceKind === "file")),
+								(doc) =>
+									doc.workspaceId === scope.workspaceId &&
+									(table !== "access_control_permission_grants" ||
+										("resourceKind" in doc && doc.resourceKind === "file")),
 							).length,
 					),
 				),

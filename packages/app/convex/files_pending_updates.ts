@@ -39,7 +39,16 @@ import {
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { api, internal } from "./_generated/api.js";
-import { files_db_yjs_push_update, files_merge_contiguous_chunks, type files_nodes_get_user_file_write_access_Result, files_nodes_db_validate_pending_move_target_for_proposal, files_nodes_db_validate_occupant_replace, files_yjs_NODE_NEEDS_REPAIR_MESSAGE, type get_file_content_materialization_header_Result, type get_file_next_yjs_update_Result } from "./files_nodes.ts";
+import {
+	files_db_yjs_push_update,
+	files_merge_contiguous_chunks,
+	type files_nodes_get_user_file_write_access_Result,
+	files_nodes_db_validate_pending_move_target_for_proposal,
+	files_nodes_db_validate_occupant_replace,
+	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
+	type get_file_content_materialization_header_Result,
+	type get_file_next_yjs_update_Result,
+} from "./files_nodes.ts";
 import { files_archive_runs_db_check_fast } from "./files_archive_runs.ts";
 import { db_get_file_content_materialization_db_state, files_nodes_db_get_content_version } from "./files_nodes_db.ts";
 import {
@@ -151,11 +160,7 @@ import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
-import {
-	r2,
-	r2_fetch_object_from_bucket,
-	r2_put_object,
-} from "./r2_client.ts";
+import { r2, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
 import {
 	r2_UNFINALIZED_ASSET_TTL_MS,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
@@ -1924,7 +1929,11 @@ export const get_file_pending_update_state_page = query({
 
 		const authorized =
 			args.target.kind === "private"
-				? await files_pending_target_db_get_private(ctx, { membership, privateNodeId: args.target.id, recoveryRead: true })
+				? await files_pending_target_db_get_private(ctx, {
+						membership,
+						privateNodeId: args.target.id,
+						recoveryRead: true,
+					})
 				: await access_control_db_authorize_node(ctx, {
 						userAuth,
 						membership,
@@ -2508,11 +2517,13 @@ export const expire_file_pending_updates = internalMutation({
 			// its file, even the retry patch below. So stop and try this draft and the later ones again.
 			if (
 				moveId &&
-				(await files_move_reservations_db_check_node_write(ctx.db, {
-					target: pendingUpdate.target,
-					pendingUpdate,
-					membership: true,
-				}))._nay
+				(
+					await files_move_reservations_db_check_node_write(ctx.db, {
+						target: pendingUpdate.target,
+						pendingUpdate,
+						membership: true,
+					})
+				)._nay
 			) {
 				await db_schedule_expiry_check({ ctx, check, checkAt: now + EXPIRY_RETRY_MS });
 				return null;

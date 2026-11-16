@@ -68,7 +68,11 @@ export async function files_subtree_ops_db_find_repair(
 		const op = await ctx.db
 			.query("files_subtree_ops")
 			.withIndex("by_organization_workspace_kind_status", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("kind", kind).eq("status", "running"),
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("kind", kind)
+					.eq("status", "running"),
 			)
 			.first();
 		if (op) return op;
@@ -144,10 +148,7 @@ export async function files_subtree_ops_db_check_live_limit(
 	};
 }
 
-export async function files_subtree_ops_db_require_walk(
-	ctx: QueryCtx | MutationCtx,
-	opId: Id<"files_subtree_ops">,
-) {
+export async function files_subtree_ops_db_require_walk(ctx: QueryCtx | MutationCtx, opId: Id<"files_subtree_ops">) {
 	const walk = await ctx.db
 		.query("files_subtree_op_walks")
 		.withIndex("by_op", (q) => q.eq("opId", opId))

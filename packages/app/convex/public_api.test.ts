@@ -129,8 +129,7 @@ function install_r2_object_reads() {
 			if (body !== undefined && range) {
 				const bytes = typeof body === "string" ? new TextEncoder().encode(body) : new Uint8Array(body);
 				const etag = metadata?.etag ?? `"${await crypto_sha256_hex(bytes)}"`;
-				if (headers.has("If-Match") && headers.get("If-Match") !== etag)
-					return new Response(null, { status: 412 });
+				if (headers.has("If-Match") && headers.get("If-Match") !== etag) return new Response(null, { status: 412 });
 				const start = Number(range[1]);
 				if (start >= bytes.byteLength) return new Response(null, { status: 416 });
 				const end = Math.min(Number(range[2]), bytes.byteLength - 1);
@@ -5319,10 +5318,7 @@ describe("locked and missing paths", () => {
 		expect(await post(t, "/api/v1/files/stat", f.memberCredential, { paths: ["//notes///", ...paths] })).toMatchObject({
 			status: 200,
 			body: {
-				items: [
-					{ path: "/notes", status: "found" },
-					...paths.map((path) => ({ path, status: "missing" })),
-				],
+				items: [{ path: "/notes", status: "found" }, ...paths.map((path) => ({ path, status: "missing" }))],
 			},
 		});
 	});

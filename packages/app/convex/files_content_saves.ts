@@ -478,7 +478,7 @@ export const discard = internalMutation({
 				.withIndex("by_stats", (q) => q.eq("statsId", head.statsId))
 				.take(2);
 			// Move may have removed the losing head's stats before history retires its owner.
-			if (users.every((candidate) => candidate._id === head._id) && await ctx.db.get("file_stats", head.statsId))
+			if (users.every((candidate) => candidate._id === head._id) && (await ctx.db.get("file_stats", head.statsId)))
 				await ctx.db.delete("file_stats", head.statsId);
 		}
 		const logUsers = await ctx.db

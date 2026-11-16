@@ -128,19 +128,19 @@ const FileNodeViewFolderFilterBarChip = memo(function FileNodeViewFolderFilterBa
 /**
  * A row that only tells something. It is disabled, so it cannot be picked.
  */
-const FileNodeViewFolderFilterBarSuggestionsMessage = memo(function FileNodeViewFolderFilterBarSuggestionsMessage(props: {
-	children: string;
-}) {
-	return (
-		<MyComboboxItem
-			value={`message:${props.children}`}
-			disabled
-			className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
-		>
-			{props.children}
-		</MyComboboxItem>
-	);
-});
+const FileNodeViewFolderFilterBarSuggestionsMessage = memo(
+	function FileNodeViewFolderFilterBarSuggestionsMessage(props: { children: string }) {
+		return (
+			<MyComboboxItem
+				value={`message:${props.children}`}
+				disabled
+				className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+			>
+				{props.children}
+			</MyComboboxItem>
+		);
+	},
+);
 
 /**
  * Show more for a paged list. It stays active while its page loads, and the caller ignores that
@@ -171,28 +171,28 @@ const FileNodeViewFolderFilterBarSuggestionsMore = memo(function FileNodeViewFol
 /**
  * Skeleton rows while a first page loads. They are not options, so they cannot be picked.
  */
-const FileNodeViewFolderFilterBarSuggestionsSkeleton = memo(function FileNodeViewFolderFilterBarSuggestionsSkeleton(props: {
-	rows: number;
-}) {
-	return (
-		<div aria-hidden="true">
-			{Array.from({ length: props.rows }, (_, index) => (
-				<div
-					key={index}
-					className={cn(
-						"FileNodeViewFolderFilterBar-suggestions-skeleton-row" satisfies FileNodeViewFolderFilterBar_ClassNames,
-					)}
-				>
-					<MySkeleton
+const FileNodeViewFolderFilterBarSuggestionsSkeleton = memo(
+	function FileNodeViewFolderFilterBarSuggestionsSkeleton(props: { rows: number }) {
+		return (
+			<div aria-hidden="true">
+				{Array.from({ length: props.rows }, (_, index) => (
+					<div
+						key={index}
 						className={cn(
-							"FileNodeViewFolderFilterBar-suggestions-skeleton-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+							"FileNodeViewFolderFilterBar-suggestions-skeleton-row" satisfies FileNodeViewFolderFilterBar_ClassNames,
 						)}
-					/>
-				</div>
-			))}
-		</div>
-	);
-});
+					>
+						<MySkeleton
+							className={cn(
+								"FileNodeViewFolderFilterBar-suggestions-skeleton-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+							)}
+						/>
+					</div>
+				))}
+			</div>
+		);
+	},
+);
 
 /**
  * The rows that show with the saved keys: the Sort group above them, and the built-in rows of their
@@ -214,7 +214,9 @@ const FileNodeViewFolderFilterBarSuggestionsError = memo(function FileNodeViewFo
 
 	const errorRows = (
 		<>
-			<FileNodeViewFolderFilterBarSuggestionsMessage>Could not load suggestions.</FileNodeViewFolderFilterBarSuggestionsMessage>
+			<FileNodeViewFolderFilterBarSuggestionsMessage>
+				Could not load suggestions.
+			</FileNodeViewFolderFilterBarSuggestionsMessage>
 			<MyComboboxItem
 				value="retry"
 				hideOnClick={false}
@@ -306,12 +308,16 @@ const FileNodeViewFolderFilterBarKeyRows = memo(function FileNodeViewFolderFilte
 						}}
 					>
 						<span
-							className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+							className={cn(
+								"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+							)}
 						>
 							{field}
 						</span>
 						<span
-							className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+							className={cn(
+								"FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames,
+							)}
 						>
 							{field.startsWith("metadata.") ? "metadata" : "frontmatter"}
 						</span>
@@ -401,7 +407,9 @@ const FileNodeViewFolderFilterBarValueRows = memo(function FileNodeViewFolderFil
 					}}
 				>
 					<span
-						className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+						className={cn(
+							"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+						)}
 					>
 						{value}
 					</span>
@@ -651,7 +659,9 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 		: [];
 	const typedForm = `${stage.kind === "value" ? stage.field : ""}:${stage.typed}`;
 	const formRows = addableForms.filter((form) =>
-		form.token.startsWith("!") ? stage.typed === "" : form.token.length > typedForm.length && form.token.startsWith(typedForm),
+		form.token.startsWith("!")
+			? stage.typed === ""
+			: form.token.length > typedForm.length && form.token.startsWith(typedForm),
 	);
 	const plainFormHints = addableForms
 		.filter((form) => form.token === typedForm)
@@ -826,10 +836,16 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 				className={cn("FileNodeViewFolderFilterBar-suggestion" satisfies FileNodeViewFolderFilterBar_ClassNames)}
 				onClick={() => pickPart("sort_by:")}
 			>
-				<span className={cn("FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
+				<span
+					className={cn(
+						"FileNodeViewFolderFilterBar-suggestion-label" satisfies FileNodeViewFolderFilterBar_ClassNames,
+					)}
+				>
 					sort_by
 				</span>
-				<span className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}>
+				<span
+					className={cn("FileNodeViewFolderFilterBar-suggestion-hint" satisfies FileNodeViewFolderFilterBar_ClassNames)}
+				>
 					sort the table
 				</span>
 			</MyComboboxItem>
@@ -1138,12 +1154,14 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 						<details>
 							<summary>Filter syntax</summary>
 							<dl>
-								{files_search_query_SYNTAX_EXAMPLES.filter((row) => row.inputs.includes("table")).map((row) => (
-									<Fragment key={row.label}>
-										<dt>{row.label}</dt>
-										<dd>{row.example}</dd>
-									</Fragment>
-								))}
+								{files_search_query_SYNTAX_EXAMPLES
+									.filter((row) => row.inputs.includes("table"))
+									.map((row) => (
+										<Fragment key={row.label}>
+											<dt>{row.label}</dt>
+											<dd>{row.example}</dd>
+										</Fragment>
+									))}
 							</dl>
 						</details>
 					</div>

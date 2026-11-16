@@ -143,7 +143,10 @@ const script_output = z
 		status: z.enum(["succeeded", "errored", "timed_out"]),
 		resultJson: z.string().max(16_384).nullable(),
 		resultTruncated: z.boolean(),
-		error: z.object({ name: z.string().max(128), message: z.string().max(1001) }).strict().nullable(),
+		error: z
+			.object({ name: z.string().max(128), message: z.string().max(1001) })
+			.strict()
+			.nullable(),
 		logs: z.array(z.string().max(16_384)).max(100),
 		logsTruncated: z.boolean(),
 		consoleEntries: z.array(z.string().max(4096)).max(50),
@@ -179,7 +182,10 @@ export const playwriter_browser_response_schema = z.union([
 			script: script_output.optional(),
 			// Why the Worker got no checked script output, for example an isolate error. Sent only with an
 			// `unknown` receipt, so the model can tell the user what went wrong.
-			outputError: z.object({ name: z.string().max(128), message: z.string().max(1001) }).strict().optional(),
+			outputError: z
+				.object({ name: z.string().max(128), message: z.string().max(1001) })
+				.strict()
+				.optional(),
 			consumedAck: playwriter_browser_receipt_request_schema.optional(),
 		})
 		.strict(),

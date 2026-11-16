@@ -11,16 +11,18 @@ type RouteChannelsActivity_ClassNames = "RouteChannelsActivity";
 function RouteChannelsActivity() {
 	const navigate = Route.useNavigate();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
-	const open = useFn((channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
-		navigate({
-			to: "/w/$organizationName/$workspaceName/messages/$channelId",
-			params: { organizationName, workspaceName, channelId },
-			search,
-			state: channels_navigation_state(mode),
-		}).catch((error: unknown) => {
-			console.error("[RouteChannelsActivity.open] Failed to open channel", { error });
-		});
-	});
+	const open = useFn(
+		(channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/messages/$channelId",
+				params: { organizationName, workspaceName, channelId },
+				search,
+				state: channels_navigation_state(mode),
+			}).catch((error: unknown) => {
+				console.error("[RouteChannelsActivity.open] Failed to open channel", { error });
+			});
+		},
+	);
 	return (
 		<main className={"RouteChannelsActivity" satisfies RouteChannelsActivity_ClassNames}>
 			<Channels view="activity" search={{}} onNavigate={open} />

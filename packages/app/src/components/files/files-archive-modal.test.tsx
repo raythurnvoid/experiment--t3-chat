@@ -81,7 +81,9 @@ describe("FilesArchiveModal", () => {
 	test("archives the given nodes and reports them", async () => {
 		const { onClose, onArchived } = renderModal([NOTE, REPORTS]);
 		const dialog = await screen.findByRole("dialog", { name: "Move 2 items to Trash?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/note.md\n/Reports");
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe(
+			"/note.md\n/Reports",
+		);
 
 		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 

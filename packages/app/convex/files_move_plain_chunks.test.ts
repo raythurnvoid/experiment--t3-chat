@@ -471,13 +471,17 @@ describe("Move unchanged plain chunks", () => {
 		expect(staged.filter((row) => row.moveView?.view === "before")).toHaveLength(replacedChunks.length);
 		expect(staged.filter((row) => row.moveView?.view === "after")).toHaveLength(replacedChunks.length);
 		expect(
-			staged.filter((row) => row.moveView?.view === "after").every((row) => row.archiveOperationId?.endsWith(`-${move.cohortId}`)),
+			staged
+				.filter((row) => row.moveView?.view === "after")
+				.every((row) => row.archiveOperationId?.endsWith(`-${move.cohortId}`)),
 			"changed archive membership gets search chunks for the after view",
 		).toBe(true);
 		await finish(f, move);
 		const archived = await chunks(f, replacedId);
 		expect(archived).toHaveLength(replacedChunks.length);
-		expect(archived.every((row) => row.moveView === undefined && row.archiveOperationId?.endsWith(`-${move.cohortId}`))).toBe(true);
+		expect(
+			archived.every((row) => row.moveView === undefined && row.archiveOperationId?.endsWith(`-${move.cohortId}`)),
+		).toBe(true);
 		await assert_reused(f, original);
 		await assert_reads(f, "/target/note.txt");
 	}, 120_000);
@@ -655,10 +659,7 @@ describe("Move unchanged plain chunks", () => {
 				expect(doc.path, "cleanup keeps the winning placement").toBe(
 					published ? "/target/note.txt" : "/source/note.txt",
 				);
-				expect(
-					doc.restrictedScopeNodeId,
-					"cleanup cannot restore the old open metadata scope",
-				).toBe(f.nodeId);
+				expect(doc.restrictedScopeNodeId, "cleanup cannot restore the old open metadata scope").toBe(f.nodeId);
 				if (doc.docKind === "field") expect(doc.isRestrictedScopeRoot).toBe(true);
 			}
 		},

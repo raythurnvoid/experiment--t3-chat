@@ -208,15 +208,17 @@ test.each(["finish", "access_loss"] as const)("resumes a public Move after owner
 	const overlay = await import("../server/files-pending-overlay.ts");
 	const canJoin = overlay.files_pending_overlay_db_can_join_step;
 	// Keep the public admission and its stored work; yield before owner closure runs.
-	const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
-		const allowed = await canJoin(ctx, limitFactor);
-		const slot = await ctx.db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-			.unique();
-		const cohort = slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
-		return allowed && cohort?.workPhase !== "owners_closure";
-	});
+	const join = vi
+		.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+		.mockImplementation(async (ctx, limitFactor) => {
+			const allowed = await canJoin(ctx, limitFactor);
+			const slot = await ctx.db
+				.query("files_move_workspace_slots")
+				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+				.unique();
+			const cohort = slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
+			return allowed && cohort?.workPhase !== "owners_closure";
+		});
 	const started = await asMember.mutation(api.files_transfer.accept_input, {
 		membershipId: membership._id,
 		requestId: `closure-${end}`,
@@ -308,7 +310,10 @@ test.each(["finish", "access_loss"] as const)("resumes a public Move after owner
 		publishedAt: null,
 		visibleView: "before",
 	});
-	expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({ path: "/source", moveCohortId: cohortId });
+	expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
+		path: "/source",
+		moveCohortId: cohortId,
+	});
 	if (end === "access_loss") {
 		const organization = await t.run((ctx) => ctx.db.get("organizations", db.organizationId));
 		if (!organization?.defaultWorkspaceId) throw new Error("Expected the default workspace");
@@ -449,7 +454,11 @@ test("another accepted Move waits for the workspace cohort before reading its so
 		paginationOpts: { cursor: null, numItems: 8 },
 	});
 	// Results are job history: the receipt keeps the path the job recorded, not the current one.
-	expect(receipt?.page[0]?.source).toEqual({ target: { kind: "saved", id: f.nodeId }, path: "/old.txt", name: "old.txt" });
+	expect(receipt?.page[0]?.source).toEqual({
+		target: { kind: "saved", id: f.nodeId },
+		path: "/old.txt",
+		name: "old.txt",
+	});
 	expect(receipt?.page[0]?.movedNodeId).toBe(f.nodeId);
 	await release(f);
 	await f.t.mutation(internal.files_transfer.advance, { runId });

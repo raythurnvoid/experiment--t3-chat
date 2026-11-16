@@ -44,7 +44,9 @@ beforeEach(() => {
 			if (urlString.startsWith("https://r2.test/object?key=")) {
 				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
 				const body = r2Objects.get(key);
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200, headers: { ETag: '"saved-file"' } });
+				return body === undefined
+					? new Response(null, { status: 404 })
+					: new Response(body, { status: 200, headers: { ETag: '"saved-file"' } });
 			}
 			return new Response(null, { status: 404 });
 		}),

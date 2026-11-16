@@ -564,12 +564,10 @@ describe("send_message upload attachments", () => {
 			]),
 		);
 		expect(sent._nay).toBeUndefined();
-		const message = await f
-			.as(f.member)
-			.query(api.channels_messages.get_message, {
-				membershipId: f.member.membershipId,
-				messageId: sent._yay!.messageId,
-			});
+		const message = await f.as(f.member).query(api.channels_messages.get_message, {
+			membershipId: f.member.membershipId,
+			messageId: sent._yay!.messageId,
+		});
 		expect(message?.attachments).toEqual([
 			{ kind: "file", fileNodeId, name: "notes.md", path: "/notes.md" },
 			{
@@ -681,14 +679,12 @@ describe("get_upload_url", () => {
 	test("a new workspace membership cannot reuse an old private-channel pin", async () => {
 		const f = await fixture();
 		const channelId = await create(f, "private");
-		await f
-			.as()
-			.mutation(api.channels.add_channel_members, {
-				membershipId: f.membershipId,
-				channelId,
-				userIds: [f.member.userId],
-				level: "member",
-			});
+		await f.as().mutation(api.channels.add_channel_members, {
+			membershipId: f.membershipId,
+			channelId,
+			userIds: [f.member.userId],
+			level: "member",
+		});
 		const minted = await target(f, channelId);
 		await f.t.mutation(internal.r2.settle_channel_upload_asset, {
 			assetId: minted.asset._id,
@@ -703,12 +699,10 @@ describe("get_upload_url", () => {
 			);
 		expect(
 			(
-				await f
-					.as(f.member)
-					.action(api.channels_uploads.get_upload_url, {
-						membershipId: f.member.membershipId,
-						uploadId: minted.upload._id,
-					})
+				await f.as(f.member).action(api.channels_uploads.get_upload_url, {
+					membershipId: f.member.membershipId,
+					uploadId: minted.upload._id,
+				})
 			)._nay,
 		).toBeUndefined();
 		const membershipId = await f.t.run(async (ctx) => {
@@ -733,14 +727,12 @@ describe("get_upload_url", () => {
 		expect(downloadUrlSpy).not.toHaveBeenCalled();
 		expect(
 			(
-				await f
-					.as(f.member)
-					.mutation(api.channels_uploads.create_upload_target, {
-						membershipId,
-						target: { kind: "channel", channelId },
-						name: "new.bin",
-						size: 8,
-					})
+				await f.as(f.member).mutation(api.channels_uploads.create_upload_target, {
+					membershipId,
+					target: { kind: "channel", channelId },
+					name: "new.bin",
+					size: 8,
+				})
 			)._nay?.message,
 		).toBe("Not found");
 	});

@@ -34,7 +34,10 @@ import app_convex_schema, {
 } from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create, files_saved_stream_db_create_directory } from "../server/files-saved-stream.ts";
-import { files_saved_index_db_get_directory, files_saved_index_db_get_table_field } from "../server/files-saved-index.ts";
+import {
+	files_saved_index_db_get_directory,
+	files_saved_index_db_get_table_field,
+} from "../server/files-saved-index.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
@@ -1691,10 +1694,7 @@ export async function files_tree_db_list_trash_entries(
 	const result = await ctx.db
 		.query("files_trash_entries")
 		.withIndex("by_org_ws_area_order_path", (q) =>
-			q
-				.eq("organizationId", membership.organizationId)
-				.eq("workspaceId", membership.workspaceId)
-				.eq("area", args.area),
+			q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("area", args.area),
 		)
 		.paginate({
 			...args.paginationOpts,

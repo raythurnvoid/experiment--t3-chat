@@ -170,13 +170,14 @@ test.each(["upload", "staging"] as const)("Save waits for both branches after %s
 	vi.spyOn(markdown_chunks, "files_chunk_markdown_bounds").mockImplementation(async (input) => {
 		stagingEntered.resolve();
 		await stagingResume.promise;
-		if (failure === "staging") return Result({
-			_nay: {
-				name: "nay",
-				message: "Error while chunking markdown",
-				cause: new Error("Staging failed for this test"),
-			},
-		});
+		if (failure === "staging")
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "Error while chunking markdown",
+					cause: new Error("Staging failed for this test"),
+				},
+			});
 		return await parse(input);
 	});
 	let settled = false;

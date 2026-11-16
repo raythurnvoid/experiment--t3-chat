@@ -73,8 +73,7 @@ export async function plugins_access_db_authorize_membership(
 	const user = await ctx.db.get("users", args.userId);
 	if (!user || user.deletedAt !== undefined) return Result({ _nay: { message: "Unauthenticated" } });
 	const membership = await organizations_db_get_membership(ctx, args);
-	if (!membership || membership.pendingOrganizationRemoval)
-		return Result({ _nay: { message: "Unauthorized" } });
+	if (!membership || membership.pendingOrganizationRemoval) return Result({ _nay: { message: "Unauthorized" } });
 	const [organization, workspace, installation] = await Promise.all([
 		ctx.db.get("organizations", membership.organizationId),
 		ctx.db.get("organizations_workspaces", membership.workspaceId),
@@ -722,11 +721,7 @@ export const grant_file_access_as_me = mutation({
 		}
 		// Keep this anchor. Live items match the pair's choices by path, but an item deleted later keeps the
 		// stored "Add people" chain that this scope job writes. New choices need a live item.
-		if (
-			node &&
-			node.restrictedScopeNodeId !== node._id &&
-			node.parentExtendedScopeNodeId === undefined
-		) {
+		if (node && node.restrictedScopeNodeId !== node._id && node.parentExtendedScopeNodeId === undefined) {
 			await files_nodes_db_set_extended_scope(ctx, { nodeId: node._id, extended: true });
 			await files_subtree_ops_db_start_rebuild(ctx, {
 				organizationId: membership.organizationId,

@@ -364,12 +364,14 @@ describe("cleanup_history", () => {
 					.first(),
 			);
 			if (!plan) throw new Error("Expected the completed Review plan");
-			expect(await t.run((ctx) =>
-				ctx.db
-					.query("files_pending_update_plan_items")
-					.withIndex("by_plan_order", (q) => q.eq("planId", plan._id))
-					.first(),
-			)).not.toBeNull();
+			expect(
+				await t.run((ctx) =>
+					ctx.db
+						.query("files_pending_update_plan_items")
+						.withIndex("by_plan_order", (q) => q.eq("planId", plan._id))
+						.first(),
+				),
+			).not.toBeNull();
 			reviews.push({ runId, activityId, expiresAt: activity.expiresAt });
 		}
 		const files = await t.run((ctx) => ctx.db.query("files_nodes").collect());
@@ -381,7 +383,8 @@ describe("cleanup_history", () => {
 		).resolves.toMatchObject({ done: false });
 		let done = false;
 		for (let pass = 0; pass < 100; pass++) {
-			done = (await t.mutation(internal.activities.cleanup_history, { _test_now: now, _test_disableReschedule: true })).done;
+			done = (await t.mutation(internal.activities.cleanup_history, { _test_now: now, _test_disableReschedule: true }))
+				.done;
 			if (done) break;
 		}
 		expect(done, "Both expired Review histories finish cleanup").toBe(true);
@@ -401,7 +404,8 @@ describe("cleanup_history", () => {
 				"files_pending_update_run_items",
 				"files_pending_update_run_units",
 				"files_pending_update_run_dependencies",
-			] as const) expect(await ctx.db.query(table).collect()).toEqual([]);
+			] as const)
+				expect(await ctx.db.query(table).collect()).toEqual([]);
 			expect(await ctx.db.query("files_nodes").collect()).toEqual(files);
 		});
 	});

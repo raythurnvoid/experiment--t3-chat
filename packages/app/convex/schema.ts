@@ -2406,12 +2406,15 @@ const app_convex_schema = defineSchema({
 		activeRunId: v.union(v.id("files_index_runs"), v.null()),
 		needsRun: v.boolean(),
 		nextAttemptAt: v.number(),
-		movePublication: v.union(v.object({
-			cohortId: v.id("files_move_cohorts"),
-			indexRevision: v.number(),
-			contentRevision: v.number(),
-			headId: v.union(v.id("files_saved_content_heads"), v.null()),
-		}), v.null()),
+		movePublication: v.union(
+			v.object({
+				cohortId: v.id("files_move_cohorts"),
+				indexRevision: v.number(),
+				contentRevision: v.number(),
+				headId: v.union(v.id("files_saved_content_heads"), v.null()),
+			}),
+			v.null(),
+		),
 	})
 		.index("by_fileNode", ["fileNodeId"])
 		.index("by_needsRun_nextAttemptAt", ["needsRun", "nextAttemptAt"])
@@ -2442,10 +2445,18 @@ const app_convex_schema = defineSchema({
 			isRestrictedScopeRoot: v.boolean(),
 		}),
 		phase: v.union(
-			v.literal("build_text"), v.literal("build_metadata"), v.literal("ready"),
-			v.literal("tag_text"), v.literal("tag_metadata"), v.literal("install_text"),
-			v.literal("install_metadata"), v.literal("publish"), v.literal("cleanup_text"),
-			v.literal("cleanup_metadata"), v.literal("cleanup_candidates"), v.literal("complete"),
+			v.literal("build_text"),
+			v.literal("build_metadata"),
+			v.literal("ready"),
+			v.literal("tag_text"),
+			v.literal("tag_metadata"),
+			v.literal("install_text"),
+			v.literal("install_metadata"),
+			v.literal("publish"),
+			v.literal("cleanup_text"),
+			v.literal("cleanup_metadata"),
+			v.literal("cleanup_candidates"),
+			v.literal("complete"),
 		),
 		cursor: v.union(v.string(), v.null()),
 		nextPosition: v.number(),
@@ -2473,20 +2484,22 @@ const app_convex_schema = defineSchema({
 	}).index("by_run", ["runId"]),
 
 	// Detached docs never enter search indexes or metadata catalog counts.
-	files_index_candidates: defineTable(v.union(
-		v.object({
-			runId: v.id("files_index_runs"),
-			kind: v.literal("text"),
-			position: v.number(),
-			value: v.object({ ...files_plain_text_chunk_fields }),
-		}),
-		v.object({
-			runId: v.id("files_index_runs"),
-			kind: v.literal("metadata"),
-			position: v.number(),
-			value: v.object({ ...files_metadata_index_fields, ...files_metadata_committed_sort_fields }),
-		}),
-	))
+	files_index_candidates: defineTable(
+		v.union(
+			v.object({
+				runId: v.id("files_index_runs"),
+				kind: v.literal("text"),
+				position: v.number(),
+				value: v.object({ ...files_plain_text_chunk_fields }),
+			}),
+			v.object({
+				runId: v.id("files_index_runs"),
+				kind: v.literal("metadata"),
+				position: v.number(),
+				value: v.object({ ...files_metadata_index_fields, ...files_metadata_committed_sort_fields }),
+			}),
+		),
+	)
 		.index("by_run_kind_position", ["runId", "kind", "position"])
 		.index("by_run", ["runId"]),
 
@@ -2497,13 +2510,19 @@ const app_convex_schema = defineSchema({
 		owner: v.union(
 			v.object({ kind: v.literal("index"), runId: v.id("files_index_runs") }),
 			v.object({
-				kind: v.literal("transfer"), runId: v.id("files_transfer_runs"),
-				itemId: v.id("files_transfer_items"), fence: v.number(), attemptFence: v.number(),
+				kind: v.literal("transfer"),
+				runId: v.id("files_transfer_runs"),
+				itemId: v.id("files_transfer_items"),
+				fence: v.number(),
+				attemptFence: v.number(),
 			}),
 			v.object({
-				kind: v.literal("review"), runId: v.id("files_pending_update_runs"),
-				unitId: v.id("files_pending_update_run_units"), planEpoch: v.number(),
-				fence: v.number(), attemptFence: v.number(),
+				kind: v.literal("review"),
+				runId: v.id("files_pending_update_runs"),
+				unitId: v.id("files_pending_update_run_units"),
+				planEpoch: v.number(),
+				fence: v.number(),
+				attemptFence: v.number(),
 			}),
 		),
 	})
@@ -2820,11 +2839,15 @@ const app_convex_schema = defineSchema({
 		afterHeadId: v.optional(v.id("files_saved_content_heads")),
 		// At most three states, two assets, and one private node. Captured before publication.
 		// Present once preparation seals.
-		consumedResources: v.optional(v.array(v.union(
-			v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
-			v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
-			v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
-		))),
+		consumedResources: v.optional(
+			v.array(
+				v.union(
+					v.object({ kind: v.literal("state"), id: v.id("files_pending_update_yjs_states") }),
+					v.object({ kind: v.literal("asset"), id: v.id("files_r2_assets"), r2Key: v.string() }),
+					v.object({ kind: v.literal("node"), id: v.id("files_pending_nodes") }),
+				),
+			),
+		),
 		pendingUpdateId: v.id("files_pending_updates"),
 		reviewedRevision: v.number(),
 		selectedContentStateId: v.union(v.id("files_pending_update_yjs_states"), v.null()),
@@ -3048,14 +3071,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_parent", ["organizationId", "workspaceId", "parentId"])
 		.index("by_cohort_view_node", ["cohortId", "view", "nodeId"])
 		.index("by_view_archive_tree", ["cohortId", "view", "archiveOperationId", "treePath"])
-		.index("by_view_path_archive", [
-			"cohortId",
-			"view",
-			"path",
-			"archiveOperationId",
-			"nodeCreationTime",
-			"nodeId",
-		])
+		.index("by_view_path_archive", ["cohortId", "view", "path", "archiveOperationId", "nodeCreationTime", "nodeId"])
 		.index("by_view_parent_name", ["cohortId", "view", "parentId", "name", "nodeCreationTime", "nodeId"])
 		.index("by_view_parent_archive_name", [
 			"cohortId",
@@ -5567,7 +5583,7 @@ const app_convex_schema = defineSchema({
 			"path",
 			"archiveOperationId",
 		])
-		.index("by_organization_workspace_treePath",["organizationId", "workspaceId", "moveCohortId", "treePath"])
+		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "moveCohortId", "treePath"])
 		// Archive can find one active Read-only descendant without reading editable or trashed nodes.
 		.index("by_org_ws_archive_readOnly_treePath", [
 			"organizationId",
@@ -5913,7 +5929,13 @@ const app_convex_schema = defineSchema({
 		),
 	)
 		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
-		.index("by_contentHead_view_yjsSeq_chunk", ["contentHeadId", "moveView.cohortId", "moveView.view", "yjsSequence", "chunkIndex"])
+		.index("by_contentHead_view_yjsSeq_chunk", [
+			"contentHeadId",
+			"moveView.cohortId",
+			"moveView.view",
+			"yjsSequence",
+			"chunkIndex",
+		])
 		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
 		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {
@@ -8805,12 +8827,7 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		writerId: v.id("plugins_external_file_writers"),
 		operationId: v.string(),
-		operation: v.union(
-			v.literal("write"),
-			v.literal("read_only"),
-			v.literal("fence"),
-			v.literal("archive"),
-		),
+		operation: v.union(v.literal("write"), v.literal("read_only"), v.literal("fence"), v.literal("archive")),
 		fingerprint: v.string(),
 		path: v.string(),
 		sequence: v.number(),

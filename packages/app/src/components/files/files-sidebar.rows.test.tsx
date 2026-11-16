@@ -811,7 +811,9 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: "More options" }));
 		fireEvent.click(await view.findByRole("menuitem", { name: /^Move 2 selected/ }));
 		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/bravo\n/locked.md");
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe(
+			"/bravo\n/locked.md",
+		);
 	});
 
 	test("the menu of a read-only row in a selection still archives the selection", async () => {
@@ -841,7 +843,9 @@ describe("FilesSidebar", () => {
 		fireEvent.click(view.getByRole("button", { name: /^More actions for locked\.md/ }));
 		fireEvent.click(await view.findByRole("menuitem", { name: "Move to Trash" }));
 		const dialog = await view.findByRole("dialog", { name: "Move 2 items to Trash?" });
-		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe("/bravo\n/locked.md");
+		expect(within(dialog).getByRole("textbox", { name: "Items to move to Trash" }).textContent).toBe(
+			"/bravo\n/locked.md",
+		);
 	});
 
 	test("a reveal event during a search keeps the folder expanded once the search closes", async () => {

@@ -140,7 +140,10 @@ describe("Transfer selection pages", () => {
 			});
 			if (scenario === "suffix searches") {
 				await f.t.mutation(internal.files_transfer.advance, { runId });
-				const waiting = await f.asUser.query(api.files_transfer_status.get, { membershipId: f.scope.membershipId, runId });
+				const waiting = await f.asUser.query(api.files_transfer_status.get, {
+					membershipId: f.scope.membershipId,
+					runId,
+				});
 				if (!waiting || waiting.activity.status !== "awaiting_input") throw new Error("Expected native name conflicts");
 				expect(
 					await f.asUser.mutation(api.files_transfer.resolve_conflicts, {
@@ -368,7 +371,8 @@ describe("Transfer selection pages", () => {
 					});
 					if (!pending) throw new Error("Expected the private Move proposal");
 					expect(
-						(await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: pending._id })))?.entries,
+						(await f.t.run((ctx) => files_metadata_maps_db_read(ctx.db, { kind: "pending", id: pending._id })))
+							?.entries,
 						"private Move keeps the full dense metadata map",
 					).toEqual(metadata);
 				} else {

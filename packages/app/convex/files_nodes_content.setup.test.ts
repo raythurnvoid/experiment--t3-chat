@@ -474,15 +474,25 @@ export async function expect_retired_uploads(t: ReturnType<typeof test_convex>, 
 	const completed = new Set<string>();
 	for (let step = 0; step < 1000; step++) {
 		const jobs = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-		const job = jobs.find((job) => !completed.has(job._id) && job.state.kind === "pending" &&
-			job.scheduledTime <= Date.now() && [
-				getFunctionName(internal.files_content_saves.retire), getFunctionName(internal.files_content_saves.discard),
-			].includes(job.name));
+		const job = jobs.find(
+			(job) =>
+				!completed.has(job._id) &&
+				job.state.kind === "pending" &&
+				job.scheduledTime <= Date.now() &&
+				[
+					getFunctionName(internal.files_content_saves.retire),
+					getFunctionName(internal.files_content_saves.discard),
+				].includes(job.name),
+		);
 		if (!job) break;
 		completed.add(job._id);
 		const args = job.args[0] as { headId: Id<"files_saved_content_heads"> };
-		await t.mutation(job.name === getFunctionName(internal.files_content_saves.retire)
-			? internal.files_content_saves.retire : internal.files_content_saves.discard, args);
+		await t.mutation(
+			job.name === getFunctionName(internal.files_content_saves.retire)
+				? internal.files_content_saves.retire
+				: internal.files_content_saves.discard,
+			args,
+		);
 		if (step === 999) throw new Error("Prepared source cleanup did not finish");
 	}
 	await t.run(async (ctx) => {

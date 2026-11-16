@@ -2,7 +2,13 @@ import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import { test_save_file_pending_update, test_convex, test_rename_node, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_convex,
+	test_rename_node,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 
 beforeEach(() => {
@@ -245,7 +251,10 @@ describe("pending source summaries", () => {
 			await f.t.mutation(internal.files_transfer.advance, { runId: started._yay.runId });
 		}
 		expect(
-			await f.asUser.query(api.files_transfer_status.get, { membershipId: f.current.membershipId, runId: started._yay.runId }),
+			await f.asUser.query(api.files_transfer_status.get, {
+				membershipId: f.current.membershipId,
+				runId: started._yay.runId,
+			}),
 		).toMatchObject({ activity: { status: "succeeded" } });
 		const page = await f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 			membershipId: f.current.membershipId,

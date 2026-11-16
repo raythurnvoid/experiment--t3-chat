@@ -297,7 +297,8 @@ describe("ensure_plugin_folder", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.owner.organizationId)
-							.eq("workspaceId", fixture.owner.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", fixture.owner.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", expectedPath)
 							.eq("archiveOperationId", null),
 					)

@@ -270,23 +270,28 @@ export async function fixture(
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target: { kind: "saved", id: documentId },
-			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", documentId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", documentId)))!
+				.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		const { operationBatchId } = batch._yay;
 		for (const role of ["staged", "unstaged"] as const) {
-			expect(await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-				...scope,
-				operationBatchId,
-				role,
-				text: documentText,
-			})).toEqual({ _yay: null });
+			expect(
+				await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+					...scope,
+					operationBatchId,
+					role,
+					text: documentText,
+				}),
+			).toEqual({ _yay: null });
 		}
-		expect(await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-			...scope,
-			target: { kind: "saved", id: documentId },
-			operationBatchId,
-		})).toEqual({ _yay: null });
+		expect(
+			await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				...scope,
+				target: { kind: "saved", id: documentId },
+				operationBatchId,
+			}),
+		).toEqual({ _yay: null });
 	}
 	if (options.documentReplacement)
 		await test_create_saved_text_file(t, {

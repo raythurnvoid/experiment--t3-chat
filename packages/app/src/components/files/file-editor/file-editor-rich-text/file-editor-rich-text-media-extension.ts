@@ -61,15 +61,7 @@ export type FileEditorRichTextMedia_ClassNames =
  * restored version replaced its content, and the file kept its id. `locked` is a file that exists but
  * the reader cannot open.
  */
-type MediaState =
-	| "ready"
-	| "uploading"
-	| "processing"
-	| "failed"
-	| "missing"
-	| "locked"
-	| "broken"
-	| "incompatible";
+type MediaState = "ready" | "uploading" | "processing" | "failed" | "missing" | "locked" | "broken" | "incompatible";
 
 /** Every state that shows a text placeholder instead of the media itself. */
 type MediaPlaceholderState = Exclude<MediaState, "ready">;

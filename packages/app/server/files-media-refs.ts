@@ -8,7 +8,10 @@ import { files_pending_nodes_db_resolve_read_target } from "../convex/files_pend
 import { files_media_parse_src } from "../shared/files-media.ts";
 import type { files_YjsRootKind } from "../shared/files.ts";
 import { files_share_rich_text_MAX_MEDIA, files_share_rich_text_prepare } from "../shared/files-share-rich-text.ts";
-import { files_headless_tiptap_editor_create, files_headless_tiptap_editor_get_markdown } from "../shared/files-tiptap.ts";
+import {
+	files_headless_tiptap_editor_create,
+	files_headless_tiptap_editor_get_markdown,
+} from "../shared/files-tiptap.ts";
 import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 import { files_transfer_rewrite_media_refs } from "./files-transfer-media.ts";
 import { plugins_file_grants_db_validate_pair } from "./plugins-file-grants.ts";

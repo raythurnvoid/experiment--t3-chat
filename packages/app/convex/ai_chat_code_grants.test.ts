@@ -175,44 +175,51 @@ async function fixture(personal = false) {
 }
 
 describe("two-root code grants", () => {
-	test.each(["current", "personal"] as const)("reads saved text despite the source user's draft in %s", async (workspace) => {
-		const f = await fixture();
-		const nodeId = await f.file({ workspace, textContent: "saved\n" });
-		await f.mint();
-		const before = await f.read(workspace);
-		expect(before.status).toBe(200);
-		const revision = before.headers.get("X-File-Revision");
-		const scope = { ...f.roots[workspace], userId: f.actor.userId };
-		const batch = await f.t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
-			organizationId: scope.organizationId,
-			workspaceId: scope.workspaceId,
-			userId: scope.userId,
-			target: { kind: "saved", id: nodeId },
-			expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
-		});
-		if (batch._nay) throw new Error(batch._nay.message);
-		const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
-			organizationId: scope.organizationId,
-			workspaceId: scope.workspaceId,
-			userId: scope.userId,
-			operationBatchId: batch._yay.operationBatchId,
-			role: "unstaged",
-			text: "private draft\n",
-		});
-		if (staged._nay) throw new Error(staged._nay.message);
-		const ready = await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-			organizationId: scope.organizationId,
-			workspaceId: scope.workspaceId,
-			userId: scope.userId,
-			target: { kind: "saved", id: nodeId },
-			operationBatchId: batch._yay.operationBatchId,
-		});
-		if (ready._nay) throw new Error(ready._nay.message);
-		const single = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
-		expect(single.status).toBe(200);
-		expect(await single.text(), "code grants must read saved text").toBe("saved\n");
-		expect(single.headers.get("X-File-Revision"), "private text must not change the saved revision").toBe(revision);
-	});
+	test.each(["current", "personal"] as const)(
+		"reads saved text despite the source user's draft in %s",
+		async (workspace) => {
+			const f = await fixture();
+			const nodeId = await f.file({ workspace, textContent: "saved\n" });
+			await f.mint();
+			const before = await f.read(workspace);
+			expect(before.status).toBe(200);
+			const revision = before.headers.get("X-File-Revision");
+			const scope = { ...f.roots[workspace], userId: f.actor.userId };
+			const batch = await f.t.mutation(
+				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
+				{
+					organizationId: scope.organizationId,
+					workspaceId: scope.workspaceId,
+					userId: scope.userId,
+					target: { kind: "saved", id: nodeId },
+					expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!
+						.pendingContentVersion,
+				},
+			);
+			if (batch._nay) throw new Error(batch._nay.message);
+			const staged = await f.t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId: scope.userId,
+				operationBatchId: batch._yay.operationBatchId,
+				role: "unstaged",
+				text: "private draft\n",
+			});
+			if (staged._nay) throw new Error(staged._nay.message);
+			const ready = await f.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				userId: scope.userId,
+				target: { kind: "saved", id: nodeId },
+				operationBatchId: batch._yay.operationBatchId,
+			});
+			if (ready._nay) throw new Error(ready._nay.message);
+			const single = await f.request({ workspace, route: "read", body: { path: "/data.txt" } });
+			expect(single.status).toBe(200);
+			expect(await single.text(), "code grants must read saved text").toBe("saved\n");
+			expect(single.headers.get("X-File-Revision"), "private text must not change the saved revision").toBe(revision);
+		},
+	);
 
 	test("mints only the trusted pair with one budget and reads each root through HTTP", async () => {
 		const f = await fixture();

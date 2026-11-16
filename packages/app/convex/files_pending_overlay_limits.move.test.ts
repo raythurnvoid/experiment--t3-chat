@@ -80,8 +80,11 @@ describe("paged Move transaction budgets", () => {
 				return result;
 			});
 		try {
-			await finish_scheduled(t, async () =>
-				(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !== undefined,
+			await finish_scheduled(
+				t,
+				async () =>
+					(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity
+						.finishedAt !== undefined,
 			);
 		} finally {
 			t.run = run;

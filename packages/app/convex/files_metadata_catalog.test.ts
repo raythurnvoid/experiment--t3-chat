@@ -105,7 +105,12 @@ function metadata_doc(
 		restrictedScopeNodeId: null,
 	};
 	if (!fields.valueKind)
-		return { ...base, docKind: "field" as const, parentId: fields.parentId ?? ("root" as const), isRestrictedScopeRoot: false };
+		return {
+			...base,
+			docKind: "field" as const,
+			parentId: fields.parentId ?? ("root" as const),
+			isRestrictedScopeRoot: false,
+		};
 	return {
 		...base,
 		docKind: "value" as const,
@@ -204,7 +209,11 @@ describe("catalog hook and compactor", () => {
 
 	test("a restricted root's field doc, or one without the flag, counts in parent_restricted", async () => {
 		const { t, scope } = await seed();
-		const [a, b, c] = [await create_folder(t, scope, "/a"), await create_folder(t, scope, "/b"), await create_folder(t, scope, "/c")];
+		const [a, b, c] = [
+			await create_folder(t, scope, "/a"),
+			await create_folder(t, scope, "/b"),
+			await create_folder(t, scope, "/c"),
+		];
 		const [openId] = await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
 		await test_run_with_flush(t, async (ctx) => {
 			await ctx.db.insert("files_metadata_docs", {
@@ -261,7 +270,10 @@ describe("catalog hook and compactor", () => {
 			await ctx.db.insert("files_metadata_docs", metadata_doc(scope, a, { fieldPath: "metadata.a.b" }));
 			await ctx.db.insert("files_metadata_docs", {
 				...metadata_doc(
-					{ organizationId: organizations_GLOBAL_ORGANIZATION_ID, workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID },
+					{
+						organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+						workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+					},
 					a,
 					{ fieldPath: "metadata.global" },
 				),
@@ -291,10 +303,19 @@ describe("catalog hook and compactor", () => {
 	test("long string values count in the string kind but get no value row", async () => {
 		const { t, scope } = await seed();
 		const a = await create_folder(t, scope, "/a");
-		const values = ["a".repeat(1024), "a".repeat(1025), "文".repeat(341), "文".repeat(342), "\0".repeat(512), "\0".repeat(513)];
+		const values = [
+			"a".repeat(1024),
+			"a".repeat(1025),
+			"文".repeat(341),
+			"文".repeat(342),
+			"\0".repeat(512),
+			"\0".repeat(513),
+		];
 		await insert_docs(t, [
 			metadata_doc(scope, a, { fieldPath: "metadata.long" }),
-			...values.map((stringValue) => metadata_doc(scope, a, { fieldPath: "metadata.long", valueKind: "string", stringValue })),
+			...values.map((stringValue) =>
+				metadata_doc(scope, a, { fieldPath: "metadata.long", valueKind: "string", stringValue }),
+			),
 		]);
 		await test_compact_metadata_catalog(t);
 		const rows = await list_rows(t);
@@ -364,7 +385,9 @@ describe("catalog hook and compactor", () => {
 			["area_key", 1],
 			["parent", 1],
 		]);
-		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toHaveLength(1);
+		expect(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog_compactors").collect())).toHaveLength(
+			1,
+		);
 		await test_compact_metadata_catalog(t);
 		expect((await list_rows(t)).map((row) => row.count)).toEqual([2, 2, 2]);
 	});
@@ -462,7 +485,13 @@ describe("catalog hook and compactor", () => {
 		expect(drift).toEqual([
 			[
 				"files_metadata_catalog drift",
-				{ workspaceId: scope.workspaceId, family: "value", fieldPath: "metadata.secret", parentId: undefined, driftRows: 2 },
+				{
+					workspaceId: scope.workspaceId,
+					family: "value",
+					fieldPath: "metadata.secret",
+					parentId: undefined,
+					driftRows: 2,
+				},
 			],
 		]);
 		expect(JSON.stringify(errors.mock.calls)).not.toContain("top secret value");
@@ -488,10 +517,11 @@ describe("catalog hook and compactor", () => {
 		const a = await create_folder(t, scope, "/a");
 		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
 		const pending = async () =>
-			await t.run(async (ctx) =>
-				(await ctx.db.system.query("_scheduled_functions").collect()).filter(
-					(job) => job.name.includes("compact_metadata_catalog") && job.state.kind === "pending",
-				).length,
+			await t.run(
+				async (ctx) =>
+					(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+						(job) => job.name.includes("compact_metadata_catalog") && job.state.kind === "pending",
+					).length,
 			);
 		// Lose the saver's run, like a chain that threw.
 		await t.run(async (ctx) => {
@@ -521,9 +551,13 @@ describe("catalog doors", () => {
 		]);
 		await test_compact_metadata_catalog(t);
 		const keys = async (prefix: string) =>
-			(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId, prefix, paginationOpts })).page.map(
-				(key) => key.fieldPath,
-			);
+			(
+				await asOwner.query(api.files_metadata.list_search_fields, {
+					membershipId: db.membershipId,
+					prefix,
+					paginationOpts,
+				})
+			).page.map((key) => key.fieldPath);
 		// A whole-text lowercase ends `ΑΣ` with a final sigma, which `metadata.ασα` does not start with.
 		expect(await keys("metadata.ΑΣ")).toEqual(["metadata.ΑΣΑ"]);
 		expect(
@@ -538,7 +572,9 @@ describe("catalog doors", () => {
 			).page,
 		).toEqual(["metadata.ΑΣΑ"]);
 		expect(await keys(dotted)).toEqual([dotted]);
-		expect(await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: dotted })).toEqual({ valueKinds: ["boolean"] });
+		expect(
+			await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: dotted }),
+		).toEqual({ valueKinds: ["boolean"] });
 	});
 
 	test("the exact key's kinds come after more than a page of case variants", async () => {
@@ -558,7 +594,10 @@ describe("catalog doors", () => {
 		]);
 		await test_compact_metadata_catalog(t);
 		expect(
-			await asOwner.query(api.files_metadata.get_search_field, { membershipId: db.membershipId, fieldPath: "metadata.status" }),
+			await asOwner.query(api.files_metadata.get_search_field, {
+				membershipId: db.membershipId,
+				fieldPath: "metadata.status",
+			}),
 		).toEqual({ valueKinds: ["boolean"] });
 	});
 
@@ -868,7 +907,12 @@ describe("catalog rebuild and check", () => {
 				count: 1,
 				kindCounts: { ...NO_KINDS, string: 130 },
 			},
-			{ family: "key", fieldPath: "metadata.status", count: 2, kindCounts: { string: 2, number: 1, boolean: 1, maybe_date: 0 } },
+			{
+				family: "key",
+				fieldPath: "metadata.status",
+				count: 2,
+				kindCounts: { string: 2, number: 1, boolean: 1, maybe_date: 0 },
+			},
 			{ family: "key", fieldPath: "metadata.tags", count: 1, kindCounts: { ...NO_KINDS, string: 130 } },
 			{ family: "parent", fieldPath: "metadata.status", parentId: a, count: 1 },
 			{ family: "parent", fieldPath: "metadata.status", parentId: "root", count: 1 },
@@ -911,7 +955,11 @@ describe("catalog rebuild and check", () => {
 		await insert_docs(t, [
 			metadata_doc(scope, a, { fieldPath: "metadata.big" }),
 			...Array.from({ length: 4 }, (_, index) =>
-				metadata_doc(scope, a, { fieldPath: "metadata.big", valueKind: "string", stringValue: `${index}${"x".repeat(400_000)}` }),
+				metadata_doc(scope, a, {
+					fieldPath: "metadata.big",
+					valueKind: "string",
+					stringValue: `${index}${"x".repeat(400_000)}`,
+				}),
 			),
 		]);
 		await test_compact_metadata_catalog(t);
@@ -952,22 +1000,32 @@ describe("catalog rebuild and check", () => {
 		const a = await create_folder(t, scope, "/src/a");
 		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
 		expect(
-			await asOwner.mutation(api.files_metadata.set_entries, { membershipId: db.membershipId, fileNodeId: a, metadataYaml: "status: open\n" }),
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: a,
+				metadataYaml: "status: open\n",
+			}),
 		).toEqual({ _yay: null });
 		const parentRows = async () => {
 			await test_finish_file_index(t, a);
 			await test_compact_metadata_catalog(t);
-			return (await list_rows(t)).filter((row) => row.family.startsWith("parent")).map((row) => `${row.family}:${row.parentId}:${row.count}`);
+			return (await list_rows(t))
+				.filter((row) => row.family.startsWith("parent"))
+				.map((row) => `${row.family}:${row.parentId}:${row.count}`);
 		};
 		expect(await parentRows()).toEqual([`parent:${src}:1`]);
 
-		expect((await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay,
+		).toBeUndefined();
 		expect(await parentRows()).toEqual([`parent_restricted:${src}:1`]);
 		await rebuild(t, scope, "check");
 		expect(await check(t, scope)).toEqual([]);
 		await rebuild(t, scope, "clear_check");
 
-		expect((await asOwner.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		expect(
+			(await asOwner.mutation(api.files_sharing.unrestrict_node, { membershipId: db.membershipId, nodeId: a }))._nay,
+		).toBeUndefined();
 		expect(await parentRows()).toEqual([`parent:${src}:1`]);
 		await rebuild(t, scope, "check");
 		expect(await check(t, scope)).toEqual([]);
@@ -1035,22 +1093,29 @@ describe("catalog rebuild and check", () => {
 		await rebuild(t, scope, "check");
 		const find = async (family: string, fieldPath: string, parentId?: string) =>
 			(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).find(
-				(row) => row.family === family && row.fieldPath === fieldPath && (parentId === undefined || row.parentId === parentId),
+				(row) =>
+					row.family === family && row.fieldPath === fieldPath && (parentId === undefined || row.parentId === parentId),
 			)!;
 
 		const key = await find("key", "metadata.status");
 		for (const kind of ["string", "number", "boolean", "maybe_date"] as const) {
 			await t.run(async (ctx) => {
-				await ctx.db.patch("files_metadata_catalog", key._id, { kindCounts: { ...key.kindCounts!, [kind]: key.kindCounts![kind] + 1 } });
+				await ctx.db.patch("files_metadata_catalog", key._id, {
+					kindCounts: { ...key.kindCounts!, [kind]: key.kindCounts![kind] + 1 },
+				});
 			});
-			expect(await check(t, scope)).toEqual([expect.stringContaining(`key row ${key._id} of metadata.status: count 2`)]);
+			expect(await check(t, scope)).toEqual([
+				expect.stringContaining(`key row ${key._id} of metadata.status: count 2`),
+			]);
 		}
 		await t.run(async (ctx) => await ctx.db.patch("files_metadata_catalog", key._id, { kindCounts: key.kindCounts }));
 
 		// A wrong positive count of one folder.
 		const parent = await find("parent", "metadata.status", a);
 		await t.run(async (ctx) => await ctx.db.patch("files_metadata_catalog", parent._id, { count: 2 }));
-		expect(await check(t, scope)).toEqual([`parent row ${parent._id} of metadata.status in ${a}: count 2 null, expected 1 null`]);
+		expect(await check(t, scope)).toEqual([
+			`parent row ${parent._id} of metadata.status in ${a}: count 2 null, expected 1 null`,
+		]);
 		await t.run(async (ctx) => await ctx.db.patch("files_metadata_catalog", parent._id, { count: 1 }));
 
 		const open = await find("value", "metadata.status");
@@ -1117,7 +1182,9 @@ describe("catalog rebuild and check", () => {
 			});
 		});
 		await rebuild(t, scope, "check");
-		expect(await check(t, scope)).toContainEqual(expect.stringMatching(/^key row .* of metadata\.status belongs to an ended Move$/));
+		expect(await check(t, scope)).toContainEqual(
+			expect.stringMatching(/^key row .* of metadata\.status belongs to an ended Move$/),
+		);
 	});
 
 	test("a new rebuild stops the jobs of the old one", async () => {
@@ -1126,7 +1193,9 @@ describe("catalog rebuild and check", () => {
 		const expected = await list_rows(t);
 		const old = await start_rebuild(t, scope, "catalog");
 		const [oldJob] = await t.run(async (ctx) =>
-			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) => job.name.includes("rebuild_metadata_catalog_step")),
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+				job.name.includes("rebuild_metadata_catalog_step"),
+			),
 		);
 		await start_rebuild(t, scope, "catalog");
 		const before = await list_rows(t);
@@ -1149,17 +1218,23 @@ describe("catalog lifecycle", () => {
 		const canJoin = overlay.files_pending_overlay_db_can_join_step;
 		const admission = { yielded: false };
 		// Yield once during setup. Later steps use the real guard and worker.
-		const pause = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
-			const allowed = await canJoin(ctx, limitFactor);
-			if (limitFactor !== 4) return allowed;
-			admission.yielded = true;
-			pause.mockRestore();
-			return false;
-		});
+		const pause = vi
+			.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+			.mockImplementation(async (ctx, limitFactor) => {
+				const allowed = await canJoin(ctx, limitFactor);
+				if (limitFactor !== 4) return allowed;
+				admission.yielded = true;
+				pause.mockRestore();
+				return false;
+			});
 		return admission;
 	}
 
-	async function set_status(t: T, db: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> }, nodeId: Id<"files_nodes">) {
+	async function set_status(
+		t: T,
+		db: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
+		nodeId: Id<"files_nodes">,
+	) {
 		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		await reset_tree_write_limit(t, db.userId);
 		const written = await asOwner.mutation(api.files_metadata.set_entries, {
@@ -1183,12 +1258,15 @@ describe("catalog lifecycle", () => {
 		return await t.run(async (ctx) => {
 			const slot = await ctx.db
 				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
+				.withIndex("by_workspace", (q) =>
+					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId),
+				)
 				.unique();
 			const cohort = slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
 			const counts = new Map<string, number>();
 			for (const row of await ctx.db.query("files_metadata_catalog").collect()) {
-				if (row.moveView && (row.moveView.cohortId !== cohort?._id || row.moveView.view !== cohort.visibleView)) continue;
+				if (row.moveView && (row.moveView.cohortId !== cohort?._id || row.moveView.view !== cohort.visibleView))
+					continue;
 				const key = `${row.family}:${row.parentId ?? ""}:${row.fieldPath}:${row.stringValue ?? ""}`;
 				counts.set(key, (counts.get(key) ?? 0) + row.count);
 			}
@@ -1217,17 +1295,39 @@ describe("catalog lifecycle", () => {
 		const paginationOpts = { numItems: 50, cursor: null };
 		const rows = new Set<string>();
 		for (const savedStream of streams) {
-			const keys = await asOwner.query(api.files_metadata.list_search_fields, { membershipId, savedStream, prefix: "metadata.", paginationOpts });
+			const keys = await asOwner.query(api.files_metadata.list_search_fields, {
+				membershipId,
+				savedStream,
+				prefix: "metadata.",
+				paginationOpts,
+			});
 			for (const key of keys.page) rows.add(`key:${key.fieldPath}:${key.valueKinds.join()}`);
-			const values = await asOwner.query(api.files_metadata.list_search_values, { membershipId, savedStream, fieldPath: "metadata.status", prefix: "", paginationOpts });
+			const values = await asOwner.query(api.files_metadata.list_search_values, {
+				membershipId,
+				savedStream,
+				fieldPath: "metadata.status",
+				prefix: "",
+				paginationOpts,
+			});
 			for (const value of values.page) rows.add(`value:${value}`);
 			for (const parentId of parentIds)
 				for (const restricted of [false, true]) {
-					const fields = await asOwner.query(api.files_metadata.list_folder_fields, { membershipId, savedStream, parentId, restricted, prefix: "", paginationOpts });
-					for (const fieldPath of fields.page) rows.add(`${restricted ? "parent_restricted" : "parent"}:${parentId}:${fieldPath}`);
+					const fields = await asOwner.query(api.files_metadata.list_folder_fields, {
+						membershipId,
+						savedStream,
+						parentId,
+						restricted,
+						prefix: "",
+						paginationOpts,
+					});
+					for (const fieldPath of fields.page)
+						rows.add(`${restricted ? "parent_restricted" : "parent"}:${parentId}:${fieldPath}`);
 				}
 		}
-		const field = await asOwner.query(api.files_metadata.get_search_field, { membershipId, fieldPath: "metadata.status" });
+		const field = await asOwner.query(api.files_metadata.get_search_field, {
+			membershipId,
+			fieldPath: "metadata.status",
+		});
 		rows.add(`field:${field?.valueKinds.join()}`);
 		return [...rows].sort();
 	}
@@ -1273,7 +1373,10 @@ describe("catalog lifecycle", () => {
 			onStep: async () => {
 				if (admission.yielded && !checkedBefore) {
 					const cohort = await t.run(async (ctx) => await ctx.db.query("files_move_cohorts").first());
-					expect(cohort, "catalog checks start before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
+					expect(cohort, "catalog checks start before publication").toMatchObject({
+						publishedAt: null,
+						visibleView: "before",
+					});
 					checkedBefore = true;
 				}
 				const rows = await visible_rows(t, scope);
@@ -1289,7 +1392,11 @@ describe("catalog lifecycle", () => {
 		expect(await visible_rows(t, scope)).toEqual(after);
 		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doorsAfter);
 		// No tagged row is left behind.
-		expect((await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).filter((row) => row.moveView)).toEqual([]);
+		expect(
+			(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).filter(
+				(row) => row.moveView,
+			),
+		).toEqual([]);
 		expect(seen.size).toBe(2);
 	});
 
@@ -1323,7 +1430,10 @@ describe("catalog lifecycle", () => {
 				if (view?.cohortId && view.view === "before" && !draftAdded) {
 					expect(admission.yielded, "setup yields the initial Move join").toBe(true);
 					const cohort = await t.run(async (ctx) => await ctx.db.get("files_move_cohorts", view.cohortId!));
-					expect(cohort, "the after-only key is staged before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
+					expect(cohort, "the after-only key is staged before publication").toMatchObject({
+						publishedAt: null,
+						visibleView: "before",
+					});
 					await test_run_with_flush(t, async (ctx) => {
 						await ctx.db.insert("files_metadata_docs", {
 							...metadata_doc(scope, other, { fieldPath: "metadata.draft" }),
@@ -1335,7 +1445,9 @@ describe("catalog lifecycle", () => {
 				published ||= view?.view === "after";
 				await visible_rows(t, scope);
 				const keyRows = await t.run(async (ctx) =>
-					(await ctx.db.query("files_metadata_catalog").collect()).filter((row) => row.family === "key" && row.fieldPath === "metadata.status"),
+					(await ctx.db.query("files_metadata_catalog").collect()).filter(
+						(row) => row.family === "key" && row.fieldPath === "metadata.status",
+					),
 				);
 				if (keyRows.length > 0 && keyRows.every((row) => row.moveView)) viewOnlySteps++;
 				expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(published ? doorsAfter : doorsBefore);
@@ -1354,7 +1466,9 @@ describe("catalog lifecycle", () => {
 		const a = await create_folder(t, scope, "/src/a");
 		const dst = await create_folder(t, scope, "/dst");
 		await set_status(t, db, a);
-		expect((await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay).toBeUndefined();
+		expect(
+			(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId: a }))._nay,
+		).toBeUndefined();
 		// The area rows stay: the folder is its own area.
 		const rows = (parentId: Id<"files_nodes">) => [
 			`area_key:${a}:metadata.status:=1`,
@@ -1365,7 +1479,12 @@ describe("catalog lifecycle", () => {
 		];
 		expect(await visible_rows(t, scope)).toEqual(rows(src));
 		const doors = (parentId: Id<"files_nodes">) =>
-			["field:string", "key:metadata.status:string", `parent_restricted:${parentId}:metadata.status`, "value:open"].sort();
+			[
+				"field:string",
+				"key:metadata.status:string",
+				`parent_restricted:${parentId}:metadata.status`,
+				"value:open",
+			].sort();
 		expect(await door_rows(asOwner, db.membershipId, [src, dst])).toEqual(doors(src));
 
 		await reset_tree_write_limit(t, db.userId);
@@ -1441,7 +1560,9 @@ describe("catalog lifecycle", () => {
 			targetParentId: dst,
 		});
 		if (started._nay) throw new Error(started._nay.message);
-		expect(await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId })).toEqual({
+		expect(
+			await asOwner.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toEqual({
 			_yay: null,
 		});
 		await test_finish_transfer_run(asOwner, started._yay.runId);
@@ -1487,9 +1608,14 @@ describe("catalog lifecycle", () => {
 					const cohortId = ctx.db.normalizeId("files_move_cohorts", tagged[0]!.moveView!.cohortId)!;
 					return await ctx.db.get("files_move_cohorts", cohortId);
 				});
-				expect(cohort, "Stop runs after staging and before publication").toMatchObject({ publishedAt: null, visibleView: "before" });
+				expect(cohort, "Stop runs after staging and before publication").toMatchObject({
+					publishedAt: null,
+					visibleView: "before",
+				});
 				const run = await t.run(async (ctx) => await ctx.db.query("files_transfer_runs").first());
-				expect(await asOwner.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: run!._id })).toEqual({
+				expect(
+					await asOwner.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: run!._id }),
+				).toEqual({
 					_yay: null,
 				});
 				stopped = true;
@@ -1498,7 +1624,11 @@ describe("catalog lifecycle", () => {
 		expect(stopped).toBe(true);
 		expect(moved._nay).toBeDefined();
 		expect(await visible_rows(t, scope)).toEqual(before);
-		expect((await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).filter((row) => row.moveView)).toEqual([]);
+		expect(
+			(await t.run(async (ctx) => await ctx.db.query("files_metadata_catalog").collect())).filter(
+				(row) => row.moveView,
+			),
+		).toEqual([]);
 		expect(errors.mock.calls.filter(([message]) => message === "files_metadata_catalog drift")).toEqual([]);
 	});
 
@@ -1525,7 +1655,12 @@ describe("catalog lifecycle", () => {
 		const rows = await list_rows(t);
 		expect(rows.filter((row) => row.family === "key")).toEqual([
 			{ family: "key", fieldPath: "frontmatter.Status", count: 1, kindCounts: { ...NO_KINDS, string: 1 } },
-			{ family: "key", fieldPath: "frontmatter.reported", count: 1, kindCounts: { ...NO_KINDS, string: 1, maybe_date: 1 } },
+			{
+				family: "key",
+				fieldPath: "frontmatter.reported",
+				count: 1,
+				kindCounts: { ...NO_KINDS, string: 1, maybe_date: 1 },
+			},
 			{ family: "key", fieldPath: "frontmatter.source", count: 1, kindCounts: NO_KINDS },
 			{ family: "key", fieldPath: "frontmatter.source.channel", count: 1, kindCounts: { ...NO_KINDS, string: 1 } },
 			{ family: "key", fieldPath: "frontmatter.tags", count: 1, kindCounts: { ...NO_KINDS, string: 2 } },
@@ -1544,7 +1679,11 @@ describe("catalog lifecycle", () => {
 			for (const doc of await ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_organization_workspace_source_fileNode", (q) =>
-					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("sourceKind", "committed").eq("fileNodeId", nodeId),
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.collect())
 				await ctx.db.delete("files_metadata_docs", doc._id);
@@ -1560,14 +1699,28 @@ describe("catalog lifecycle", () => {
 		await set_status(t, db, file);
 		for (const nodeId of [file, folder]) {
 			await reset_tree_write_limit(t, db.userId);
-			expect((await asOwner.mutation(api.files_nodes.archive_nodes, { membershipId: db.membershipId, nodeIds: [String(nodeId)] }))._nay).toBeUndefined();
+			expect(
+				(
+					await asOwner.mutation(api.files_nodes.archive_nodes, {
+						membershipId: db.membershipId,
+						nodeIds: [String(nodeId)],
+					})
+				)._nay,
+			).toBeUndefined();
 		}
 		await test_finish_saved_scope_jobs(t);
 		await test_compact_metadata_catalog(t);
 		expect(await list_rows(t)).toEqual([]);
 
 		await reset_tree_write_limit(t, db.userId);
-		expect((await asOwner.mutation(api.files_nodes.unarchive_nodes, { membershipId: db.membershipId, nodeIds: [String(file)] }))._nay).toBeUndefined();
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.unarchive_nodes, {
+					membershipId: db.membershipId,
+					nodeIds: [String(file)],
+				})
+			)._nay,
+		).toBeUndefined();
 		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", file));
 		expect(restored?.parentId).not.toBe(folder);
 		await test_finish_saved_scope_jobs(t);
@@ -1694,7 +1847,9 @@ describe("compactor drift", () => {
 		// The compactor did see a key row with value docs but no field doc.
 		expect(splitSteps).toBeGreaterThan(0);
 		await test_compact_metadata_catalog(t);
-		expect(await list_rows(t)).toEqual(before.map((row) => (row.family === "parent" ? { ...row, parentId: dst } : row)));
+		expect(await list_rows(t)).toEqual(
+			before.map((row) => (row.family === "parent" ? { ...row, parentId: dst } : row)),
+		);
 	});
 
 	test("a key whose value doc is saved first keeps its kinds, and a remove with no add still logs", async () => {
@@ -1702,7 +1857,9 @@ describe("compactor drift", () => {
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		const a = await create_folder(t, scope, "/a");
 		// Two transactions with a compactor run between them, the value doc first.
-		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" })]);
+		await insert_docs(t, [
+			metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" }),
+		]);
 		await test_compact_metadata_catalog(t);
 		await insert_docs(t, [metadata_doc(scope, a, { fieldPath: "metadata.status" })]);
 		await test_compact_metadata_catalog(t);
@@ -1723,7 +1880,10 @@ describe("compactor drift", () => {
 
 		// A value doc written past the overlay has no add, so removing it is real drift.
 		await t.run(async (ctx) => {
-			await ctx.db.insert("files_metadata_docs", metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" }));
+			await ctx.db.insert(
+				"files_metadata_docs",
+				metadata_doc(scope, a, { fieldPath: "metadata.status", valueKind: "string", stringValue: "open" }),
+			);
 		});
 		await test_run_with_flush(t, async (ctx) => {
 			for (const doc of await ctx.db.query("files_metadata_docs").collect())

@@ -232,7 +232,8 @@ describe("paged Move input scale", () => {
 				},
 			]);
 			// The last Normalize call can publish this small root before it returns.
-			const cohort = await ctx.db.query("files_move_cohorts")
+			const cohort = await ctx.db
+				.query("files_move_cohorts")
 				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
 				.unique();
 			expect(cohort, "Completed input progress belongs to the exact published Move").toMatchObject({

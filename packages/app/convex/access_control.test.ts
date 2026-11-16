@@ -199,7 +199,8 @@ async function access_control_test_read_tree_child_ids(
 	const stream = { ...args, paginationOpts: { numItems: 50, cursor: null } };
 	const pages = await Promise.all(
 		(["folder", "file"] as const).flatMap((kind) =>
-			[false, true].map((restricted) => as.query(api.files_tree.list_tree_children, { stream: "normal" as const, ...stream, kind, restricted }),
+			[false, true].map((restricted) =>
+				as.query(api.files_tree.list_tree_children, { stream: "normal" as const, ...stream, kind, restricted }),
 			),
 		),
 	);

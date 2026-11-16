@@ -24,7 +24,8 @@ export function files_index_range_phases(args: {
 		const order = compareValues(start[index], end[index]);
 		if (order > 0) return [];
 		if (order < 0) break;
-		if (index === start.length - 1 && start.length === end.length && (!args.startInclusive || !args.endInclusive)) return [];
+		if (index === start.length - 1 && start.length === end.length && (!args.startInclusive || !args.endInclusive))
+			return [];
 	}
 	const prefix: Bound[] = [];
 	while (start.length > 0 && end.length > 0 && compareValues(start[0], end[0]) === 0) {
@@ -33,7 +34,8 @@ export function files_index_range_phases(args: {
 		start = start.slice(1);
 		end = end.slice(1);
 	}
-	if (prefix.length > 0 && ((start.length === 0 && !args.startInclusive) || (end.length === 0 && !args.endInclusive))) return [];
+	if (prefix.length > 0 && ((start.length === 0 && !args.startInclusive) || (end.length === 0 && !args.endInclusive)))
+		return [];
 	const compare = (op: Bound[0], key: Array<Value | undefined>) => {
 		const bounds = prefix.slice();
 		for (let index = 0; index < key.length - 1; index++) bounds.push(["eq", fields[index]!, key[index]]);

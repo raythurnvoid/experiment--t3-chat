@@ -470,32 +470,30 @@ describe.each(["list_my_channels", "search_my_private_channels", "list_my_channe
 				}
 			});
 		}
-		const scope = (
-			await f.as(f.other).query(api.channels_notifications.get_summary, {
-				membershipId: f.other.membershipId,
-			})
-		)!;
+		const scope = (await f.as(f.other).query(api.channels_notifications.get_summary, {
+			membershipId: f.other.membershipId,
+		}))!;
 		const read = (paginationOpts: PaginationOptions) =>
 			door === "list_my_channels"
 				? f.as(f.other).query(api.channels.list_my_channels, {
-					membershipId: f.other.membershipId,
-					section: "channels",
-					paginationOpts,
-				})
-				: door === "search_my_private_channels"
-					? f.as(f.other).query(api.channels.search_my_private_channels, {
 						membershipId: f.other.membershipId,
-						accessScopeKey: scope.accessScopeKey,
-						archived: false,
-						prefix: "page-",
+						section: "channels",
 						paginationOpts,
 					})
+				: door === "search_my_private_channels"
+					? f.as(f.other).query(api.channels.search_my_private_channels, {
+							membershipId: f.other.membershipId,
+							accessScopeKey: scope.accessScopeKey,
+							archived: false,
+							prefix: "page-",
+							paginationOpts,
+						})
 					: f.as(f.other).query(api.channels.list_my_channel_kind, {
-						membershipId: f.other.membershipId,
-						accessScopeKey: scope.accessScopeKey,
-						kind: "file",
-						paginationOpts,
-					});
+							membershipId: f.other.membershipId,
+							accessScopeKey: scope.accessScopeKey,
+							kind: "file",
+							paginationOpts,
+						});
 		const first = await read({ cursor: null, numItems: 50 });
 		const second = await read({ cursor: first.continueCursor, numItems: 50 });
 		// Reuse a native endpoint beyond one page, as a grown reactive range can do.

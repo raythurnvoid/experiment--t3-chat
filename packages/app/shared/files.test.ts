@@ -798,7 +798,9 @@ describe("files_pending_update_has_content", () => {
 		content: {
 			rootKind: "plain_text" as const,
 			base: { kind: "asset" as const, assetId: baseAssetId, pendingContentVersion: 1 },
-			baseStateId, stagedStateId, unstagedStateId,
+			baseStateId,
+			stagedStateId,
+			unstagedStateId,
 		},
 	};
 
@@ -816,7 +818,13 @@ describe("files_pending_update_has_content", () => {
 
 	test("recognizes a new private file without a saved base", () => {
 		const pendingUpdate = {
-			content: { rootKind: "plain_text" as const, base: { kind: "new" as const }, baseStateId, stagedStateId, unstagedStateId },
+			content: {
+				rootKind: "plain_text" as const,
+				base: { kind: "new" as const },
+				baseStateId,
+				stagedStateId,
+				unstagedStateId,
+			},
 		};
 		expect(files_pending_update_has_content(pendingUpdate)).toBe(true);
 		expect(files_pending_update_has_yjs_content(pendingUpdate)).toBe(false);
@@ -842,7 +850,9 @@ describe("files_pending_update_content_is_stale", () => {
 		content: {
 			rootKind: "plain_text" as const,
 			base: { kind: "asset" as const, assetId: baseAssetId, pendingContentVersion: 1 },
-			baseStateId, stagedStateId, unstagedStateId,
+			baseStateId,
+			stagedStateId,
+			unstagedStateId,
 		},
 	};
 	const yjsContent = {
@@ -856,9 +866,15 @@ describe("files_pending_update_content_is_stale", () => {
 	};
 
 	test("an asset base becomes stale after the saved asset changes", () => {
-		expect(files_pending_update_content_is_stale(assetContent, { assetId: baseAssetId, pendingContentVersion: 1 })).toBe(false);
-		expect(files_pending_update_content_is_stale(assetContent, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(true);
-		expect(files_pending_update_content_is_stale(yjsContent, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(false);
+		expect(
+			files_pending_update_content_is_stale(assetContent, { assetId: baseAssetId, pendingContentVersion: 1 }),
+		).toBe(false);
+		expect(
+			files_pending_update_content_is_stale(assetContent, { assetId: savedAssetId, pendingContentVersion: 1 }),
+		).toBe(true);
+		expect(files_pending_update_content_is_stale(yjsContent, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(
+			false,
+		);
 		expect(files_pending_update_content_is_stale({}, { assetId: savedAssetId, pendingContentVersion: 1 })).toBe(false);
 	});
 
@@ -872,7 +888,9 @@ describe("files_pending_update_content_is_stale", () => {
 	});
 
 	test.each([yjsContent, assetContent])("an older file version is stale but keeps its draft %#", (content) => {
-		expect(files_pending_update_content_is_stale(content, { assetId: baseAssetId, pendingContentVersion: 2 })).toBe(true);
+		expect(files_pending_update_content_is_stale(content, { assetId: baseAssetId, pendingContentVersion: 2 })).toBe(
+			true,
+		);
 		expect(files_pending_update_has_content(content)).toBe(true);
 	});
 });
@@ -3878,9 +3896,15 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			// Code in an ordered list keeps its indent: `1. ` is three columns.
 			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n"],
 			// A bullet nested with 2 spaces stays nested.
-			["1. Install\n  - run setup\n    - on Windows\n2. Done\n", "1. Install\n   - run setup\n     - on Windows\n2. Done\n"],
+			[
+				"1. Install\n  - run setup\n    - on Windows\n2. Done\n",
+				"1. Install\n   - run setup\n     - on Windows\n2. Done\n",
+			],
 			// Frontmatter that is not first, or that holds a `---` line, stays HTML.
-			["Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n", "Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n"],
+			[
+				"Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n",
+				"Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n",
+			],
 			["<pre data-frontmatter>a: 1\n---\nb</pre>\n", "<pre data-frontmatter>a: 1\n---\nb</pre>\n"],
 		] as const;
 		for (const [fixture, expected] of fixtures) {

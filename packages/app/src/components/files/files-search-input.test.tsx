@@ -42,7 +42,10 @@ vi.mock("convex/react", async (importOriginal) => ({
 	},
 	useQueries: (queries: Record<string, { args: { clause: { text: string }; savedStream?: { kind: string } } }>) =>
 		Object.fromEntries(
-			Object.entries(queries).map(([key, { args }]) => [key, test_folder_page(args.clause.text, args.savedStream?.kind)]),
+			Object.entries(queries).map(([key, { args }]) => [
+				key,
+				test_folder_page(args.clause.text, args.savedStream?.kind),
+			]),
 		),
 }));
 
@@ -164,7 +167,9 @@ describe("FilesSearchInput", () => {
 		const view = render(
 			<FilesSearchInput {...props} initialQuery="file.path:/old draft" onSearchQueryChange={onChange} />,
 		);
-		view.rerender(<FilesSearchInput {...props} initialQuery="metadata.status:open notes" onSearchQueryChange={onChange} />);
+		view.rerender(
+			<FilesSearchInput {...props} initialQuery="metadata.status:open notes" onSearchQueryChange={onChange} />,
+		);
 		expect(screen.queryByRole("button", { name: "Remove filter file.path:/old" })).toBeNull();
 		expect(screen.getByRole("button", { name: "Remove filter metadata.status:open" })).toBeTruthy();
 		expect(screen.getByRole("combobox").getAttribute("value")).toBe("notes");
@@ -218,7 +223,16 @@ describe("FilesSearchInput", () => {
 		await waitFor(() => expect(test_labels("Properties")).toEqual(["metadata.stage", "metadata.status"]));
 		expect(screen.getByRole("option", { name: "metadata.status text, boolean" })).toBeTruthy();
 		fireEvent.change(input, { target: { value: "metadata.status:" } });
-		await waitFor(() => expect(test_labels("Values for metadata.status")).toEqual(["* (any value)", "true", "false", "fixed", "open", "opened"]));
+		await waitFor(() =>
+			expect(test_labels("Values for metadata.status")).toEqual([
+				"* (any value)",
+				"true",
+				"false",
+				"fixed",
+				"open",
+				"opened",
+			]),
+		);
 	});
 
 	test.each(["", "file.path:/Docs/**"])(
@@ -276,7 +290,9 @@ describe("FilesSearchInput", () => {
 		test_catalog.loading.add("");
 		fireEvent.change(input, { target: { value: "metadata.stage:" } });
 		// Skeleton rows stand in for all rows, `*` too, until the first page arrives.
-		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual([]);
+		expect(within(screen.getByRole("group", { name: "Values for metadata.stage" })).queryAllByRole("option")).toEqual(
+			[],
+		);
 		expect(screen.queryByRole("option", { name: "open" })).toBeNull();
 	});
 
@@ -284,7 +300,12 @@ describe("FilesSearchInput", () => {
 		test("opens on entry, respects Escape while typing, and reopens with Ctrl+Space", async () => {
 			const onChange = vi.fn();
 			render(
-				<FilesSearchInput {...props} variant={variant} initialQuery="metadata.status:open" onSearchQueryChange={onChange} />,
+				<FilesSearchInput
+					{...props}
+					variant={variant}
+					initialQuery="metadata.status:open"
+					onSearchQueryChange={onChange}
+				/>,
 			);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
@@ -341,7 +362,9 @@ describe("FilesSearchInput", () => {
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
 			fireEvent.change(input, { target: { value: "file.path:tas" } });
-			await waitFor(() => expect(test_labels("Values for file.path")).toEqual(["/Projects/tasks", "/tasks", "/tasks-moved"]));
+			await waitFor(() =>
+				expect(test_labels("Values for file.path")).toEqual(["/Projects/tasks", "/tasks", "/tasks-moved"]),
+			);
 		});
 
 		test("reopens on a new visit but keeps dismissal when returning from chips or results", async () => {
@@ -350,7 +373,12 @@ describe("FilesSearchInput", () => {
 				return (
 					<>
 						<button>Outside search</button>
-						<FilesSearchInput {...props} variant={variant} initialQuery="metadata.status:open" resultsRef={resultsRef} />
+						<FilesSearchInput
+							{...props}
+							variant={variant}
+							initialQuery="metadata.status:open"
+							resultsRef={resultsRef}
+						/>
 						<div ref={resultsRef}>
 							<button>Search result</button>
 						</div>
@@ -417,9 +445,7 @@ describe("FilesSearchInput", () => {
 			// Text that starts a namespace name asks the whole namespace.
 			test_catalog.requests = [];
 			fireEvent.change(input, { target: { value: "front" } });
-			await waitFor(() =>
-				expect(test_catalog.requests.map((request) => request.prefix)).toContain("metadata.front"),
-			);
+			await waitFor(() => expect(test_catalog.requests.map((request) => request.prefix)).toContain("metadata.front"));
 			expect(test_catalog.requests.map((request) => request.prefix)).toContain("frontmatter.");
 			expect(test_catalog.requests.map((request) => request.prefix)).not.toContain("frontmatter.front");
 
@@ -451,7 +477,9 @@ describe("FilesSearchInput", () => {
 			expect(await screen.findByRole("option", { name: "true" })).toBeTruthy();
 			expect(screen.getByRole("option", { name: "* (any value)" })).toBeTruthy();
 			fireEvent.change(input, { target: { value: "metadata.status:op" } });
-			await waitFor(() => expect(screen.getByRole("option", { name: "opened" }).getAttribute("aria-disabled")).toBeNull());
+			await waitFor(() =>
+				expect(screen.getByRole("option", { name: "opened" }).getAttribute("aria-disabled")).toBeNull(),
+			);
 			expect(screen.getByRole("option", { name: "open" })).toBeTruthy();
 			expect(screen.queryByRole("option", { name: "fixed" })).toBeNull();
 			expect(screen.queryByRole("option", { name: "true" })).toBeNull();
@@ -474,12 +502,16 @@ describe("FilesSearchInput", () => {
 			render(<FilesSearchInput {...props} variant={variant} />);
 			const input = screen.getByRole<HTMLInputElement>("combobox");
 			act(() => input.focus());
-			await waitFor(() => expect(test_labels("Properties")).toEqual(names.slice(0, 50).map((name) => `metadata.${name}`)));
+			await waitFor(() =>
+				expect(test_labels("Properties")).toEqual(names.slice(0, 50).map((name) => `metadata.${name}`)),
+			);
 			fireEvent.click(screen.getByRole("option", { name: "Show more keys" }));
 			await waitFor(() => expect(test_labels("Properties")).toEqual(names.map((name) => `metadata.${name}`)));
 
 			fireEvent.change(input, { target: { value: "metadata.k01:" } });
-			await waitFor(() => expect(test_labels("Values for metadata.k01")).toEqual(["* (any value)", ...names.slice(0, 50)]));
+			await waitFor(() =>
+				expect(test_labels("Values for metadata.k01")).toEqual(["* (any value)", ...names.slice(0, 50)]),
+			);
 			fireEvent.click(screen.getByRole("option", { name: "Show more values" }));
 			await waitFor(() => expect(test_labels("Values for metadata.k01")).toEqual(["* (any value)", ...names]));
 		});
@@ -491,7 +523,9 @@ describe("FilesSearchInput", () => {
 			act(() => input.focus());
 			fireEvent.change(input, { target: { value: "metadata.done:t" } });
 			await waitFor(() =>
-				expect(test_catalog.requests).toContainEqual(expect.objectContaining({ fieldPath: "metadata.done", prefix: "t" })),
+				expect(test_catalog.requests).toContainEqual(
+					expect.objectContaining({ fieldPath: "metadata.done", prefix: "t" }),
+				),
 			);
 			expect(screen.queryByRole("option", { name: "No saved values start with t" })).toBeNull();
 		});

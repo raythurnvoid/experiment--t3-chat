@@ -22,12 +22,7 @@ afterEach(() => {
 
 type Pages = { count: number; children: Id<"files_nodes">[][]; bytes: number[] };
 
-function track_pages<T extends object>(
-	query: T,
-	table: string,
-	pages: Pages,
-	childIds: Set<Id<"files_nodes">>,
-): T {
+function track_pages<T extends object>(query: T, table: string, pages: Pages, childIds: Set<Id<"files_nodes">>): T {
 	return new Proxy(query, {
 		get(target, key) {
 			const member: unknown = Reflect.get(target, key);
@@ -181,12 +176,16 @@ test.each([
 				parentPageCounts.push(transactionPages.count);
 				childPagesPerParent.push(transactionPages.childCount);
 				pageBytes.push(...transactionPages.bytes);
-				const currentCohortId = cohortId ?? (
-					await ctx.db
-						.query("files_move_workspace_slots")
-						.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-						.unique()
-				)?.cohortId;
+				const currentCohortId =
+					cohortId ??
+					(
+						await ctx.db
+							.query("files_move_workspace_slots")
+							.withIndex("by_workspace", (q) =>
+								q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
+							)
+							.unique()
+					)?.cohortId;
 				for (const ids of transactionPages.children) {
 					pages.push(ids);
 					const docs = await Promise.all(ids.map((id) => ctx.db.get("files_nodes", id)));
@@ -239,7 +238,10 @@ test.each([
 			"each parent journal reads at most one native page",
 		).toBe(true);
 		expect(childPageCounts.length, "child queries read the real native pages").toBeGreaterThan(1);
-		expect(childPageCounts.every((count) => count === 1), "each child query reads one native page").toBe(true);
+		expect(
+			childPageCounts.every((count) => count === 1),
+			"each child query reads one native page",
+		).toBe(true);
 		// Check outside the worker, so it cannot turn an assertion into a retry.
 		for (const entry of costs) record(entry.phase, entry.cost);
 		check("descendant page batches");

@@ -45,8 +45,8 @@ import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-gra
  * warns about. Asking for every gating capability up front means a half-consented install fails
  * at the exchange instead of halfway through the service's work.
  *
-	 * Read-only changes and force check `workspace.files.manage-read-only` at each final write.
-	 * The exchange itself grants no authority to bypass a file's flag.
+ * Read-only changes and force check `workspace.files.manage-read-only` at each final write.
+ * The exchange itself grants no authority to bypass a file's flag.
  */
 const SCOPE_GATING_CAPABILITY = {
 	"plugin_data:read": "plugin.data.read",

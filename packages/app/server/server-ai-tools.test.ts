@@ -639,14 +639,14 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("App files report their stored content type, including your pending changes"),
+				description: expect.stringContaining(
+					"App files report their stored content type, including your pending changes",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining(
-					"Only /tmp files use native content detection",
-				),
+				description: expect.stringContaining("Only /tmp files use native content detection"),
 			}),
 		);
 		expect(tool).toEqual(

@@ -139,8 +139,6 @@ describe("billing_event", () => {
 
 		expect(billing_event(event)).toEqual(event);
 		// One session is one event: the id ends with the session doc id.
-		expect(event.externalId).toBe(
-			"browser_usage::billed_user_1::actor_user_1::organization_1::workspace_1::session_1",
-		);
+		expect(event.externalId).toBe("browser_usage::billed_user_1::actor_user_1::organization_1::workspace_1::session_1");
 	});
 });

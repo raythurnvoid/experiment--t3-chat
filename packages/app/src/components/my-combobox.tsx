@@ -323,7 +323,11 @@ export const MyComboboxItem = memo(function MyComboboxItem(props: MyComboboxItem
 	const { className, value, children, ...rest } = props;
 
 	return (
-		<ComboboxItem className={cn("MyComboboxItem" satisfies MyComboboxItem_ClassNames, className)} value={value} {...rest}>
+		<ComboboxItem
+			className={cn("MyComboboxItem" satisfies MyComboboxItem_ClassNames, className)}
+			value={value}
+			{...rest}
+		>
 			{children}
 		</ComboboxItem>
 	);

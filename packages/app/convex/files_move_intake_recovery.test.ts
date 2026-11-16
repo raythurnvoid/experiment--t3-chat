@@ -152,9 +152,11 @@ describe("Move Stop recovery", () => {
 		}
 		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
-		expect(await asUser.mutation(api.files_transfer.stop, args), "Stop succeeds after its run history is gone").toEqual({
-			_yay: null,
-		});
+		expect(await asUser.mutation(api.files_transfer.stop, args), "Stop succeeds after its run history is gone").toEqual(
+			{
+				_yay: null,
+			},
+		);
 	});
 
 	test("does not change a run through another owned tenant membership", async () => {
@@ -170,9 +172,9 @@ describe("Move Stop recovery", () => {
 			run: await ctx.db.get("files_transfer_runs", runId),
 			activity: await ctx.db.get("activities", activityId),
 		}));
-		expect(
-			await asUser.mutation(api.files_transfer.stop, { membershipId: other.membershipId, runId }),
-		).toEqual({ _yay: null });
+		expect(await asUser.mutation(api.files_transfer.stop, { membershipId: other.membershipId, runId })).toEqual({
+			_yay: null,
+		});
 		expect(
 			await t.run(async (ctx) => ({
 				run: await ctx.db.get("files_transfer_runs", runId),
@@ -184,14 +186,12 @@ describe("Move Stop recovery", () => {
 	test("keeps authentication and membership refusals", async () => {
 		const { t, db, asUser, runId, activityId } = await create_fixture();
 		const args = { membershipId: db.membershipId, runId };
-		const other = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-user-org" }),
-		);
+		const other = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-user-org" }));
 		const before = await t.run((ctx) => ctx.db.get("activities", activityId));
 		expect(await t.mutation(api.files_transfer.stop, args)).toEqual({ _nay: { message: "Unauthenticated" } });
-		expect(
-			await asUser.mutation(api.files_transfer.stop, { membershipId: other.membershipId, runId }),
-		).toEqual({ _nay: { message: "Unauthorized" } });
+		expect(await asUser.mutation(api.files_transfer.stop, { membershipId: other.membershipId, runId })).toEqual({
+			_nay: { message: "Unauthorized" },
+		});
 		await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false }));
 		expect(await asUser.mutation(api.files_transfer.stop, args)).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toEqual(before);

@@ -2122,85 +2122,89 @@ describe("apply_file_pending_move", () => {
 		{ selected: false, withContent: false },
 		{ selected: true, withContent: false },
 		{ selected: true, withContent: true },
-	])("requires a destination delete in the review (selected: $selected, content: $withContent)", async ({ selected, withContent }) => {
-		const t = test_convex();
-		const seeded = await t.run((ctx) =>
-			seed_file_with_markdown({
-				ctx,
-				path: "/move-before-delete.md",
-				name: "move-before-delete.md",
-				markdown: "# Move",
-			}),
-		);
-		const occupant = await t.run((ctx) =>
-			seed_file_with_markdown({
-				ctx,
-				membership: seeded,
-				path: "/delete-before-move.md",
-				name: "delete-before-move.md",
-				markdown: "# Delete",
-			}),
-		);
-		const committedBefore = await t.run((ctx) => read_committed_text({ ctx, ...occupant }));
-		if (withContent) {
-			const edited = await upsert_file_pending_update_internal_for_test({
-				t,
-				...occupant,
-				stagedMarkdown: "# Draft delete\n",
-				unstagedMarkdown: "# Draft delete\n",
-			});
-			if (edited._nay) throw new Error(edited._nay.message);
-		}
-		const deleted = await upsert_file_pending_archive_for_test({ t, ...occupant });
-		if (deleted._nay) throw new Error(deleted._nay.message);
-		const moved = await upsert_file_pending_move_for_test({
-			t,
-			...seeded,
-			destParentId: files_ROOT_ID,
-			destName: "delete-before-move.md",
-		});
-		if (moved._nay) throw new Error(moved._nay.message);
-		const moveProposal = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
-		const deleteProposal = await t.run((ctx) => read_pending_update_row({ ctx, ...occupant }));
-		if (!moveProposal || !deleteProposal) throw new Error("Expected the Move and Delete proposals");
-		if (withContent) expect(deleteProposal.content, "the selected Delete keeps its draft until review").toBeDefined();
-		const originalDeleteContent = deleteProposal.content;
-		const beforeReview = await read_pending_review_state_for_test(t);
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId });
-		const review = await save_pending_review_for_test(
-			{ t, asUser, membershipId: seeded.membershipId },
-			selected ? [moveProposal, deleteProposal] : [moveProposal],
-		);
-		if (selected) {
-			expect(review?.activity, "the selected delete frees the Move destination").toMatchObject({
-				status: "succeeded",
-				progress: { completed: 2, blocked: 0 },
-			});
-			expect(review?.run.unitCount, "the Move and destination delete publish together").toBe(1);
-			expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))?.path).toBe("/delete-before-move.md");
-			expect((await t.run((ctx) => ctx.db.get("files_nodes", occupant.nodeId)))?.archiveOperationId).not.toBeNull();
-			expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).toBeNull();
-			expect(
-				await t.run((ctx) => read_pending_update_row({ ctx, ...occupant })),
-				"the selected Delete removes its pending content proposal",
-			).toBeNull();
-			expect(await t.run((ctx) => read_committed_text({ ctx, ...occupant })), "Delete does not save its draft text").toBe(
-				committedBefore,
+	])(
+		"requires a destination delete in the review (selected: $selected, content: $withContent)",
+		async ({ selected, withContent }) => {
+			const t = test_convex();
+			const seeded = await t.run((ctx) =>
+				seed_file_with_markdown({
+					ctx,
+					path: "/move-before-delete.md",
+					name: "move-before-delete.md",
+					markdown: "# Move",
+				}),
 			);
-			if (withContent)
-				await expect_consumed_pending_content_cleanup_for_test(
+			const occupant = await t.run((ctx) =>
+				seed_file_with_markdown({
+					ctx,
+					membership: seeded,
+					path: "/delete-before-move.md",
+					name: "delete-before-move.md",
+					markdown: "# Delete",
+				}),
+			);
+			const committedBefore = await t.run((ctx) => read_committed_text({ ctx, ...occupant }));
+			if (withContent) {
+				const edited = await upsert_file_pending_update_internal_for_test({
 					t,
-					originalDeleteContent!,
-					"The selected Delete retires its original draft states",
-				);
-		} else {
-			expect(review?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 1 } });
-			expect(review?.run.needsReviewIds, "the review names only the unselected destination delete").toEqual([
-				deleteProposal._id,
-			]);
-			expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
-		}
-	});
+					...occupant,
+					stagedMarkdown: "# Draft delete\n",
+					unstagedMarkdown: "# Draft delete\n",
+				});
+				if (edited._nay) throw new Error(edited._nay.message);
+			}
+			const deleted = await upsert_file_pending_archive_for_test({ t, ...occupant });
+			if (deleted._nay) throw new Error(deleted._nay.message);
+			const moved = await upsert_file_pending_move_for_test({
+				t,
+				...seeded,
+				destParentId: files_ROOT_ID,
+				destName: "delete-before-move.md",
+			});
+			if (moved._nay) throw new Error(moved._nay.message);
+			const moveProposal = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+			const deleteProposal = await t.run((ctx) => read_pending_update_row({ ctx, ...occupant }));
+			if (!moveProposal || !deleteProposal) throw new Error("Expected the Move and Delete proposals");
+			if (withContent) expect(deleteProposal.content, "the selected Delete keeps its draft until review").toBeDefined();
+			const originalDeleteContent = deleteProposal.content;
+			const beforeReview = await read_pending_review_state_for_test(t);
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId });
+			const review = await save_pending_review_for_test(
+				{ t, asUser, membershipId: seeded.membershipId },
+				selected ? [moveProposal, deleteProposal] : [moveProposal],
+			);
+			if (selected) {
+				expect(review?.activity, "the selected delete frees the Move destination").toMatchObject({
+					status: "succeeded",
+					progress: { completed: 2, blocked: 0 },
+				});
+				expect(review?.run.unitCount, "the Move and destination delete publish together").toBe(1);
+				expect((await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))?.path).toBe("/delete-before-move.md");
+				expect((await t.run((ctx) => ctx.db.get("files_nodes", occupant.nodeId)))?.archiveOperationId).not.toBeNull();
+				expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).toBeNull();
+				expect(
+					await t.run((ctx) => read_pending_update_row({ ctx, ...occupant })),
+					"the selected Delete removes its pending content proposal",
+				).toBeNull();
+				expect(
+					await t.run((ctx) => read_committed_text({ ctx, ...occupant })),
+					"Delete does not save its draft text",
+				).toBe(committedBefore);
+				if (withContent)
+					await expect_consumed_pending_content_cleanup_for_test(
+						t,
+						originalDeleteContent!,
+						"The selected Delete retires its original draft states",
+					);
+			} else {
+				expect(review?.activity).toMatchObject({ status: "failed", progress: { completed: 0, blocked: 1 } });
+				expect(review?.run.needsReviewIds, "the review names only the unselected destination delete").toEqual([
+					deleteProposal._id,
+				]);
+				expect(await read_pending_review_state_for_test(t)).toEqual(beforeReview);
+			}
+		},
+	);
 
 	test("keeps a restricted swap partner unchanged before review", async () => {
 		const t = test_convex();
@@ -5394,10 +5398,10 @@ describe("discard_file_pending_structural", () => {
 			name: "Other User",
 		});
 		const moved = await test_move_nodes(t, asOtherUser, {
-				membershipId: other.otherMembershipId,
-				itemIds: [dest.nodeId],
-				targetParentId: other.folderId,
-			});
+			membershipId: other.otherMembershipId,
+			itemIds: [dest.nodeId],
+			targetParentId: other.folderId,
+		});
 		if (moved._nay) {
 			throw new Error(moved._nay.message);
 		}
@@ -6597,7 +6601,9 @@ describe("create_file_pending_update_operation_batch", () => {
 		await t.run(async (ctx) => {
 			for (const rows of Object.values(beforeIndexes)) {
 				expect(rows.length).toBeGreaterThan(0);
-				expect(rows.every((row) => row.sourceKind === "pending" && row.proposalRevision === before.revision)).toBe(true);
+				expect(rows.every((row) => row.sourceKind === "pending" && row.proposalRevision === before.revision)).toBe(
+					true,
+				);
 			}
 			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: before._id })).toEqual(beforeIndexes.text);
 			expect(await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: before._id })).toEqual(
@@ -8407,14 +8413,18 @@ describe("pending update read-only checks", () => {
 			}),
 		);
 		// The real producer accepts the draft before the parent becomes read-only.
-		const draft = await create_private_text_for_test({ path: "/locked-parent/draft.txt", staged: "Saved from a private draft\n", collaborative: false }, { t, membershipId: db.membershipId });
+		const draft = await create_private_text_for_test(
+			{ path: "/locked-parent/draft.txt", staged: "Saved from a private draft\n", collaborative: false },
+			{ t, membershipId: db.membershipId },
+		);
 		await set_pending_test_read_only({ asUser, membershipId: db.membershipId, nodeId: folderId });
-		const publish = () => test_save_file_pending_update(asUser, {
-			membershipId: db.membershipId,
-			target: draft.target,
-			pendingUpdateId: draft.pendingUpdateId,
-			reviewedRevision: draft.proposal.revision,
-		});
+		const publish = () =>
+			test_save_file_pending_update(asUser, {
+				membershipId: db.membershipId,
+				target: draft.target,
+				pendingUpdateId: draft.pendingUpdateId,
+				reviewedRevision: draft.proposal.revision,
+			});
 
 		const refused = await publish();
 		expect(refused._nay).toBeDefined();
@@ -9258,10 +9268,10 @@ describe("pending file that was moved while pending", () => {
 		}
 
 		const moved = await test_move_nodes(t, asUser, {
-				membershipId: seeded.membershipId,
-				itemIds: [seeded.nodeId],
-				targetParentId: destFolderId,
-			});
+			membershipId: seeded.membershipId,
+			itemIds: [seeded.nodeId],
+			targetParentId: destFolderId,
+		});
 		if (moved._nay) {
 			throw new Error(moved._nay.message);
 		}

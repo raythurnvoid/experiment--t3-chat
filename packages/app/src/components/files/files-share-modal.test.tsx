@@ -226,9 +226,7 @@ function renderModal() {
 beforeEach(() => {
 	queryMock
 		.mockReset()
-		.mockImplementation((query: string) =>
-			query === "sharing" ? SHARE : query === "roles" ? [] : undefined,
-		);
+		.mockImplementation((query: string) => (query === "sharing" ? SHARE : query === "roles" ? [] : undefined));
 	pageMock.mockReset();
 	mockPickerPages();
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
@@ -264,7 +262,11 @@ describe("FilesShareModal", () => {
 				level: "read",
 			}),
 		);
-		expect(pageMock).toHaveBeenCalledWith("accounts", { membershipId: "membership_1", text: "" }, { initialNumItems: 20 });
+		expect(pageMock).toHaveBeenCalledWith(
+			"accounts",
+			{ membershipId: "membership_1", text: "" },
+			{ initialNumItems: 20 },
+		);
 	});
 
 	test("disables levels above the service grant ceiling", async () => {
@@ -767,9 +769,7 @@ describe("FilesShareModal", () => {
 
 	test("hides service choices when the caller cannot manage service accounts", async () => {
 		queryMock.mockImplementation((query: string) =>
-			query === "sharing"
-				? { ...SHARE, canShareWithServiceAccounts: false }
-				: [],
+			query === "sharing" ? { ...SHARE, canShareWithServiceAccounts: false } : [],
 		);
 
 		renderModal();

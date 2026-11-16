@@ -33,8 +33,11 @@ export async function files_index_db_request(
 	const contentRevision = (state?.contentRevision ?? 0) + (args.contentChanged === false ? 0 : 1);
 	const indexRevision = (state?.requestedRevision ?? 0) + 1;
 	const changes = {
-		contentRevision, requestedRevision: indexRevision, requestedHeadId: head?._id ?? null,
-		needsRun: !state?.activeRunId && !state?.movePublication, nextAttemptAt: Date.now() + files_index_RECOVER_MS,
+		contentRevision,
+		requestedRevision: indexRevision,
+		requestedHeadId: head?._id ?? null,
+		needsRun: !state?.activeRunId && !state?.movePublication,
+		nextAttemptAt: Date.now() + files_index_RECOVER_MS,
 	};
 	if (state) await ctx.db.patch("files_index_states", state._id, changes);
 	else
@@ -112,7 +115,8 @@ export async function files_index_db_finish_move(
 	const needsRun = !state.activeRunId && (!args.published || state.requestedRevision > side.indexRevision);
 	await ctx.db.patch("files_index_states", state._id, {
 		movePublication: null,
-		needsRun, nextAttemptAt: Date.now() + files_index_RECOVER_MS,
+		needsRun,
+		nextAttemptAt: Date.now() + files_index_RECOVER_MS,
 		...(state.requestedRevision === side.indexRevision ? { requestedHeadId: head?._id ?? null } : {}),
 		...(args.published ? { publishedRevision: side.indexRevision, publishedHeadId: side.headId } : {}),
 	});
@@ -120,8 +124,7 @@ export async function files_index_db_finish_move(
 		for (const headId of new Set([state.publishedHeadId, state.requestedHeadId]))
 			if (headId && headId !== side.headId)
 				await ctx.scheduler.runAfter(0, internal.files_content_saves.retire, { headId });
-	if (needsRun)
-		await ctx.scheduler.runAfter(0, internal.files_index.start, { nodeId: args.nodeId });
+	if (needsRun) await ctx.scheduler.runAfter(0, internal.files_index.start, { nodeId: args.nodeId });
 }
 
 function ticket_key(owner: Doc<"files_index_tickets">["owner"]) {

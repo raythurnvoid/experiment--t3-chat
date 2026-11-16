@@ -808,8 +808,10 @@ test("stored-byte Restore keeps its bytes when unchanged Review shared old stats
 	).toBeUndefined();
 	const restored = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!;
 	expect(restored).toMatchObject({ textKind: null, statsId: null, yjsSnapshotId: null });
-	expect(await f.t.run((ctx) => ctx.db.get("file_stats", before.statsId!)),
-		"the unfinished Review still pins its old stats").not.toBeNull();
+	expect(
+		await f.t.run((ctx) => ctx.db.get("file_stats", before.statsId!)),
+		"the unfinished Review still pins its old stats",
+	).not.toBeNull();
 	const check = async () => {
 		const node = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!;
 		expect(node.assetId, "cleanup keeps the restored stored-byte asset").toBe(restored.assetId);

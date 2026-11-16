@@ -59,7 +59,8 @@ describe("paged Move transaction budgets", () => {
 				{
 					...scope,
 					target: { kind: "saved", id: nodeId },
-					expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!.pendingContentVersion,
+					expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))!
+						.pendingContentVersion,
 				},
 			);
 			if (batch._nay) throw new Error(batch._nay.message);
@@ -126,8 +127,8 @@ describe("paged Move transaction budgets", () => {
 		await finish_scheduled(
 			t,
 			async () =>
-				(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.finishedAt !==
-				undefined,
+				(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity
+					.finishedAt !== undefined,
 		);
 		const receipt = await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId });
 		expect(peaks.get("accept")?.calls, "the large draft budget includes automatic acceptance").toBe(1);

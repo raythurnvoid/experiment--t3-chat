@@ -145,7 +145,9 @@ const FilesSearchInputFilterChip = memo(function FilesSearchInputFilterChip(prop
 /**
  * A row that only tells something. It is disabled, so it cannot be picked.
  */
-const FilesSearchInputSuggestionsMessage = memo(function FilesSearchInputSuggestionsMessage(props: { children: string }) {
+const FilesSearchInputSuggestionsMessage = memo(function FilesSearchInputSuggestionsMessage(props: {
+	children: string;
+}) {
 	return (
 		<MyComboboxItem
 			value={`message:${props.children}`}
@@ -190,7 +192,10 @@ const FilesSearchInputSuggestionsSkeleton = memo(function FilesSearchInputSugges
 	return (
 		<div aria-hidden="true">
 			{Array.from({ length: props.rows }, (_, index) => (
-				<div key={index} className={cn("FilesSearchInput-suggestions-skeleton-row" satisfies FilesSearchInput_ClassNames)}>
+				<div
+					key={index}
+					className={cn("FilesSearchInput-suggestions-skeleton-row" satisfies FilesSearchInput_ClassNames)}
+				>
 					<MySkeleton
 						className={cn("FilesSearchInput-suggestions-skeleton-label" satisfies FilesSearchInput_ClassNames)}
 					/>
@@ -312,7 +317,9 @@ const FilesSearchInputKeyRows = memo(function FilesSearchInputKeyRows(props: {
 					const kinds = [...(kindsByKey.get(key.fieldPath) ?? [])]
 						.map((kind) => FilesSearchInput_VALUE_KIND_LABELS[kind])
 						.join(", ");
-					const metadataKind = key.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX) ? "frontmatter" : "metadata";
+					const metadataKind = key.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
+						? "frontmatter"
+						: "metadata";
 					return (
 						<MyComboboxItem
 							key={key.fieldPath}
@@ -603,9 +610,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 	const matchingFileFields =
 		typingFilter === null
-			? files_search_query_FILE_FIELDS.map((field) => `file.${field}`).filter((field) =>
-					field.includes(typedKey.toLowerCase()),
-				)
+			? files_search_query_FILE_FIELDS
+					.map((field) => `file.${field}`)
+					.filter((field) => field.includes(typedKey.toLowerCase()))
 			: [];
 	// A plain search word stays in the query when the user adds a filter. A word is plain when it
 	// starts no saved key and no file field. Then every key and file field shows.
@@ -674,7 +681,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 
 		// A typed path is read the way the filter will read it, so `tasks` still lists `/tasks`.
 		const typedFileValue =
-			typedValue.length > 0 && typingFilter.key.name === "path" ? files_search_query_folder_path(typedValue) : typedValue;
+			typedValue.length > 0 && typingFilter.key.name === "path"
+				? files_search_query_folder_path(typedValue)
+				: typedValue;
 		const typedValueLower = typedFileValue.toLowerCase();
 		const rows: string[] = [];
 		const push = (value: string) => {
@@ -1022,7 +1031,9 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 															onClick={() => pickKey(field)}
 														>
 															<span
-																className={cn("FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames)}
+																className={cn(
+																	"FilesSearchInput-suggestion-label" satisfies FilesSearchInput_ClassNames,
+																)}
 															>
 																{field}
 															</span>
@@ -1099,12 +1110,14 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 										<dd>Finds names and contents with these words.</dd>
 									</>
 								) : null}
-								{files_search_query_SYNTAX_EXAMPLES.filter((row) => row.inputs.includes("search")).map((row) => (
-									<Fragment key={row.label}>
-										<dt>{row.label}</dt>
-										<dd>{row.example}</dd>
-									</Fragment>
-								))}
+								{files_search_query_SYNTAX_EXAMPLES
+									.filter((row) => row.inputs.includes("search"))
+									.map((row) => (
+										<Fragment key={row.label}>
+											<dt>{row.label}</dt>
+											<dd>{row.example}</dd>
+										</Fragment>
+									))}
 							</dl>
 						</details>
 					</div>

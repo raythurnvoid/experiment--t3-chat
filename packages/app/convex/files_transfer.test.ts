@@ -95,14 +95,16 @@ describe("start", () => {
 		expect((await start_transfer(asUser, { ...args, requestId: "another-request" }))._nay?.message).toBe(
 			"A transfer is already running in this workspace",
 		);
-		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
-			{
-				_id: first._yay.runId,
-				step: "discover",
-				activity: { status: "running", progress: { discovered: 1, total: null } },
-				controls: { canStop: true, canRetry: false, canDismiss: false },
-			},
-		]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject(
+			[
+				{
+					_id: first._yay.runId,
+					step: "discover",
+					activity: { status: "running", progress: { discovered: 1, total: null } },
+					controls: { canStop: true, canRetry: false, canDismiss: false },
+				},
+			],
+		);
 		await t.run(async (ctx) => {
 			expect(await ctx.db.query("files_transfer_runs").collect()).toHaveLength(1);
 			expect((await ctx.db.query("files_transfer_items").collect()).map((item) => item.source.id)).toEqual([
@@ -196,7 +198,9 @@ describe("start", () => {
 		const fixture = await create_folder_fixture(["/source"]);
 		const member = await add_member(fixture);
 		const runId = await start_copy(fixture, [fixture.folders.get("/source")!]);
-		expect(await member.asUser.query(api.files_transfer_status.get, { membershipId: member.membershipId, runId })).toBeNull();
+		expect(
+			await member.asUser.query(api.files_transfer_status.get, { membershipId: member.membershipId, runId }),
+		).toBeNull();
 		expect(
 			await member.asUser.query(api.files_transfer_status.list_items, {
 				membershipId: member.membershipId,
@@ -204,22 +208,22 @@ describe("start", () => {
 				paginationOpts: { numItems: 10, cursor: null },
 			}),
 		).toBeNull();
-		expect(await member.asUser.query(api.files_transfer_status.list_current, { membershipId: member.membershipId })).toEqual(
-			[],
-		);
+		expect(
+			await member.asUser.query(api.files_transfer_status.list_current, { membershipId: member.membershipId }),
+		).toEqual([]);
 		const before = await fixture.asUser.query(api.files_transfer_status.get, {
 			membershipId: fixture.db.membershipId,
 			runId,
 		});
-		expect(
-			await member.asUser.mutation(api.files_transfer.stop, { membershipId: member.membershipId, runId }),
-		).toEqual({ _yay: null });
+		expect(await member.asUser.mutation(api.files_transfer.stop, { membershipId: member.membershipId, runId })).toEqual(
+			{ _yay: null },
+		);
 		expect(
 			await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId }),
 		).toEqual(before);
 		expect(
-			(await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId }))?.activity
-				.status,
+			(await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId }))
+				?.activity.status,
 		).toBe("running");
 	});
 
@@ -309,26 +313,30 @@ describe("Rename at a group boundary", () => {
 			path: "second",
 		});
 		if (!first._yay || !second._yay) throw new Error("Expected both Renames");
-		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
-			{ _id: first._yay.runId, activity: { source: { isRename: true }, status: "queued" } },
-		]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject(
+			[{ _id: first._yay.runId, activity: { source: { isRename: true }, status: "queued" } }],
+		);
 		expect(
-			(await start_transfer(asUser, {
-				membershipId: db.membershipId,
-				requestId: "bulk-during-rename",
-				kind: "copy",
-				sourceIds: [folders.get("/source")!],
-				targetParentId: folders.get("/target")!,
-			}))._nay?.name,
+			(
+				await start_transfer(asUser, {
+					membershipId: db.membershipId,
+					requestId: "bulk-during-rename",
+					kind: "copy",
+					sourceIds: [folders.get("/source")!],
+					targetParentId: folders.get("/target")!,
+				})
+			)._nay?.name,
 		).toBe("busy");
-		expect(await asUser.mutation(api.files_transfer.stop, {
-			membershipId: db.membershipId,
-			runId: first._yay.runId,
-		})).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_transfer.stop, {
+				membershipId: db.membershipId,
+				runId: first._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 		await test_finish_transfer_run(asUser, first._yay.runId);
-		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
-			{ _id: second._yay.runId },
-		]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject(
+			[{ _id: second._yay.runId }],
+		);
 		await test_finish_transfer_run(asUser, second._yay.runId);
 		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toEqual([]);
 	});
@@ -387,10 +395,12 @@ describe("Rename at a group boundary", () => {
 			path: "renamed",
 		});
 		if (!rename._yay) throw new Error(rename._nay?.message ?? "Expected Rename");
-		expect(await asUser.mutation(api.files_transfer.stop, {
-			membershipId: db.membershipId,
-			runId: moved._yay.runId,
-		})).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_transfer.stop, {
+				membershipId: db.membershipId,
+				runId: moved._yay.runId,
+			}),
+		).toEqual({ _yay: null });
 		await t.mutation(internal.files_transfer.advance, { runId: rename._yay.runId });
 		expect((await t.run((ctx) => ctx.db.get("activities", rename._yay!.activityId)))?.status).toBe("queued");
 		await test_finish_transfer_run(asUser, moved._yay.runId);
@@ -630,9 +640,9 @@ describe("Rename at a group boundary", () => {
 		if (!first._yay || !second._yay) throw new Error("Expected both Renames");
 		await t.mutation(internal.files_transfer.advance, { runId: second._yay.runId });
 		expect((await t.run((ctx) => ctx.db.get("activities", second._yay!.activityId)))?.status).toBe("queued");
-		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject([
-			{ _id: runId },
-		]);
+		expect(await asUser.query(api.files_transfer_status.list_current, { membershipId: db.membershipId })).toMatchObject(
+			[{ _id: runId }],
+		);
 		await test_finish_transfer_run(asUser, first._yay.runId);
 		await test_finish_transfer_run(asUser, second._yay.runId);
 		const conflict = await asUser.query(api.files_transfer_status.get, {
@@ -656,13 +666,15 @@ describe("Rename at a group boundary", () => {
 		expect((await get_node(fixture, "/third"))?._id).toBe(folders.get("/three"));
 		if (!conflict) throw new Error("Expected the conflict");
 		expect(
-			(await asUser.mutation(api.files_transfer.resolve_conflicts, {
-				membershipId: db.membershipId,
-				runId: second._yay.runId,
-				revision: conflict.revision,
-				choices: conflict.conflicts.map((item) => ({ itemId: item.itemId, choice: "skip" as const })),
-				applyToRemaining: { file: null, folder: null },
-			}))._nay,
+			(
+				await asUser.mutation(api.files_transfer.resolve_conflicts, {
+					membershipId: db.membershipId,
+					runId: second._yay.runId,
+					revision: conflict.revision,
+					choices: conflict.conflicts.map((item) => ({ itemId: item.itemId, choice: "skip" as const })),
+					applyToRemaining: { file: null, folder: null },
+				})
+			)._nay,
 		).toBeUndefined();
 		await test_finish_transfer_run(asUser, second._yay.runId);
 	});
@@ -718,9 +730,9 @@ describe("Rename at a group boundary", () => {
 		).toEqual({ _yay: null });
 		await test_finish_transfer_run(asUser, renamed._yay.runId);
 		expect((await get_node(fixture, "/other"))?._id).toBe(folders.get("/other"));
-		expect((await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
-			"running",
-		);
+		expect(
+			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status,
+		).toBe("running");
 		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
 			membershipId: db.membershipId,
 			runId: renamed._yay.runId,
@@ -950,7 +962,8 @@ describe("start_for_agent", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", source.organizationId)
-							.eq("workspaceId", source.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", source.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", "/cross-source")
 							.eq("archiveOperationId", null),
 					)
@@ -1757,10 +1770,10 @@ describe("retry_remaining", () => {
 		expect(
 			(
 				await test_move_nodes(t, asUser, {
-						membershipId: db.membershipId,
-						itemIds: [created._yay.nodeId],
-						targetParentId: folders.get("/elsewhere")!,
-					})
+					membershipId: db.membershipId,
+					itemIds: [created._yay.nodeId],
+					targetParentId: folders.get("/elsewhere")!,
+				})
 			)._nay,
 		).toBeUndefined();
 		const retried = await asUser.mutation(api.files_transfer.retry_remaining, {
@@ -2558,7 +2571,9 @@ describe("move", () => {
 		).toMatchObject({ activity: { status: "succeeded", progress: { completed: 1 } } });
 		expect((await get_node(fixture, "/target/moving"))?._id).toBe(folders.get("/moving"));
 		expect((await get_node(fixture, "/target/moving/child"))?._id).toBe(folders.get("/moving/child"));
-		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: copyRunId })).toMatchObject({
+		expect(
+			await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: copyRunId }),
+		).toMatchObject({
 			activity: { status: "awaiting_input", progress: { completed: 0, blocked: 1 } },
 		});
 	});
@@ -2826,10 +2841,11 @@ describe("move", () => {
 					.collect()
 					// Move writes new docs, so their creation order can change.
 					.then((docs) =>
-						docs.sort((a, b) =>
-							a.fieldPath.localeCompare(b.fieldPath) ||
-							a.docKind.localeCompare(b.docKind) ||
-							(a.entryIndex ?? 0) - (b.entryIndex ?? 0),
+						docs.sort(
+							(a, b) =>
+								a.fieldPath.localeCompare(b.fieldPath) ||
+								a.docKind.localeCompare(b.docKind) ||
+								(a.entryIndex ?? 0) - (b.entryIndex ?? 0),
 						),
 					),
 			);
@@ -2895,11 +2911,13 @@ describe("move", () => {
 				...fields,
 				path: moved!.path,
 				treePath: moved!.treePath,
-				...(fields.docKind === "field" ? {
-					parentId: moved!.parentId,
-					name: moved!.name,
-					sortName: moved!.sortName,
-				} : {}),
+				...(fields.docKind === "field"
+					? {
+							parentId: moved!.parentId,
+							name: moved!.name,
+							sortName: moved!.sortName,
+						}
+					: {}),
 			})),
 		);
 		expect(metadataDocsAfter.map((doc) => doc.fieldPath).sort()).toEqual(
@@ -3222,40 +3240,57 @@ describe("move", () => {
 		await test_finish_transfer_run(asUser, renamed._yay.runId, async () => {
 			if (observedOldPath) return;
 			const cohort = await t.run(async (ctx) => {
-				const slot = await ctx.db.query("files_move_workspace_slots").withIndex("by_workspace", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId),
-				).unique();
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique();
 				return slot?.cohortId ? await ctx.db.get("files_move_cohorts", slot.cohortId) : null;
 			});
 			if (!cohort || cohort.publishedAt === null) return;
 			const stored = await t.run((ctx) => ctx.db.get("files_nodes", sharedId));
 			if (stored?.path !== "/a/shared") return;
 			observedOldPath = true;
-			expect(await asUser.query(api.files_tree.get_file_node_for_membership, {
-				membershipId: db.membershipId, fileNodeId: String(sharedId),
-			}), "A published Rename shows the new path before stored repair").toMatchObject({ path: "/b/shared" });
-			expect(await member.asUser.query(api.files_tree.get_file_node_for_membership, {
-				membershipId: member.membershipId, fileNodeId: String(sharedId),
-			})).toBeNull();
+			expect(
+				await asUser.query(api.files_tree.get_file_node_for_membership, {
+					membershipId: db.membershipId,
+					fileNodeId: String(sharedId),
+				}),
+				"A published Rename shows the new path before stored repair",
+			).toMatchObject({ path: "/b/shared" });
+			expect(
+				await member.asUser.query(api.files_tree.get_file_node_for_membership, {
+					membershipId: member.membershipId,
+					fileNodeId: String(sharedId),
+				}),
+			).toBeNull();
 			// The old name stays reserved until the Move repairs its stored docs.
-			expect(await asUser.mutation(api.files_nodes.create_folder_node, {
-				membershipId: db.membershipId, parentId: files_ROOT_ID, path: "a",
-			})).toMatchObject({ _nay: { name: "move_busy" } });
+			expect(
+				await asUser.mutation(api.files_nodes.create_folder_node, {
+					membershipId: db.membershipId,
+					parentId: files_ROOT_ID,
+					path: "a",
+				}),
+			).toMatchObject({ _nay: { name: "move_busy" } });
 		});
 		expect(observedOldPath, "The test sees publication before stored path repair").toBe(true);
-		expect(await asUser.query(api.files_transfer_status.get, {
-			membershipId: db.membershipId, runId: renamed._yay.runId,
-		})).toMatchObject({ activity: { status: "succeeded" } });
+		expect(
+			await asUser.query(api.files_transfer_status.get, {
+				membershipId: db.membershipId,
+				runId: renamed._yay.runId,
+			}),
+		).toMatchObject({ activity: { status: "succeeded" } });
 		const newA = await asUser.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId, parentId: files_ROOT_ID, path: "a",
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "a",
 		});
 		if (newA._nay) throw new Error(newA._nay.message);
 		const move = (itemId: Id<"files_nodes">) =>
 			test_move_nodes(t, member.asUser, {
-					membershipId: member.membershipId,
-					itemIds: [itemId],
-					targetParentId: folders.get("/other")!,
-				});
+				membershipId: member.membershipId,
+				itemIds: [itemId],
+				targetParentId: folders.get("/other")!,
+			});
 
 		// The member cannot open `shared`, but it moves along inside /b and keeps its own people.
 		expect(await move(folders.get("/a")!)).toEqual({ _yay: null });
@@ -3263,9 +3298,12 @@ describe("move", () => {
 			path: "/other/b/shared",
 			restrictedScopeNodeId: sharedId,
 		});
-		expect(await member.asUser.query(api.files_tree.get_file_node_for_membership, {
-			membershipId: member.membershipId, fileNodeId: String(sharedId),
-		})).toBeNull();
+		expect(
+			await member.asUser.query(api.files_tree.get_file_node_for_membership, {
+				membershipId: member.membershipId,
+				fileNodeId: String(sharedId),
+			}),
+		).toBeNull();
 		// The new /a reuses the old name.
 		expect(await move(newA._yay.nodeId)).toEqual({ _yay: null });
 	});
@@ -3276,10 +3314,16 @@ describe("move", () => {
 		const { t, db, asUser, folders } = fixture;
 		const member = await add_member(fixture);
 		const itemId = folders.get(paths.at(-1)!)!;
-		expect(await asUser.mutation(api.files_sharing.restrict_node, {
-			membershipId: db.membershipId, nodeId: folders.get("/shared")!,
-		})).toEqual({ _yay: null });
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId)), "Restrict leaves the selected child's stored scope for its next step").toMatchObject({
+		expect(
+			await asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: db.membershipId,
+				nodeId: folders.get("/shared")!,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.run((ctx) => ctx.db.get("files_nodes", itemId)),
+			"Restrict leaves the selected child's stored scope for its next step",
+		).toMatchObject({
 			restrictedScopeNodeId: null,
 		});
 
@@ -3293,20 +3337,31 @@ describe("move", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = started._yay.runId;
-		expect(await member.asUser.mutation(api.files_transfer.seal, {
-			membershipId: member.membershipId, runId,
-		})).toEqual({ _yay: null });
+		expect(
+			await member.asUser.mutation(api.files_transfer.seal, {
+				membershipId: member.membershipId,
+				runId,
+			}),
+		).toEqual({ _yay: null });
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)), "Move waits for the native scope repair before reading its source").toMatchObject({ step: "select" });
+		expect(
+			await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)),
+			"Move waits for the native scope repair before reading its source",
+		).toMatchObject({ step: "select" });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
-			parentId: folders.get("/shared")!, restrictedScopeNodeId: null,
+			parentId: folders.get("/shared")!,
+			restrictedScopeNodeId: null,
 		});
 		await test_finish_transfer_run(member.asUser, runId);
-		expect(await member.asUser.query(api.files_transfer_status.get, {
-			membershipId: member.membershipId, runId,
-		})).toMatchObject({ activity: { status: "failed", errorMessage: "Permission denied" } });
+		expect(
+			await member.asUser.query(api.files_transfer_status.get, {
+				membershipId: member.membershipId,
+				runId,
+			}),
+		).toMatchObject({ activity: { status: "failed", errorMessage: "Permission denied" } });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
-			parentId: folders.get("/shared")!, restrictedScopeNodeId: folders.get("/shared")!,
+			parentId: folders.get("/shared")!,
+			restrictedScopeNodeId: folders.get("/shared")!,
 		});
 	});
 
@@ -3317,15 +3372,24 @@ describe("move", () => {
 		const member = await add_member(fixture);
 		const sharedId = folders.get("/shared")!;
 		const itemId = folders.get(paths.at(-1)!)!;
-		expect(await asUser.mutation(api.files_sharing.restrict_node, {
-			membershipId: db.membershipId, nodeId: sharedId,
-		})).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: db.membershipId,
+				nodeId: sharedId,
+			}),
+		).toEqual({ _yay: null });
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({ restrictedScopeNodeId: sharedId });
-		expect(await asUser.mutation(api.files_sharing.unrestrict_node, {
-			membershipId: db.membershipId, nodeId: sharedId,
-		})).toEqual({ _yay: null });
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId)), "Unrestrict leaves the selected child's stored scope for its next step").toMatchObject({
+		expect(
+			await asUser.mutation(api.files_sharing.unrestrict_node, {
+				membershipId: db.membershipId,
+				nodeId: sharedId,
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.run((ctx) => ctx.db.get("files_nodes", itemId)),
+			"Unrestrict leaves the selected child's stored scope for its next step",
+		).toMatchObject({
 			restrictedScopeNodeId: sharedId,
 		});
 
@@ -3339,17 +3403,27 @@ describe("move", () => {
 		});
 		if (started._nay) throw new Error(started._nay.message);
 		const runId = started._yay.runId;
-		expect(await member.asUser.mutation(api.files_transfer.seal, {
-			membershipId: member.membershipId, runId,
-		})).toEqual({ _yay: null });
+		expect(
+			await member.asUser.mutation(api.files_transfer.seal, {
+				membershipId: member.membershipId,
+				runId,
+			}),
+		).toEqual({ _yay: null });
 		await t.mutation(internal.files_transfer.advance, { runId });
-		expect(await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)), "Move waits for the native scope repair before reading its source").toMatchObject({ step: "select" });
+		expect(
+			await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)),
+			"Move waits for the native scope repair before reading its source",
+		).toMatchObject({ step: "select" });
 		await test_finish_transfer_run(member.asUser, runId);
-		expect(await member.asUser.query(api.files_transfer_status.get, {
-			membershipId: member.membershipId, runId,
-		})).toMatchObject({ activity: { status: "succeeded" } });
+		expect(
+			await member.asUser.query(api.files_transfer_status.get, {
+				membershipId: member.membershipId,
+				runId,
+			}),
+		).toMatchObject({ activity: { status: "succeeded" } });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", itemId))).toMatchObject({
-			parentId: folders.get("/other")!, restrictedScopeNodeId: null,
+			parentId: folders.get("/other")!,
+			restrictedScopeNodeId: null,
 		});
 	});
 
@@ -3561,7 +3635,9 @@ describe("copy deadline", () => {
 		});
 		vi.setSystemTime(deadlineAt + 1000);
 		await t.mutation(internal.files_transfer.handle_copy_complete, callback);
-		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toEqual(finished);
+		expect(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId })).toEqual(
+			finished,
+		);
 	});
 });
 

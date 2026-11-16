@@ -160,9 +160,9 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 		});
 		// No step callback: use the same chain mode as the real Move worker.
 		await test_finish_transfer_run(asOwner, runId);
-		expect((await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status).toBe(
-			"succeeded",
-		);
+		expect(
+			(await asOwner.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId }))?.activity.status,
+		).toBe("succeeded");
 	};
 
 	// 33 owners is one past 32 and needs 5 claim pages of 8. Each owner costs real setup work.
@@ -234,9 +234,14 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 			ctx.db
 				.query("files_pending_places")
 				.withIndex("by_org_ws_parent_name", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
-						.eq("moveView.cohortId", undefined).eq("moveView.view", undefined)
-						.eq("parent.kind", "saved").eq("parent.id", destinationId).eq("name", "shared"),
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("moveView.cohortId", undefined)
+						.eq("moveView.view", undefined)
+						.eq("parent.kind", "saved")
+						.eq("parent.id", destinationId)
+						.eq("name", "shared"),
 				)
 				.collect(),
 		);
@@ -264,16 +269,19 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 			const pages = claimPages.filter((page) => page.kind === kind);
 			for (const page of pages)
 				expect(page.rowIds.length, "A claim collection page has at most eight docs").toBeLessThanOrEqual(8);
-			expect(pages.length, `${owners} claim owners need several ${kind} pages`).toBeGreaterThanOrEqual(Math.ceil(owners / 8));
-			expect(pages.map((page) => page.rowIds.length), `${kind} pages keep their real native size`).toEqual([8, 8, 8, 8, 1]);
-			expect(pages.flatMap((page) => page.rowIds).sort(), `Every ${kind} claim is read exactly once`)
-				.toEqual([...expectedClaimIds[kind]].sort());
+			expect(pages.length, `${owners} claim owners need several ${kind} pages`).toBeGreaterThanOrEqual(
+				Math.ceil(owners / 8),
+			);
+			expect(
+				pages.map((page) => page.rowIds.length),
+				`${kind} pages keep their real native size`,
+			).toEqual([8, 8, 8, 8, 1]);
+			expect(pages.flatMap((page) => page.rowIds).sort(), `Every ${kind} claim is read exactly once`).toEqual(
+				[...expectedClaimIds[kind]].sort(),
+			);
 		}
 		for (const phase of ["owners_stage", "finish_owners"])
-			expect(
-				peaks.get(`cohort/${phase}`)?.calls,
-				`${owners} owners use several ${phase} steps`,
-			).toBeGreaterThan(1);
+			expect(peaks.get(`cohort/${phase}`)?.calls, `${owners} owners use several ${phase} steps`).toBeGreaterThan(1);
 		const peak = { ...steps[0]!.cost };
 		for (const { cost } of steps)
 			for (const key of Object.keys(cost) as Array<keyof typeof cost>) peak[key] = Math.max(peak[key], cost[key]);
@@ -290,11 +298,18 @@ test("saved Moves refresh more than 32 native private name claims in pages", asy
 	expect(overlayCosts.length, "the real pending overlay jobs ran").toBeGreaterThan(0);
 	const overlayPeak = { ...overlayCosts[0]! };
 	for (const cost of overlayCosts)
-		for (const key of Object.keys(cost) as Array<keyof typeof cost>) overlayPeak[key] = Math.max(overlayPeak[key], cost[key]);
-	console.info("crowded saved Move costs", JSON.stringify({
-		moves: movePeaks, parentPhases: Object.fromEntries(peaks), claimPages,
-		overlayCalls: overlayCosts.length, overlayPeak,
-	}));
+		for (const key of Object.keys(cost) as Array<keyof typeof cost>)
+			overlayPeak[key] = Math.max(overlayPeak[key], cost[key]);
+	console.info(
+		"crowded saved Move costs",
+		JSON.stringify({
+			moves: movePeaks,
+			parentPhases: Object.fromEntries(peaks),
+			claimPages,
+			overlayCalls: overlayCosts.length,
+			overlayPeak,
+		}),
+	);
 	// This native 33-owner Move took 296 calls before small owner work could join.
 	expect(costs.length, "Small owner work stays within 120 Move advance calls").toBeLessThanOrEqual(120);
 }, 120_000);

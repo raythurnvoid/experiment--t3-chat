@@ -1449,12 +1449,17 @@ describe("reviewed Move names and paths", () => {
 		const savedTarget = saved._yay.target;
 		if (savedTarget.kind !== "saved") throw new Error("Expected Save to publish the folder");
 		const shorterPath =
-			"/a/" + parents.slice(1).map((parent) => parent.name.repeat(files_NAME_MAX_LENGTH)).join("/") + "/leaf";
+			"/a/" +
+			parents
+				.slice(1)
+				.map((parent) => parent.name.repeat(files_NAME_MAX_LENGTH))
+				.join("/") +
+			"/leaf";
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", savedTarget.id))).toMatchObject({ path: shorterPath });
 		expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toHaveLength(drafts.length);
-		expect(
-			(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).map((node) => node.state),
-		).toEqual(drafts.map(() => "published"));
+		expect((await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).map((node) => node.state)).toEqual(
+			drafts.map(() => "published"),
+		);
 	});
 
 	test("moves 41 mixed files with final counter names and keeps their assets", async () => {
@@ -1637,7 +1642,12 @@ describe("reviewed Move names and paths", () => {
 						.first(),
 				);
 				if (cohort && cohort.phase !== "complete")
-					await asUser.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+					await asUser.action(internal.files_move_run.run, {
+						cohortId: cohort._id,
+						step: cohort.step,
+						runGeneration: cohort.runJob?.generation ?? null,
+						mode: "step",
+					});
 				else if (cohort) await t.mutation(internal.files_transfer.settle_cohort, { cohortId: cohort._id });
 				await t.mutation(internal.files_transfer.advance, { runId: rename.runId });
 				if (pass === 4_999) throw new Error("Rename did not finish");

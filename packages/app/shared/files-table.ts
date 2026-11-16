@@ -123,7 +123,13 @@ export function files_table_filter_takes_name_prefix(filter: { field: string; op
  */
 export function files_table_filter_matches(args: {
 	filter: files_table_Filter;
-	facts: { name: string; createdAt: number; updatedAt: number; extension: string | null; contentByteSize: number | null };
+	facts: {
+		name: string;
+		createdAt: number;
+		updatedAt: number;
+		extension: string | null;
+		contentByteSize: number | null;
+	};
 	scalar?: string | number | boolean | null;
 }) {
 	const { filter, facts, scalar = null } = args;

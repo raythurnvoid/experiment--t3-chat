@@ -382,7 +382,13 @@ export function files_folder_table_query_close_open_quote(token: string) {
  */
 export function files_folder_table_query_parse(query: string): files_folder_table_query_Parsed {
 	const { tokens: rawTokens, openQuote } = files_search_query_split_tokens(query.trim());
-	const parsed: files_folder_table_query_Parsed = { tokens: [], filter: null, namePrefix: null, sorts: [], rejected: [] };
+	const parsed: files_folder_table_query_Parsed = {
+		tokens: [],
+		filter: null,
+		namePrefix: null,
+		sorts: [],
+		rejected: [],
+	};
 
 	const results = rawTokens.map((rawToken, index) => {
 		// A quote left open runs to the end of the query. Close it, so the token stays one token.

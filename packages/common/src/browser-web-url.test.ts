@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { browser_web_host_matches, browser_web_normalize_url, browser_web_url_host_matches } from "./browser-web-url.ts";
+import {
+	browser_web_host_matches,
+	browser_web_normalize_url,
+	browser_web_url_host_matches,
+} from "./browser-web-url.ts";
 
 describe("browser_web_normalize_url", () => {
 	test("adds https to a bare host", () => {
@@ -36,10 +40,19 @@ describe("browser_web_normalize_url", () => {
 	test("refuses denied hosts and their subdomains", () => {
 		const denied = ["app.example.com", "convex.cloud"];
 		expect(browser_web_normalize_url("app.example.com", denied)).toEqual({ ok: false, reason: "denied_host" });
-		expect(browser_web_normalize_url("https://x.convex.cloud/api", denied)).toEqual({ ok: false, reason: "denied_host" });
-		expect(browser_web_normalize_url("https://APP.EXAMPLE.COM./", denied)).toEqual({ ok: false, reason: "denied_host" });
+		expect(browser_web_normalize_url("https://x.convex.cloud/api", denied)).toEqual({
+			ok: false,
+			reason: "denied_host",
+		});
+		expect(browser_web_normalize_url("https://APP.EXAMPLE.COM./", denied)).toEqual({
+			ok: false,
+			reason: "denied_host",
+		});
 		expect(browser_web_normalize_url("https://example.com", denied)).toEqual({ ok: true, url: "https://example.com/" });
-		expect(browser_web_normalize_url("https://notconvex.cloud", denied)).toEqual({ ok: true, url: "https://notconvex.cloud/" });
+		expect(browser_web_normalize_url("https://notconvex.cloud", denied)).toEqual({
+			ok: true,
+			url: "https://notconvex.cloud/",
+		});
 	});
 });
 

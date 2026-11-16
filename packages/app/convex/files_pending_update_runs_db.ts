@@ -44,7 +44,10 @@ export async function files_pending_update_runs_db_resume_parked(
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	if (!activities_is_active(activity.status)) return;
 	const now = Date.now();
-	await ctx.db.patch("activities", activity._id, { updatedAt: now, deadlineAt: now + files_pending_update_runs_RUN_TIMEOUT_MS });
+	await ctx.db.patch("activities", activity._id, {
+		updatedAt: now,
+		deadlineAt: now + files_pending_update_runs_RUN_TIMEOUT_MS,
+	});
 	await ctx.db.patch("files_pending_update_runs", run._id, { updatedAt: now });
 	if (run.step === "planning")
 		await ctx.scheduler.runAfter(0, internal.files_pending_update_runs.plan, { runId: run._id, fence: run.fence });

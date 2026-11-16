@@ -259,7 +259,8 @@ describe("data_import.create_upload_targets", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings/team-sync")
 						.eq("archiveOperationId", null),
 				)
@@ -421,7 +422,8 @@ describe("data_import.create_upload_targets", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/documents/report.pdf")
 						.eq("archiveOperationId", null),
 				)
@@ -546,7 +548,8 @@ describe("data_import.create_upload_targets", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
-						.eq("workspaceId", db.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", db.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/locked-dir/nested")
 						.eq("archiveOperationId", null),
 				)

@@ -148,7 +148,10 @@ describe("private pending text", () => {
 		await test_drain_billing_usage_event_outbox(t);
 		const savesBefore = file_save_events().length;
 		const saved = await save_pending_review_for_test(draft, [proposal, occupantProposal]);
-		expect(saved?.activity, "The reviewed replacement publishes the source and removes the selected occupant").toMatchObject({
+		expect(
+			saved?.activity,
+			"The reviewed replacement publishes the source and removes the selected occupant",
+		).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 2 },
 		});
@@ -314,9 +317,10 @@ describe("private pending text", () => {
 			expect(proposal.threadIds).toEqual(expect.arrayContaining([firstThread, secondThread]));
 			expect(proposal.threadIds).toHaveLength(2);
 			// The discarded occupant's proposal stays until cleanup. It must not mask the surviving source.
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupant.pendingUpdateId))).toEqual(
-				{ ...occupantProposal, expiresAt },
-			);
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", occupant.pendingUpdateId))).toEqual({
+				...occupantProposal,
+				expiresAt,
+			});
 			const visible = await list_root_for_test(t, { membershipId });
 			expect(visible._yay?.items.map(({ target, path }) => ({ target, path }))).toEqual([
 				{ target: sourceTarget, path: "/destination.txt" },
@@ -602,7 +606,10 @@ describe("private pending text", () => {
 				);
 			}
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
-			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual({ ...proposal, expiresAt });
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id))).toEqual({
+				...proposal,
+				expiresAt,
+			});
 		},
 	);
 
@@ -928,7 +935,10 @@ describe("private pending text", () => {
 		expect(replayed._nay).toBeUndefined();
 		if (replayed._nay || !("kind" in replayed._yay)) throw new Error("Expected the original Save job");
 		expect(replayed._yay).toMatchObject({ kind: "queued", runId: runIdsBeforeReplay[0] });
-		const original = await asUser.query(api.files_pending_update_runs.get, { membershipId, runId: replayed._yay.runId });
+		const original = await asUser.query(api.files_pending_update_runs.get, {
+			membershipId,
+			runId: replayed._yay.runId,
+		});
 		expect(original?.activity).toMatchObject({
 			_id: replayed._yay.activityId,
 			status: "succeeded",
@@ -941,16 +951,18 @@ describe("private pending text", () => {
 			requestId: crypto.randomUUID(),
 			kind: "accept",
 			expectedItemCount: 1,
-			items: [{
-				pendingUpdateId,
-				reviewedRevision: proposal.revision,
-				selectedContentStateId: proposal.content?.stagedStateId ?? null,
-			}],
+			items: [
+				{
+					pendingUpdateId,
+					reviewedRevision: proposal.revision,
+					selectedContentStateId: proposal.content?.stagedStateId ?? null,
+				},
+			],
 		});
 		expect(stale._nay?.name).toBe("needs_review");
-		expect(await t.run(async (ctx) =>
-			(await ctx.db.query("files_pending_update_runs").collect()).map((run) => run._id),
-		)).toEqual(runIdsBeforeReplay);
+		expect(
+			await t.run(async (ctx) => (await ctx.db.query("files_pending_update_runs").collect()).map((run) => run._id)),
+		).toEqual(runIdsBeforeReplay);
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdateId))).toEqual(remaining);
 	});
 
@@ -1015,13 +1027,17 @@ describe("private pending text", () => {
 				[remaining.content!.stagedStateId, after.stagedBytes],
 				[remaining.content!.unstagedStateId, after.unstagedBytes],
 			] as const) {
-				const reservation = await ctx.db.query("files_private_storage_reservations")
-					.withIndex("by_resource", (q) => q.eq("resource.kind", "state").eq("resource.id", stateId)).unique();
+				const reservation = await ctx.db
+					.query("files_private_storage_reservations")
+					.withIndex("by_resource", (q) => q.eq("resource.kind", "state").eq("resource.id", stateId))
+					.unique();
 				expect(reservation).toMatchObject({ settlement: { kind: "held" }, byteCount: bytes.byteLength });
 				expect(reservation?.cohortContentId).toBeUndefined();
 			}
-			const nodeReservation = await ctx.db.query("files_private_storage_reservations")
-				.withIndex("by_resource", (q) => q.eq("resource.kind", "node").eq("resource.id", target.id)).unique();
+			const nodeReservation = await ctx.db
+				.query("files_private_storage_reservations")
+				.withIndex("by_resource", (q) => q.eq("resource.kind", "node").eq("resource.id", target.id))
+				.unique();
 			expect(nodeReservation?.settlement).toMatchObject({ kind: "saved", savedNodeId: saved._yay.target.id });
 		});
 	});
@@ -1263,7 +1279,10 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		const activeBatches = await t.run(
 			async (ctx) =>
 				(await ctx.db.query("files_pending_update_operation_batches").collect()).filter(
-					(batch) => batch.target.kind === "saved" && batch.target.id === seeded.nodeId && (batch.expiresAt === undefined || batch.expiresAt > Date.now()),
+					(batch) =>
+						batch.target.kind === "saved" &&
+						batch.target.id === seeded.nodeId &&
+						(batch.expiresAt === undefined || batch.expiresAt > Date.now()),
 				).length,
 		);
 		expect(activeBatches).toBe(0);
@@ -1815,12 +1834,14 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 		const pending = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
 		expect(
-			(await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
-				membershipId: seeded.membershipId,
-				target: { kind: "saved", id: seeded.nodeId },
-				pendingUpdateId: pending!._id,
-				reviewedRevision: pending!.revision,
-			}))._nay,
+			(
+				await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+					membershipId: seeded.membershipId,
+					target: { kind: "saved", id: seeded.nodeId },
+					pendingUpdateId: pending!._id,
+					reviewedRevision: pending!.revision,
+				})
+			)._nay,
 		).toBeUndefined();
 		await t.run(async (ctx) => {
 			const row = await read_pending_update_row({

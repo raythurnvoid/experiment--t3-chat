@@ -86,7 +86,9 @@ describe("list_bucket_objects_for_cutover", () => {
 			NextContinuationToken: "cursor-2",
 		});
 		const t = test_convex();
-		const result = await t.action(internal.github_mounts_inventory.list_bucket_objects_for_cutover, { cursor: "cursor-1" });
+		const result = await t.action(internal.github_mounts_inventory.list_bucket_objects_for_cutover, {
+			cursor: "cursor-1",
+		});
 		expect(result._yay).toMatchObject({ continueCursor: "cursor-2", isDone: false });
 		expect(sendMock).toHaveBeenCalledTimes(1);
 		expect(sendMock.mock.calls[0][0].input).toEqual({
@@ -145,7 +147,9 @@ describe("list_bucket_objects_for_cutover", () => {
 	])("refuses an invalid page with %s", async (_name, response) => {
 		await install_inventory_response(response);
 		const t = test_convex();
-		const result = await t.action(internal.github_mounts_inventory.list_bucket_objects_for_cutover, { cursor: "cursor-1" });
+		const result = await t.action(internal.github_mounts_inventory.list_bucket_objects_for_cutover, {
+			cursor: "cursor-1",
+		});
 		expect(result._nay?.message).toBe("Invalid R2 inventory page");
 		expect(result._yay).toBeUndefined();
 	});

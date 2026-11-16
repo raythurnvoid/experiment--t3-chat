@@ -1,6 +1,12 @@
 import "./my-search-select.css";
 
-import { SelectItem, SelectList, SelectSearch, type SelectListProps, type SelectSearchProps } from "native-popovers/select";
+import {
+	SelectItem,
+	SelectList,
+	SelectSearch,
+	type SelectListProps,
+	type SelectSearchProps,
+} from "native-popovers/select";
 import { memo } from "react";
 import type { ExtractStrict } from "type-fest";
 
@@ -37,7 +43,9 @@ export type MySearchSelectItem_Props = Omit<MySelectItem_Props, ExtractStrict<ke
 export const MySearchSelectItem = memo(function MySearchSelectItem(props: MySearchSelectItem_Props) {
 	const { className, ...rest } = props;
 
-	return <MySelectItem className={cn("MySearchSelectItem" satisfies MySearchSelectItem_ClassNames, className)} {...rest} />;
+	return (
+		<MySelectItem className={cn("MySearchSelectItem" satisfies MySearchSelectItem_ClassNames, className)} {...rest} />
+	);
 });
 // #endregion item
 
@@ -49,7 +57,9 @@ export type MySearchSelectList_Props = SelectListProps;
 export const MySearchSelectList = memo(function MySearchSelectList(props: MySearchSelectList_Props) {
 	const { className, ...rest } = props;
 
-	return <SelectList className={cn("MySearchSelectList" satisfies MySearchSelectList_ClassNames, className)} {...rest} />;
+	return (
+		<SelectList className={cn("MySearchSelectList" satisfies MySearchSelectList_ClassNames, className)} {...rest} />
+	);
 });
 // #endregion list
 

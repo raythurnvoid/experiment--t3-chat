@@ -426,9 +426,7 @@ describe("/api/auth/resolve-user", () => {
 			});
 			expect(repeated.status, "A second stale token repair succeeds").toBe(200);
 			const repeatedBody = await repeated.json();
-			expect(repeatedBody._yay?.userId, "Both stale token repairs return the same user").toBe(
-				body._yay.userId,
-			);
+			expect(repeatedBody._yay?.userId, "Both stale token repairs return the same user").toBe(body._yay.userId);
 			expect(fetchSpy).toHaveBeenCalledWith(
 				"https://api.clerk.com/v1/users/clerk-user-resolve-stale-external-id",
 				expect.objectContaining({

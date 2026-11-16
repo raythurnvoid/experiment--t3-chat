@@ -214,7 +214,9 @@ export async function files_move_content_db_create(
 	return Result({ _yay: contentId });
 }
 
-export function files_move_content_changes_saved_content(prepared: NonNullable<Doc<"files_move_cohort_content">["prepared"]>) {
+export function files_move_content_changes_saved_content(
+	prepared: NonNullable<Doc<"files_move_cohort_content">["prepared"]>,
+) {
 	return prepared.kind === "saved_yjs"
 		? !!prepared.trustedStageId
 		: prepared.kind === "saved_asset"
@@ -222,7 +224,9 @@ export function files_move_content_changes_saved_content(prepared: NonNullable<D
 			: true;
 }
 
-export function files_move_content_retained_state_ids(proposal: WithoutSystemFields<Doc<"files_pending_updates">> | null) {
+export function files_move_content_retained_state_ids(
+	proposal: WithoutSystemFields<Doc<"files_pending_updates">> | null,
+) {
 	return new Set(
 		proposal?.content
 			? [proposal.content.baseStateId, proposal.content.stagedStateId, proposal.content.unstagedStateId]
@@ -292,7 +296,10 @@ async function db_remove_asset(
 /**
  * Root calls this in the view-switch mutation. No candidate loop runs at publication.
  */
-export async function files_move_content_db_publish_accounting(ctx: MutationCtx, args: Omit<files_move_content_Context, "contentId">) {
+export async function files_move_content_db_publish_accounting(
+	ctx: MutationCtx,
+	args: Omit<files_move_content_Context, "contentId">,
+) {
 	const cohort = await ctx.db.get("files_move_cohorts", args.cohortId);
 	if (!cohort || cohort.fence !== args.fence || cohort.attemptFence !== args.attemptFence)
 		return Result({ _nay: { message: "This Move step is no longer current." } });
@@ -427,8 +434,8 @@ async function db_cleanup_part_page(
 	const numItems = kind === 2 ? 1 : files_move_content_PAGE_SIZE;
 	const rows = await query.take(numItems);
 	const headId = view === "before" ? content.beforeHeadId : content.afterHeadId;
-	const keepExact = remove && kind === 0 && headId !== undefined &&
-		await files_content_retention_db_index_uses_head(ctx.db, headId);
+	const keepExact =
+		remove && kind === 0 && headId !== undefined && (await files_content_retention_db_index_uses_head(ctx.db, headId));
 	const logHead = kind === 2 && headId ? await ctx.db.get("files_saved_content_heads", headId) : null;
 	for (const row of rows) {
 		const ownsContent = kind === 0 || kind === 2;
@@ -488,7 +495,9 @@ async function db_finish_resources(
 ) {
 	const item = (await ctx.db.get("files_move_cohort_items", content.itemId))!;
 	const retained =
-		mode === "finish" ? files_move_content_retained_state_ids(item.afterProposal) : new Set<Id<"files_pending_update_yjs_states">>();
+		mode === "finish"
+			? files_move_content_retained_state_ids(item.afterProposal)
+			: new Set<Id<"files_pending_update_yjs_states">>();
 	if (mode === "finish") {
 		if (!content.consumedResources)
 			throw should_never_happen("Move lost its captured draft resources", { contentId: content._id });

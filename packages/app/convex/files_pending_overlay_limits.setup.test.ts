@@ -141,10 +141,7 @@ export function budget_recorder() {
 	};
 }
 
-export function measure_cohort(
-	record: ReturnType<typeof budget_recorder>["record"],
-	metadata: Metadata[] = [],
-) {
+export function measure_cohort(record: ReturnType<typeof budget_recorder>["record"], metadata: Metadata[] = []) {
 	const fileIds = new Set(metadata.map((row) => row.fileNodeId));
 	let parents = 0;
 	const pages: {
@@ -179,17 +176,26 @@ export function measure_cohort(
 				let current: Id<"files_move_cohorts"> | undefined;
 				const events: (
 					| { order: number; kind: "get"; cohort: Doc<"files_move_cohorts"> }
-					| { order: number; kind: "patch"; cohortId: Id<"files_move_cohorts">; fields: Partial<Doc<"files_move_cohorts">> }
+					| {
+							order: number;
+							kind: "patch";
+							cohortId: Id<"files_move_cohorts">;
+							fields: Partial<Doc<"files_move_cohorts">>;
+					  }
 					| { order: number; kind: "query"; index: number }
 				)[] = [];
 				// Vitest infers the older id-only overload. These calls use the table-first overload.
 				const gets = get.mock.calls as unknown as [string, Id<"files_move_cohorts">][];
 				for (const [index, [table]] of gets.entries()) {
 					if (table !== "files_move_cohorts") continue;
-					const cohort = await get.mock.results[index]!.value as Doc<"files_move_cohorts"> | null;
+					const cohort = (await get.mock.results[index]!.value) as Doc<"files_move_cohorts"> | null;
 					if (cohort) events.push({ order: get.mock.invocationCallOrder[index]!, kind: "get", cohort });
 				}
-				const patches = patch.mock.calls as unknown as [string, Id<"files_move_cohorts">, Partial<Doc<"files_move_cohorts">>][];
+				const patches = patch.mock.calls as unknown as [
+					string,
+					Id<"files_move_cohorts">,
+					Partial<Doc<"files_move_cohorts">>,
+				][];
 				for (const [index, [table, id, fields]] of patches.entries()) {
 					if (table === "files_move_cohorts")
 						events.push({ order: patch.mock.invocationCallOrder[index]!, kind: "patch", cohortId: id, fields });
@@ -213,20 +219,31 @@ export function measure_cohort(
 					}
 					const [reference, queryArgs] = query.mock.calls[event.index]!;
 					const name = getFunctionName(reference);
-					const pageArgs = queryArgs as { cohortId?: Id<"files_move_cohorts">; family?: string; view?: "before" | "after" };
+					const pageArgs = queryArgs as {
+						cohortId?: Id<"files_move_cohorts">;
+						family?: string;
+						view?: "before" | "after";
+					};
 					const cohortId = pageArgs.cohortId ?? current;
 					expect(cohortId, "A real Move page has its parent cohort").toBeDefined();
 					const phase = cohorts.get(cohortId!);
 					expect(phase, "A real Move page has its current parent phase").toBeDefined();
 					phases.add(phase!);
-					if (name !== "files_move_pages:metadata" && !(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")) continue;
-					const page = await query.mock.results[event.index]!.value as { page: Doc<"files_metadata_docs">[] };
+					if (
+						name !== "files_move_pages:metadata" &&
+						!(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")
+					)
+						continue;
+					const page = (await query.mock.results[event.index]!.value) as { page: Doc<"files_metadata_docs">[] };
 					// Fixture files select pages, never shorten a real native page.
 					if (!page.page.some((row) => row.sourceKind === "committed" && fileIds.has(row.fileNodeId))) continue;
 					pages.push({
-						cohortId: cohortId!, parent, phase: phase!, view: name === "files_move_pages:metadata" ? "before" : pageArgs.view!,
+						cohortId: cohortId!,
+						parent,
+						phase: phase!,
+						view: name === "files_move_pages:metadata" ? "before" : pageArgs.view!,
 						rowIds: page.page.map((row) => row._id),
-						fileNodeIds: page.page.map((row) => row.sourceKind === "committed" ? row.fileNodeId : null),
+						fileNodeIds: page.page.map((row) => (row.sourceKind === "committed" ? row.fileNodeId : null)),
 					});
 				}
 				if (registered === advance_cohort && phases.size === 0) phases.add("stale");

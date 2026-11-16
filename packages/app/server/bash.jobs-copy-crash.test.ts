@@ -182,8 +182,7 @@ describe("bash_run_command", () => {
 				result: { kind: "failed", error: "worker crashed" },
 			});
 			const saved = await job_row(runner, 1);
-			if (saved.job.copy?.phase !== "admitting")
-				throw new Error("Expected saved input reservation");
+			if (saved.job.copy?.phase !== "admitting") throw new Error("Expected saved input reservation");
 			const input = saved.job.copy.input;
 			vi.setSystemTime(input.putMayArriveUntil + 1);
 			expect(Date.now(), "The upload lease ends before the intake idle deadline").toBeLessThan(
@@ -258,8 +257,7 @@ describe("bash_run_command", () => {
 				result: { kind: "failed", error: "worker crashed" },
 			});
 			const waiting = await run_job(runner, 1);
-			if (waiting.job.copy?.phase !== "admitting")
-				throw new Error("Expected reserved input");
+			if (waiting.job.copy?.phase !== "admitting") throw new Error("Expected reserved input");
 			const input = waiting.job.copy.input;
 			expect(input.ready).toBe(false);
 			expect(waiting.job.copy.sourcesCount).toBe(0);

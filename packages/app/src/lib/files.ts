@@ -29,12 +29,7 @@ import { files_yjs_fetch_snapshot } from "./files-yjs-snapshot.ts";
 // Keep this a type-only import. The app entry loads this module, so a Monaco value import here
 // would make every page download the whole editor. Runtime Monaco helpers live in `files-monaco.ts`.
 import type { editor as monaco_editor } from "monaco-editor";
-import {
-	app_convex,
-	type app_convex_Doc,
-	type app_convex_Id,
-	app_convex_api,
-} from "@/lib/app-convex-client.ts";
+import { app_convex, type app_convex_Doc, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { applyUpdate, Doc as YDoc } from "yjs";
 

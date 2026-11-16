@@ -3039,7 +3039,7 @@ describe("list_tree_children_sorted filter", () => {
 				[...expected].reverse(),
 			);
 			// A metadata hit reads its field, node and content head, plus fixed caller/view docs.
-		// A scan that fills the page would read the 75 docs between two matches.
+			// A scan that fills the page would read the 75 docs between two matches.
 			const cost = await read_page_cost({
 				kind: "file",
 				sort: { field, direction: "asc" },

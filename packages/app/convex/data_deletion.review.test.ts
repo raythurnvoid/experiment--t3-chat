@@ -1962,13 +1962,21 @@ async function review_capture_organization_structure(ctx: MutationCtx, organizat
 describe("organization structure at batch size one", () => {
 	test("reset drains 101 maximum maps across resource-aware batches", async () => {
 		const t = test_convex({ transactionLimits: true });
-		const user = await t.run((ctx) => data_deletion_test_bootstrap_user(ctx, {
-			clerkUserId: "metadata-cleanup", displayName: "Metadata cleanup",
-		}));
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "metadata-cleanup",
+				displayName: "Metadata cleanup",
+			}),
+		);
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: user.userId });
-		const membership = await t.run((ctx) => ctx.db.query("organizations_workspaces_users")
-			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", user.defaultWorkspaceId).eq("userId", user.userId).eq("active", true))
-			.unique());
+		const membership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) =>
+					q.eq("workspaceId", user.defaultWorkspaceId).eq("userId", user.userId).eq("active", true),
+				)
+				.unique(),
+		);
 		if (!membership) throw new Error("Expected the reset membership");
 		const entries = Array.from({ length: 4 }, (_, i) => ({ key: `key${i}`, value: "x".repeat(32 * 1024 - 16) }));
 		expect(files_metadata_validate_entries(entries)._yay).toBeDefined();
@@ -1999,9 +2007,15 @@ describe("organization structure at batch size one", () => {
 			lastBytesWritten = metrics.bytesWritten.used;
 			return result;
 		});
-		const read_maps = () => t.run((ctx) => ctx.db.query("files_metadata_maps")
-			.withIndex("by_organization_workspace", (q) => q.eq("organizationId", user.defaultOrganizationId).eq("workspaceId", user.defaultWorkspaceId))
-			.collect());
+		const read_maps = () =>
+			t.run((ctx) =>
+				ctx.db
+					.query("files_metadata_maps")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", user.defaultOrganizationId).eq("workspaceId", user.defaultWorkspaceId),
+					)
+					.collect(),
+			);
 		expect(await read_maps()).toHaveLength(101);
 		// The saves queued background index work. Reset deletes it before the maps.
 		const index_tables = [
@@ -2022,7 +2036,10 @@ describe("organization structure at batch size one", () => {
 		const batches = [];
 		while (remaining > 0) {
 			const currentPass = t.mutation(internal.data_deletion.hard_delete_user_data, { userId: user.userId });
-			await expect(currentPass, "Reset completes each full-map batch through the normal mutation wrappers").resolves.toHaveProperty("done", false);
+			await expect(
+				currentPass,
+				"Reset completes each full-map batch through the normal mutation wrappers",
+			).resolves.toHaveProperty("done", false);
 			const result = await currentPass;
 			const next = (await read_maps()).length;
 			expect(next, "Each pass deletes complete maps and keeps every other map for later").toBeLessThan(remaining);
@@ -2122,7 +2139,10 @@ describe("organization structure at batch size one", () => {
 								requestId: seeded.requestId!,
 								_test_batchSize: 1,
 							});
-				await expect(currentPass, "Each reset pass can visit both workspaces through the normal mutation").resolves.toHaveProperty("done");
+				await expect(
+					currentPass,
+					"Each reset pass can visit both workspaces through the normal mutation",
+				).resolves.toHaveProperty("done");
 				const result = await currentPass;
 				done = result.done;
 			}

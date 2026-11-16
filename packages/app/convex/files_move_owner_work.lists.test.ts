@@ -124,14 +124,16 @@ describe("files_move_owner_work", () => {
 		const overlay = await import("../server/files-pending-overlay.ts");
 		const canJoin = overlay.files_pending_overlay_db_can_join_step;
 		// Yield after cohort creation, then inspect real pages with the step driver.
-		const join = vi.spyOn(overlay, "files_pending_overlay_db_can_join_step").mockImplementation(async (ctx, limitFactor) => {
-			const allowed = await canJoin(ctx, limitFactor);
-			const slot = await ctx.db
-				.query("files_move_workspace_slots")
-				.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
-				.unique();
-			return allowed && !slot?.cohortId;
-		});
+		const join = vi
+			.spyOn(overlay, "files_pending_overlay_db_can_join_step")
+			.mockImplementation(async (ctx, limitFactor) => {
+				const allowed = await canJoin(ctx, limitFactor);
+				const slot = await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) => q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId))
+					.unique();
+				return allowed && !slot?.cohortId;
+			});
 		const started = await asOwner.mutation(api.files_transfer.accept_input, {
 			membershipId: db.membershipId,
 			requestId: crypto.randomUUID(),

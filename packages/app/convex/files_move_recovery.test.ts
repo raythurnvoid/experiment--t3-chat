@@ -245,10 +245,7 @@ describe("Move cohort recovery", () => {
 			const cohort = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!;
 			if (cohort.phase === "complete") break;
 			const job = (await f.t.run((ctx) => ctx.db.system.get(cohort.runJob!.id)))!;
-			await f.t.action(
-				internal.files_move_run.run,
-				job.args[0] as FunctionArgs<typeof internal.files_move_run.run>,
-			);
+			await f.t.action(internal.files_move_run.run, job.args[0] as FunctionArgs<typeof internal.files_move_run.run>);
 		}
 		expect(await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId))).toMatchObject({
 			phase: "complete",

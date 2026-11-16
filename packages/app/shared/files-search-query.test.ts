@@ -179,14 +179,12 @@ describe("files_search_query_parse", () => {
 		expect(parse_one("file.content:report").problem).toBeNull();
 		expect(parse_one("file.content:rep*").problem).toBe('file.content takes words, like file.content:"annual report"');
 		expect(parse_one("file.content:*").problem).toBe("file.content needs a value");
-		expect(files_search_query_parse("file.content:report file.path:/tasks/**").filters.map((filter) => filter.problem)).toEqual([
-			"Contents search does not work inside a folder. Remove the folder to search contents",
-			null,
-		]);
-		expect(files_search_query_parse("file.content:report file.path:/**").filters.map((filter) => filter.problem)).toEqual([
-			null,
-			null,
-		]);
+		expect(
+			files_search_query_parse("file.content:report file.path:/tasks/**").filters.map((filter) => filter.problem),
+		).toEqual(["Contents search does not work inside a folder. Remove the folder to search contents", null]);
+		expect(
+			files_search_query_parse("file.content:report file.path:/**").filters.map((filter) => filter.problem),
+		).toEqual([null, null]);
 	});
 
 	test("refuses a metadata value over 1,024 characters, because the index cuts longer values", () => {

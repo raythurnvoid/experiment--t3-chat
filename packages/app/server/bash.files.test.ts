@@ -548,7 +548,8 @@ describe("bash_run_command", () => {
 			vi.spyOn(asUser, "action").mockImplementation(async (ref, actionArgs?) => {
 				const result = await originalAction(ref, actionArgs);
 				const slot = await runner.t.run((ctx) =>
-					ctx.db.query("files_move_workspace_slots")
+					ctx.db
+						.query("files_move_workspace_slots")
 						.withIndex("by_workspace", (q) =>
 							q.eq("organizationId", runner.seeded.organizationId).eq("workspaceId", runner.seeded.workspaceId),
 						)
@@ -2864,7 +2865,9 @@ describe("locked paths", () => {
 				path,
 			});
 
-		expect(await read("/open/locked.md")).toEqual({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		expect(await read("/open/locked.md")).toEqual({
+			_nay: { name: "permission_denied", message: "Permission denied" },
+		});
 		expect(await read("/open/nope.md")).toEqual({ _nay: { message: "File unavailable" } });
 	});
 

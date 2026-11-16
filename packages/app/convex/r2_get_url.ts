@@ -81,7 +81,10 @@ async function sign_get_url(args: {
 	now: Date;
 }) {
 	// `2013-05-24T00:00:00.000Z` becomes `20130524T000000Z`.
-	const amzDate = args.now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+	const amzDate = args.now
+		.toISOString()
+		.replace(/[-:]/g, "")
+		.replace(/\.\d{3}/, "");
 	const date = amzDate.slice(0, 8);
 	const scope = `${date}/${args.region}/s3/aws4_request`;
 	const path = `/${args.key.split("/").map(encode_sigv4).join("/")}`;

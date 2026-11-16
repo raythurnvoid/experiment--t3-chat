@@ -252,10 +252,7 @@ export async function files_share_rows_db_sync_node(
 ) {
 	const { node } = args;
 	const desiredByGrant = new Map<string, ShareRow>();
-	if (
-		node &&
-		(node.restrictedScopeNodeId === node._id || node.extendedScopeNodeId === node._id || node.moveCohortId)
-	) {
+	if (node && (node.restrictedScopeNodeId === node._id || node.extendedScopeNodeId === node._id || node.moveCohortId)) {
 		// Public `content.read` grants are in this range too, but have no row.
 		const grants = await db
 			.query("access_control_permission_grants")

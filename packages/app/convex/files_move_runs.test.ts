@@ -72,7 +72,10 @@ describe("paged Move runs", () => {
 		const paths = Array.from({ length: 201 }, (_, index) => `/source-${index.toString().padStart(3, "0")}`);
 		const fixture = await create_fixture(paths);
 		const { t, db, asUser, nodes } = fixture;
-		const { runId } = await start_move(fixture, paths.map((path) => nodes.get(path)!));
+		const { runId } = await start_move(
+			fixture,
+			paths.map((path) => nodes.get(path)!),
+		);
 
 		// Each saved root now needs its own paged cohort and cleanup.
 		await t.finishAllScheduledFunctions(vi.runAllTimers, 50_000);
@@ -101,7 +104,9 @@ describe("paged Move runs", () => {
 				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 					organizationId: fixture.db.organizationId,
 					workspaceId: fixture.db.workspaceId,
-					userId, active: true, updatedAt: Date.now(),
+					userId,
+					active: true,
+					updatedAt: Date.now(),
 					pendingOrganizationRemoval: false,
 					displayName: "",
 					sortDisplayName: "",
@@ -109,7 +114,10 @@ describe("paged Move runs", () => {
 				await ctx.db.insert("access_control_role_assignments", {
 					organizationId: fixture.db.organizationId,
 					workspaceId: fixture.db.workspaceId,
-					userId, role: "member", createdAt: Date.now(), updatedAt: Date.now(),
+					userId,
+					role: "member",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
 				});
 				return { userId, membershipId };
 			});
@@ -141,7 +149,10 @@ describe("paged Move runs", () => {
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", nodes.get("/a/child")!))).toMatchObject({
 				path: "/target/a/child",
 			});
-			expect(await t.run((ctx) => ctx.db.get("files_nodes", nodes.get("/b")!)), "the old membership cannot move the next root").toMatchObject({
+			expect(
+				await t.run((ctx) => ctx.db.get("files_nodes", nodes.get("/b")!)),
+				"the old membership cannot move the next root",
+			).toMatchObject({
 				path: interruption === "none" ? "/target/b" : "/b",
 			});
 			expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({

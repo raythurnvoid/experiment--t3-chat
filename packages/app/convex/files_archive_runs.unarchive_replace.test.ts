@@ -258,19 +258,26 @@ describe("unarchive_nodes", () => {
 			});
 			if (started._nay) throw new Error(started._nay.message);
 			const { runId } = started._yay;
-			expect(await f.asOwner.mutation(api.files_transfer.seal, {
-				membershipId: f.db.membershipId,
-				runId,
-			})).toEqual({ _yay: null });
+			expect(
+				await f.asOwner.mutation(api.files_transfer.seal, {
+					membershipId: f.db.membershipId,
+					runId,
+				}),
+			).toEqual({ _yay: null });
 			await f.t.mutation(internal.files_transfer.advance, { runId });
 			expect(
 				(await f.t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.step,
 				"Restore blocks Move planning",
 			).toBe("select");
-			expect((await f.asOwner.query(api.files_transfer_status.get, {
-				membershipId: f.db.membershipId,
-				runId,
-			}))?.activity, "Move stays queued while Restore is running").toMatchObject({
+			expect(
+				(
+					await f.asOwner.query(api.files_transfer_status.get, {
+						membershipId: f.db.membershipId,
+						runId,
+					})
+				)?.activity,
+				"Move stays queued while Restore is running",
+			).toMatchObject({
 				status: "queued",
 				progress: { completed: 0, blocked: 0 },
 			});
@@ -281,10 +288,14 @@ describe("unarchive_nodes", () => {
 			expect(await read_activity(f, job.activityId), "Move does not advance Restore").toEqual(restoreActivity);
 			expect((await run_to_end(f, job)).activity.status).toBe("succeeded");
 			await test_finish_transfer_run(f.asOwner, runId);
-			expect((await f.asOwner.query(api.files_transfer_status.get, {
-				membershipId: f.db.membershipId,
-				runId,
-			}))?.activity.status).toBe("succeeded");
+			expect(
+				(
+					await f.asOwner.query(api.files_transfer_status.get, {
+						membershipId: f.db.membershipId,
+						runId,
+					})
+				)?.activity.status,
+			).toBe("succeeded");
 			expect(await read_node(f, nodeId)).toMatchObject({ parentId: "root", path: "/f000.md" });
 		});
 

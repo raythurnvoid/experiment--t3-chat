@@ -195,8 +195,7 @@ describe("tenant deletion with many direct file grants", () => {
 				done = result.done;
 			}
 			expect(done).toBe(true);
-			if (nativeLimits)
-				expect(fullBatches, "A native purge completes a full 100-item batch").toBeGreaterThan(0);
+			if (nativeLimits) expect(fullBatches, "A native purge completes a full 100-item batch").toBeGreaterThan(0);
 			expect(await t.run((ctx) => ctx.db.get("data_deletion_requests", request._id))).toBeNull();
 			expect(
 				await t.run((ctx) =>

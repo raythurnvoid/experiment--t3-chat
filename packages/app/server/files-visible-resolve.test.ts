@@ -151,8 +151,7 @@ describe("files_visible_resolve_db_create", () => {
 				get(target, key) {
 					const method: unknown = Reflect.get(target, key);
 					if (typeof method !== "function") return method;
-					if (key === "query")
-						return (...args: unknown[]) => track_pages(Reflect.apply(method, target, args), pages);
+					if (key === "query") return (...args: unknown[]) => track_pages(Reflect.apply(method, target, args), pages);
 					return method.bind(target);
 				},
 			});
@@ -290,12 +289,19 @@ describe("files_visible_resolve_db_create", () => {
 		const folder = await f.create_saved("a");
 		await f.draft_move(folder, { kind: "root" }, "b");
 		const { store } = saved_work();
-		for (const [path, expected] of [["/a", "resolved"], ["/b", "hidden"]] as const) {
+		for (const [path, expected] of [
+			["/a", "resolved"],
+			["/b", "hidden"],
+		] as const) {
 			let slices = 0;
 			while (true) {
-				const result = await f.t.run(async (ctx) => files_visible_resolve_db_create(ctx.db, {
-					...f.db, pending: false, resume: { store, fence: "saved-only" },
-				}).resume({ kind: "path", path }, { stepLimit: 8 }));
+				const result = await f.t.run(async (ctx) =>
+					files_visible_resolve_db_create(ctx.db, {
+						...f.db,
+						pending: false,
+						resume: { store, fence: "saved-only" },
+					}).resume({ kind: "path", path }, { stepLimit: 8 }),
+				);
 				if (result.status === "unfinished") {
 					expect(++slices).toBeLessThan(100);
 					continue;

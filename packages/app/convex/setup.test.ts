@@ -85,8 +85,12 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 /** Run only this file's index steps, without firing unrelated timers. */
 export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeId: Id<"files_nodes">) {
 	for (let pass = 0; pass < 10_000; pass++) {
-		const state = await t.run((ctx) => ctx.db.query("files_index_states")
-			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId)).first());
+		const state = await t.run((ctx) =>
+			ctx.db
+				.query("files_index_states")
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+				.first(),
+		);
 		if (!state?.activeRunId) {
 			if (state && state.publishedRevision < state.requestedRevision) {
 				await t.mutation(internal.files_index.start, { nodeId });
@@ -100,7 +104,9 @@ export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeI
 				}
 				continue;
 			}
-			expect(state?.publishedRevision, "the idle index has published its latest request").toBe(state?.requestedRevision);
+			expect(state?.publishedRevision, "the idle index has published its latest request").toBe(
+				state?.requestedRevision,
+			);
 			return;
 		}
 		const run = await t.run((ctx) => ctx.db.get("files_index_runs", state.activeRunId!));
@@ -110,7 +116,10 @@ export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeI
 		else await t.mutation(internal.files_index.advance, args);
 	}
 	const waiting = await t.run(async (ctx) => {
-		const state = await ctx.db.query("files_index_states").withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId)).first();
+		const state = await ctx.db
+			.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+			.first();
 		return {
 			state,
 			run: state?.activeRunId ? await ctx.db.get("files_index_runs", state.activeRunId) : null,
@@ -181,9 +190,16 @@ export async function test_move_nodes(
 		});
 		if (started._nay) return Result({ _nay: started._nay });
 		const { runId, activityId } = started._yay;
-		for (let offset = files_TRANSFER_SELECTION_PAGE_SIZE; offset < args.itemIds.length; offset += files_TRANSFER_SELECTION_PAGE_SIZE) {
+		for (
+			let offset = files_TRANSFER_SELECTION_PAGE_SIZE;
+			offset < args.itemIds.length;
+			offset += files_TRANSFER_SELECTION_PAGE_SIZE
+		) {
 			const appended = await asUser.mutation(api.files_transfer.append_input, {
-				membershipId: args.membershipId, runId, offset, sourceIds: args.itemIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
+				membershipId: args.membershipId,
+				runId,
+				offset,
+				sourceIds: args.itemIds.slice(offset, offset + files_TRANSFER_SELECTION_PAGE_SIZE),
 			});
 			if (appended._nay) return Result({ _nay: appended._nay });
 		}
@@ -417,9 +433,12 @@ export async function test_finish_transfer_run(
 		}
 		if (cohort) {
 			const cohortId = cohort._id;
-			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId) throw new Error("Transfer waits for another Move");
+			if (cohort.origin.kind !== "transfer" || cohort.origin.runId !== runId)
+				throw new Error("Transfer waits for another Move");
 			const result = await asUser.action(internal.files_move_run.run, {
-				cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
+				cohortId,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
 				mode: onStep || options.stepwise ? "step" : "chain",
 			});
 			// The worker reports completion after release. No extra completion probe is needed.
@@ -883,10 +902,15 @@ export async function test_finish_pending_update_run(
 			if (unit?.cohortId) {
 				if (!cohort) throw new Error("Missing review cohort");
 				const cohortId = cohort._id;
-				const result = cohort.phase === "complete" ? "complete" : await asUser.action(internal.files_move_run.run, {
-					cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null,
-					mode: options.stepwise ? "step" : "chain",
-				});
+				const result =
+					cohort.phase === "complete"
+						? "complete"
+						: await asUser.action(internal.files_move_run.run, {
+								cohortId,
+								step: cohort.step,
+								runGeneration: cohort.runJob?.generation ?? null,
+								mode: options.stepwise ? "step" : "chain",
+							});
 				if (result === "complete") {
 					await test_wake_move_cohort(asUser, cohortId);
 					await asUser.mutation(internal.files_pending_update_runs.settle_cohort, { cohortId });
@@ -1371,7 +1395,12 @@ export async function test_fill_saved_file_with_max_chunks(
 		const headId = await ctx.db.insert("files_saved_content_heads", { ...fields, statsId: null });
 		await ctx.db.patch("files_nodes", nodeId, { contentHeadId: headId, statsId: null });
 		// Start a fresh source owner, then replace its small prefix with the full test chunks.
-		const replaced = await db_replace_file_chunks(ctx, { ...scope, nodeId, previousHeadId: previous._id, textContent: head });
+		const replaced = await db_replace_file_chunks(ctx, {
+			...scope,
+			nodeId,
+			previousHeadId: previous._id,
+			textContent: head,
+		});
 		if (replaced._nay) throw new Error(replaced._nay.message);
 		const headChunks = await Promise.all([
 			ctx.db

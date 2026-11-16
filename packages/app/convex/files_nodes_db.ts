@@ -11,7 +11,10 @@ import {
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "../server/files-saved-content.ts";
-import { files_saved_content_apply_header, files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
+import {
+	files_saved_content_apply_header,
+	files_saved_content_db_get_head,
+} from "../server/files-saved-content-head.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { components, internal } from "./_generated/api.js";
 

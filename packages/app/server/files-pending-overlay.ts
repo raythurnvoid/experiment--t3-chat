@@ -1868,12 +1868,14 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 	const facts = closedSource
 		? undefined
 		: (claimFacts ??
-			(await files_pending_overlay_db_resolve_facts(ctx, {
-				...scope,
-				target,
-				allowPagination: state.ownJob?.doc.kind === "targets",
-				reader,
-			})).facts);
+			(
+				await files_pending_overlay_db_resolve_facts(ctx, {
+					...scope,
+					target,
+					allowPagination: state.ownJob?.doc.kind === "targets",
+					reader,
+				})
+			).facts);
 	if (facts === null) {
 		defer_target(state, mark);
 		// Old frames may take more pages, but closed drafts must disappear from listings now.
@@ -2010,12 +2012,14 @@ async function db_recompute_target(flush: Flush, mark: TargetMark) {
 		else if (desired.savedNode) {
 			const node = desired.savedNode;
 			const fullFacts = claimFacts
-				? (await files_pending_overlay_db_resolve_facts(ctx, {
-						...scope,
-						target,
-						allowPagination: false,
-						reader,
-					})).facts
+				? (
+						await files_pending_overlay_db_resolve_facts(ctx, {
+							...scope,
+							target,
+							allowPagination: false,
+							reader,
+						})
+					).facts
 				: facts;
 			if (fullFacts === null) defer_target(state, { ...mark, ownerPathPending: true });
 			const parent = fullFacts?.savedParent;
@@ -2193,7 +2197,9 @@ export async function files_pending_overlay_db_stage_owner_lists(
 				);
 		// List rows have only small fields. Probe the whole range before changing any row.
 		const small = cursor.page === null ? await query().take(9) : null;
-		const page: Omit<PaginationResult<Doc<"files_pending_list_rows">>, "continueCursor"> & { continueCursor: string | null } =
+		const page: Omit<PaginationResult<Doc<"files_pending_list_rows">>, "continueCursor"> & {
+			continueCursor: string | null;
+		} =
 			small && small.length <= 8
 				? { page: small, isDone: true, continueCursor: null }
 				: await ctx.runQuery(internal.files_move_pages.owner_list_rows, {
@@ -2604,8 +2610,10 @@ export async function files_pending_overlay_db_follow_saved_scope(
 ) {
 	// A job of this node may be in the middle of a pass. Let it walk once more, so it cannot write
 	// the old scope after this mutation.
-	if (await files_pending_overlay_db_has_saved_scope_job(ctx, node._id) ||
-		await files_saved_index_db_is_publishing(ctx.db, node._id)) {
+	if (
+		(await files_pending_overlay_db_has_saved_scope_job(ctx, node._id)) ||
+		(await files_saved_index_db_is_publishing(ctx.db, node._id))
+	) {
 		await files_pending_overlay_db_schedule_saved_scope(ctx, node, args);
 		return;
 	}
@@ -3587,16 +3595,22 @@ export async function files_pending_overlay_list(
 	// but cannot make both reads miss it. Later reads of the first source break this, so the round
 	// loop limits them.
 	if (view.migrationDirection === "to_normal") savedSources.reverse();
-	const indexView = args.mode === "metadata"
-		? await ctx.runQuery(internal.files_visible.internal_get_index_view, streamArgs)
-		: null;
+	const indexView =
+		args.mode === "metadata" ? await ctx.runQuery(internal.files_visible.internal_get_index_view, streamArgs) : null;
 	if (args.mode === "metadata" && !indexView)
 		return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
 	const indexSources: files_IndexStream[] = indexView
 		? [
 				{ kind: "normal", generation: indexView.generation },
 				...(indexView.cohortId && indexView.view
-					? [{ kind: "cohort" as const, cohortId: indexView.cohortId, view: indexView.view, generation: indexView.generation }]
+					? [
+							{
+								kind: "cohort" as const,
+								cohortId: indexView.cohortId,
+								view: indexView.view,
+								generation: indexView.generation,
+							},
+						]
 					: []),
 			]
 		: savedSources;
@@ -3720,15 +3734,17 @@ export async function files_pending_overlay_list(
 			// The frontmatter of the user's text drafts of saved files.
 		]);
 		if (args.mode === "metadata") {
-	// Metadata docs can move between index views while tree and draft docs stay in place.
-			cursorStreams.unshift(...(walk ? indexSources.slice(0, 1) : indexSources).map((indexStream) => ({
-				kind: "saved" as const,
-				movedIn: null,
-				numItems: pageSize,
-				position: start,
-				savedStream: viewStream,
-				indexStream,
-			})));
+			// Metadata docs can move between index views while tree and draft docs stay in place.
+			cursorStreams.unshift(
+				...(walk ? indexSources.slice(0, 1) : indexSources).map((indexStream) => ({
+					kind: "saved" as const,
+					movedIn: null,
+					numItems: pageSize,
+					position: start,
+					savedStream: viewStream,
+					indexStream,
+				})),
+			);
 		}
 		if (overlay && args.mode === "metadata")
 			cursorStreams.push({
@@ -4017,10 +4033,14 @@ export async function files_pending_overlay_list(
 		// be in neither read. So the first source reads rows once per page, and the page ends when it
 		// needs more. The next page seeks both sources again from a key no later than its frontier. Calls
 		// that only cross an empty seek phase read no rows, so they do not count.
-		const runnable = blocking.filter((stream) =>
-			(!is_migrating(stream) || is_walk(stream) || !stream.hasRead ||
-				(stream.indexStream ?? stream.savedStream).kind !== (stream.indexStream ? indexSources : savedSources)[0]!.kind) &&
-			(!is_walk(stream) || walkCalls < files_tree_walk_MAX_CALLS),
+		const runnable = blocking.filter(
+			(stream) =>
+				(!is_migrating(stream) ||
+					is_walk(stream) ||
+					!stream.hasRead ||
+					(stream.indexStream ?? stream.savedStream).kind !==
+						(stream.indexStream ? indexSources : savedSources)[0]!.kind) &&
+				(!is_walk(stream) || walkCalls < files_tree_walk_MAX_CALLS),
 		);
 		if (blocking.length > 0) {
 			if (runnable.length === 0 || rounds === LIST_MAX_ROUNDS) break;
@@ -4079,7 +4099,7 @@ export async function files_pending_overlay_list(
 					movedIn: row.movedIn,
 					numItems: pageSize,
 					position: start,
-					savedStream: args.mode === "metadata" ? viewStream : source as files_SavedStream,
+					savedStream: args.mode === "metadata" ? viewStream : (source as files_SavedStream),
 					...(args.mode === "metadata" ? { indexStream: source } : {}),
 					open: true,
 					buffer: [],
@@ -4100,9 +4120,8 @@ export async function files_pending_overlay_list(
 	const pairKey = (stream: Stream) => JSON.stringify([stream.kind, stream.movedIn, stream.parentAlias]);
 	// The pair shares a full-key frontier. Keep an empty source beside its open partner: docs can
 	// move into that source during staging or cleanup before the next page.
-	const left = streams.filter((stream) => is_migrating(stream)
-		? streams.some((other) => pairKey(other) === pairKey(stream) && other.open)
-		: stream.open,
+	const left = streams.filter((stream) =>
+		is_migrating(stream) ? streams.some((other) => pairKey(other) === pairKey(stream) && other.open) : stream.open,
 	);
 	if (view.cohortId || indexView?.cohortId) {
 		for (const stream of left) {

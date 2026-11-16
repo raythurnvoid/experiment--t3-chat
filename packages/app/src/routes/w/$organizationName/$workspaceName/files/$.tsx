@@ -50,8 +50,8 @@ const RouteFilesPathNotFound = memo(function RouteFilesPathNotFound(props: Route
 				</p>
 			) : (
 				<p className={"RouteFilesPathNotFound-description" satisfies RouteFilesPathNotFound_ClassNames}>
-					Nothing is stored at this path. It may have been renamed, moved, or moved to Trash. Path links match the stored name
-					exactly, so a different upper or lower case will also miss.
+					Nothing is stored at this path. It may have been renamed, moved, or moved to Trash. Path links match the
+					stored name exactly, so a different upper or lower case will also miss.
 				</p>
 			)}
 			<code className={"RouteFilesPathNotFound-path" satisfies RouteFilesPathNotFound_ClassNames}>{path}</code>

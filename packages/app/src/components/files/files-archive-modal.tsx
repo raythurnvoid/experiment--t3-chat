@@ -137,7 +137,9 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 					const reason = refusedItems[0]!.message.replace(/\.?$/, ".");
 					toast.warning(`"${refusedNode.name}" was not moved to Trash: ${reason}${waitingSentence}`, { action });
 				} else if (refusedItems.length > 0) {
-					toast.warning(`${refusedItems.length} items were not moved to Trash.${waitingSentence} See Activity.`, { action });
+					toast.warning(`${refusedItems.length} items were not moved to Trash.${waitingSentence} See Activity.`, {
+						action,
+					});
 				} else if (isChecking && waitingNodes.length > 0) {
 					const checkingText =
 						waitingNodes.length === 1

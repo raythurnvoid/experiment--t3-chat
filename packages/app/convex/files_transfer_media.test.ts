@@ -134,7 +134,9 @@ describe("files_transfer_media_db_map_refs", () => {
 
 	test("keeps an unselected or locked link unchanged", async () => {
 		const f = await fixture({ selected: false });
-		const kept = { _yay: { referencePairs: [[f.sourceRef, f.sourceRef]], mediaDependencies: [{ src: f.sourceRef, keptLink: true }] } };
+		const kept = {
+			_yay: { referencePairs: [[f.sourceRef, f.sourceRef]], mediaDependencies: [{ src: f.sourceRef, keptLink: true }] },
+		};
 		expect(await map_refs(f)).toEqual(kept);
 		expect(
 			await f.asOwner.mutation(api.files_sharing.restrict_node, {

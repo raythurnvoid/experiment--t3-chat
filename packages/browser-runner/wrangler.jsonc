@@ -7,24 +7,24 @@
 	"workers_dev": true,
 	"browser": {
 		"binding": "BROWSER",
-		"remote": true
+		"remote": true,
 	},
 	"worker_loaders": [
 		{
-			"binding": "LOADER"
-		}
+			"binding": "LOADER",
+		},
 	],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
 			{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" },
-			{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" }
-		]
+			{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" },
+		],
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
 		{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] },
-		{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] }
+		{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] },
 	],
 	"vars": {
 		"BROWSER_RUNNER_DISABLED": "true",
@@ -35,47 +35,47 @@
 		"BROWSER_WEB_DENIED_HOSTS": "",
 		// App origins that may send a file to `PUT /viewer/upload` (CORS). Comma list. Empty until the
 		// production app origin is known, so no browser can upload.
-		"BROWSER_APP_ORIGINS": ""
+		"BROWSER_APP_ORIGINS": "",
 	},
 	"secrets": {
-		"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"]
+		"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"],
 	},
 	"observability": {
-		"enabled": true
+		"enabled": true,
 	},
 	"env": {
 		"dev": {
 			"name": "bonobo-senate-browser-runner-dev",
 			"browser": {
 				"binding": "BROWSER",
-				"remote": true
+				"remote": true,
 			},
 			"worker_loaders": [
 				{
-					"binding": "LOADER"
-				}
+					"binding": "LOADER",
+				},
 			],
 			"durable_objects": {
 				"bindings": [
 					{ "name": "BROWSER_SESSIONS", "class_name": "BrowserSession" },
 					{ "name": "BROWSER_REGISTRY", "class_name": "BrowserRegistry" },
-					{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" }
-				]
+					{ "name": "PLAYWRITER_SESSIONS", "class_name": "PlaywriterSession" },
+				],
 			},
 			"migrations": [
 				{ "tag": "v1", "new_sqlite_classes": ["BrowserSession"] },
 				{ "tag": "v2", "new_sqlite_classes": ["BrowserRegistry"] },
-				{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] }
+				{ "tag": "v3", "new_sqlite_classes": ["PlaywriterSession"] },
 			],
 			"vars": {
 				"BROWSER_RUNNER_DISABLED": "false",
 				"BROWSER_PREVIEW_URL": "https://bonobo-file-preview-dev.ray-thurne-void.workers.dev/v0",
 				"BROWSER_WEB_DENIED_HOSTS": "localhost,grand-finch-267.convex.cloud,grand-finch-267.convex.site,direct-bass-17.clerk.accounts.dev,bonobo-senate.com,bonobo-senate-browser-runner-dev.ray-thurne-void.workers.dev,bonobo-file-preview-dev.ray-thurne-void.workers.dev,bonobo-senate-code-execution-runner.ray-thurne-void.workers.dev,bonobo-senate-plugin-runner.ray-thurne-void.workers.dev,bonobo-senate-r2-media-transformer.ray-thurne-void.workers.dev,bonobo-senate-r2-upload-finalizer.ray-thurne-void.workers.dev,bonobo-council-service.ray-thurne-void.workers.dev",
-				"BROWSER_APP_ORIGINS": "http://localhost:5173"
+				"BROWSER_APP_ORIGINS": "http://localhost:5173",
 			},
 			"secrets": {
-				"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"]
-			}
-		}
-	}
+				"required": ["BROWSER_RUNNER_SECRET", "BROWSER_PROFILE_KEY"],
+			},
+		},
+	},
 }

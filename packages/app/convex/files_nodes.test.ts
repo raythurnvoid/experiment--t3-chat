@@ -1123,10 +1123,10 @@ describe("paginated bash listing queries", () => {
 		const children = await list();
 		const markdownChildren = await list("md");
 
-		expect(children.page.map((item) => item.path), "direct children come from the parent range, in name order").toEqual([
-			"/docs/a",
-			"/docs/a.md",
-		]);
+		expect(
+			children.page.map((item) => item.path),
+			"direct children come from the parent range, in name order",
+		).toEqual(["/docs/a", "/docs/a.md"]);
 		expect(children.isDone).toBe(true);
 		expect(markdownChildren.page.map((item) => item.path)).toEqual(["/docs/a.md"]);
 		expect(markdownChildren.isDone).toBe(true);
@@ -1815,7 +1815,12 @@ test("rename_node Stop removes staged parents and keeps the old name visible", a
 			);
 			if (!slot?.cohortId) throw new Error("Rename cohort is missing");
 			const cohort = (await t.run((ctx) => ctx.db.get("files_move_cohorts", slot.cohortId!)))!;
-			await t.mutation(internal.files_move_cohorts.advance, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: false });
+			await t.mutation(internal.files_move_cohorts.advance, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				join: false,
+			});
 			staged = await t.run(async (ctx) =>
 				(
 					await ctx.db

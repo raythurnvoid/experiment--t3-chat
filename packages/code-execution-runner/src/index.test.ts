@@ -179,7 +179,9 @@ describe("execution outcomes", () => {
 	])("rejects an invalid app token contract %#", async (app) => {
 		const evaluate = vi.fn();
 		const response = await handle_request(
-			exec_request(JSON.stringify({ code: "return 1;", app })), make_env({ evaluate }), make_ctx(),
+			exec_request(JSON.stringify({ code: "return 1;", app })),
+			make_env({ evaluate }),
+			make_ctx(),
 		);
 		expect(response.status).toBe(400);
 		expect((await response.json()).error.code).toBe("invalid_request");
@@ -194,7 +196,9 @@ describe("execution outcomes", () => {
 		const gatewayProps = { executionId: "two-roots", allowPublic: false, deniedHosts: [], app };
 		const fetchMock = vi.fn(async (request: Request) => {
 			expect(request.headers.get("x-bonobo-workspace")).toBeNull();
-			return new Response(new Uint8Array([request.headers.get("authorization") === `Bearer ${app.tokens.current}` ? 1 : 2]));
+			return new Response(
+				new Uint8Array([request.headers.get("authorization") === `Bearer ${app.tokens.current}` ? 1 : 2]),
+			);
 		});
 		const logs = vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.stubGlobal("fetch", fetchMock);
@@ -212,11 +216,14 @@ describe("execution outcomes", () => {
 			`;
 			const response = await handle_request(
 				exec_request(JSON.stringify({ code, app, executionId: "two-roots", input: { value: 1 } })),
-				make_env({ evaluate: (input, source) => {
-					expect(source).not.toContain("grant-token");
-					return evaluate_module(input, source, async (url, init) =>
-						handle_outbound_gateway_request(new Request(url, init), gatewayProps));
-				} }),
+				make_env({
+					evaluate: (input, source) => {
+						expect(source).not.toContain("grant-token");
+						return evaluate_module(input, source, async (url, init) =>
+							handle_outbound_gateway_request(new Request(url, init), gatewayProps),
+						);
+					},
+				}),
 				make_ctx(undefined, (props) => expect(props).toEqual(gatewayProps)),
 			);
 			const text = await response.text();
@@ -228,7 +235,8 @@ describe("execution outcomes", () => {
 				{ workspace: "personal", path: "/output.bin", dataBase64: sameHome ? "AQ==" : "Ag==" },
 			]);
 			expect(fetchMock.mock.calls.map(([request]) => request.headers.get("authorization"))).toEqual([
-				`Bearer ${app.tokens.current}`, `Bearer ${app.tokens.personal}`,
+				`Bearer ${app.tokens.current}`,
+				`Bearer ${app.tokens.personal}`,
 			]);
 			expect(text).not.toContain("grant-token");
 			expect(JSON.stringify(logs.mock.calls)).not.toContain("grant-token");
@@ -402,7 +410,10 @@ describe("execution outcomes", () => {
 			exec_request(
 				JSON.stringify({
 					code: "return process.env.T3_APP_ORIGIN;",
-					app: { origin: "https://app.example.com/path", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+					app: {
+						origin: "https://app.example.com/path",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
 				}),
 			),
 			env,
@@ -419,7 +430,10 @@ describe("execution outcomes", () => {
 			expect.objectContaining({
 				allowPublic: false,
 				deniedHosts: [],
-				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+				app: {
+					origin: "https://app.example.com",
+					tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+				},
 			}),
 		);
 	});
@@ -571,14 +585,23 @@ describe("execution outcomes", () => {
 
 describe("emitFile", () => {
 	it.each([undefined, null, "", "home", "CURRENT", 1])("rejects workspace %s inside the harness", async (workspace) => {
-		const result = await evaluate_module(null, build_executor_module(`
+		const result = await evaluate_module(
+			null,
+			build_executor_module(`
 			emitFile({ workspace: "current", path: "/first", bytes: new Uint8Array([1]) });
 			emitFile({ workspace: ${JSON.stringify(workspace)}, path: "/bad", bytes: new Uint8Array([2]) });
-		`));
-		expect(result).toMatchObject({ ok: false, error: { name: "TypeError", message: "emitFile workspace must be current or personal" } });
-		const body = await (await handle_request(
-			exec_request(JSON.stringify({ code: "invalid workspace" })), make_env({ evaluate: () => result }),
-		)).json();
+		`),
+		);
+		expect(result).toMatchObject({
+			ok: false,
+			error: { name: "TypeError", message: "emitFile workspace must be current or personal" },
+		});
+		const body = await (
+			await handle_request(
+				exec_request(JSON.stringify({ code: "invalid workspace" })),
+				make_env({ evaluate: () => result }),
+			)
+		).json();
 		expect(body.status).toBe("errored");
 		expect(body.files).toEqual([]);
 	});
@@ -647,10 +670,19 @@ describe("emitFile", () => {
 	// Files leave the sandbox only after a fully successful run. Each failure below must drop the
 	// file that emitFile already accepted before it.
 	it.each([
-		["count", `for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/out/" + i, bytes: new Uint8Array() });`],
+		[
+			"count",
+			`for (let i = 0; i < ${LIMITS.files}; i++) emitFile({ workspace: i % 2 ? "personal" : "current", path: "/out/" + i, bytes: new Uint8Array() });`,
+		],
 		["bytes", `emitFile({ workspace: "current", path: "/out/big", bytes: new Uint8Array(${LIMITS.fileBytes + 1}) });`],
-		["total bytes", `emitFile({ workspace: "personal", path: "/out/second", bytes: new Uint8Array(${LIMITS.fileBytes}) });`],
-		["path", `emitFile({ workspace: "current", path: "x".repeat(${LIMITS.filePathChars + 1}), bytes: new Uint8Array() });`],
+		[
+			"total bytes",
+			`emitFile({ workspace: "personal", path: "/out/second", bytes: new Uint8Array(${LIMITS.fileBytes}) });`,
+		],
+		[
+			"path",
+			`emitFile({ workspace: "current", path: "x".repeat(${LIMITS.filePathChars + 1}), bytes: new Uint8Array() });`,
+		],
 		[
 			"MIME",
 			`emitFile({ workspace: "current", path: "/out/type", contentType: "x".repeat(${LIMITS.fileContentTypeChars + 1}), bytes: new Uint8Array() });`,
@@ -719,10 +751,12 @@ describe("sandbox result validation", () => {
 	const valid = { ok: true, resultJson: "null", logs: [], logsTruncated: false, files: [file] };
 
 	it.each([undefined, null, "", "home", "CURRENT", 1])("refuses forged workspace %s in the host", async (workspace) => {
-		const body = await (await handle_request(
-			exec_request(JSON.stringify({ code: "return null;" })),
-			make_env({ evaluate: () => ({ ...valid, files: [file, { ...file, workspace }] }) }),
-		)).json();
+		const body = await (
+			await handle_request(
+				exec_request(JSON.stringify({ code: "return null;" })),
+				make_env({ evaluate: () => ({ ...valid, files: [file, { ...file, workspace }] }) }),
+			)
+		).json();
 		expect(body.status).toBe("errored");
 		expect(body.files).toEqual([]);
 	});
@@ -731,9 +765,21 @@ describe("sandbox result validation", () => {
 		["null reply", null],
 		["success flag", { ...valid, ok: "true" }],
 		["missing files", { ...valid, files: undefined }],
-		["file count", { ...valid, files: Array.from({ length: LIMITS.files + 1 }, (_, i) => ({ ...file, workspace: i % 2 ? "personal" : "current" })) }],
+		[
+			"file count",
+			{
+				...valid,
+				files: Array.from({ length: LIMITS.files + 1 }, (_, i) => ({
+					...file,
+					workspace: i % 2 ? "personal" : "current",
+				})),
+			},
+		],
 		["file bytes", { ...valid, files: [{ ...file, bytes: new Uint8Array(LIMITS.fileBytes + 1) }] }],
-		["total bytes", { ...valid, files: [file, { ...file, workspace: "personal", bytes: new Uint8Array(LIMITS.fileBytes) }] }],
+		[
+			"total bytes",
+			{ ...valid, files: [file, { ...file, workspace: "personal", bytes: new Uint8Array(LIMITS.fileBytes) }] },
+		],
 		["byte array type", { ...valid, files: [file, { ...file, bytes: [0, 255] }] }],
 		["path type", { ...valid, files: [{ ...file, path: 123 }] }],
 		["path length", { ...valid, files: [{ ...file, path: "a".repeat(LIMITS.filePathChars + 1) }] }],
@@ -789,47 +835,70 @@ describe("module generation + wall timeout", () => {
 });
 
 describe("outbound gateway", () => {
-
-	it.each([undefined, "", "home", "CURRENT", "current, personal"])("rejects app selector %s before fetching", async (selector) => {
-		const fetchMock = vi.fn(async () => new Response("ok"));
-		vi.stubGlobal("fetch", fetchMock);
-		try {
-			const headers = new Headers();
-			if (selector !== undefined) headers.set("X-Bonobo-Workspace", selector);
-			const response = await handle_outbound_gateway_request(
-				new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers }),
-				{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
-			);
-			expect(response.status).toBe(400);
-			expect(fetchMock).not.toHaveBeenCalled();
-		} finally { vi.unstubAllGlobals(); }
-	});
-
-	it.each([false, true])("blocks public redirects from gaining app authority after leaving app=%s", async (startInApp) => {
-		const fetchMock = vi.fn(async (request: Request) => new Response(null, {
-			status: 302,
-			headers: { location: request.url.endsWith("/api/v1/files/list") ? "https://public.example.com/redirect" : "https://app.example.com/api/v1/files/read" },
-		}));
-		vi.stubGlobal("fetch", fetchMock);
-		try {
-			const response = await handle_outbound_gateway_request(
-				new Request(startInApp ? "https://app.example.com/api/v1/files/list" : "https://public.example.com/redirect", {
-					headers: { "X-Bonobo-Workspace": "personal" },
-				}),
-				{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
-			);
-			expect(response.status).toBe(403);
-			expect(fetchMock).toHaveBeenCalledTimes(startInApp ? 2 : 1);
-			for (const [request] of fetchMock.mock.calls) {
-				expect(request.headers.get("x-bonobo-workspace")).toBeNull();
-				if (request.url.startsWith("https://public.example.com/")) expect(request.headers.get("authorization")).toBeNull();
+	it.each([undefined, "", "home", "CURRENT", "current, personal"])(
+		"rejects app selector %s before fetching",
+		async (selector) => {
+			const fetchMock = vi.fn(async () => new Response("ok"));
+			vi.stubGlobal("fetch", fetchMock);
+			try {
+				const headers = new Headers();
+				if (selector !== undefined) headers.set("X-Bonobo-Workspace", selector);
+				const response = await handle_outbound_gateway_request(
+					new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers }),
+					{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
+				);
+				expect(response.status).toBe(400);
+				expect(fetchMock).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllGlobals();
 			}
-		} finally { vi.unstubAllGlobals(); }
-	});
+		},
+	);
+
+	it.each([false, true])(
+		"blocks public redirects from gaining app authority after leaving app=%s",
+		async (startInApp) => {
+			const fetchMock = vi.fn(
+				async (request: Request) =>
+					new Response(null, {
+						status: 302,
+						headers: {
+							location: request.url.endsWith("/api/v1/files/list")
+								? "https://public.example.com/redirect"
+								: "https://app.example.com/api/v1/files/read",
+						},
+					}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			try {
+				const response = await handle_outbound_gateway_request(
+					new Request(
+						startInApp ? "https://app.example.com/api/v1/files/list" : "https://public.example.com/redirect",
+						{
+							headers: { "X-Bonobo-Workspace": "personal" },
+						},
+					),
+					{ executionId: "exec_1", allowPublic: true, deniedHosts: [], app: APP },
+				);
+				expect(response.status).toBe(403);
+				expect(fetchMock).toHaveBeenCalledTimes(startInApp ? 2 : 1);
+				for (const [request] of fetchMock.mock.calls) {
+					expect(request.headers.get("x-bonobo-workspace")).toBeNull();
+					if (request.url.startsWith("https://public.example.com/"))
+						expect(request.headers.get("authorization")).toBeNull();
+				}
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
 
 	it("keeps the selected grant on redirects within the app file API only", async () => {
-		const fetchMock = vi.fn(async (request: Request) => request.url.endsWith("/list")
-			? new Response(null, { status: 307, headers: { location: "/api/v1/files/read" } }) : new Response("ok"));
+		const fetchMock = vi.fn(async (request: Request) =>
+			request.url.endsWith("/list")
+				? new Response(null, { status: 307, headers: { location: "/api/v1/files/read" } })
+				: new Response("ok"),
+		);
 		vi.stubGlobal("fetch", fetchMock);
 		try {
 			const response = await handle_outbound_gateway_request(
@@ -842,7 +911,9 @@ describe("outbound gateway", () => {
 				expect(request.headers.get("authorization")).toBe("Bearer b");
 				expect(request.headers.get("x-bonobo-workspace")).toBeNull();
 			}
-		} finally { vi.unstubAllGlobals(); }
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("refuses app hosts and their subdomains, except the files API on the app origin", () => {
@@ -885,11 +956,15 @@ describe("outbound gateway", () => {
 			});
 			expect(response.status).toBe(403);
 			expect(fetchMock).not.toHaveBeenCalled();
-		} finally { vi.unstubAllGlobals(); }
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("refuses a public redirect to an app host", async () => {
-		const fetchMock = vi.fn(async () => new Response(null, { status: 302, headers: { location: "https://press.example/v1/me" } }));
+		const fetchMock = vi.fn(
+			async () => new Response(null, { status: 302, headers: { location: "https://press.example/v1/me" } }),
+		);
 		vi.stubGlobal("fetch", fetchMock);
 		try {
 			const response = await handle_outbound_gateway_request(new Request("https://public.example.com/redirect"), {
@@ -900,7 +975,9 @@ describe("outbound gateway", () => {
 			expect(response.status).toBe(403);
 			expect(await response.text()).toBe("Blocked outbound redirect");
 			expect(fetchMock).toHaveBeenCalledTimes(1);
-		} finally { vi.unstubAllGlobals(); }
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("still reaches the files API and public hosts when the app host is denied", async () => {
@@ -909,14 +986,19 @@ describe("outbound gateway", () => {
 		try {
 			const props = { executionId: "exec_1", allowPublic: true, deniedHosts: ["app.example.com"], app: APP };
 			const filesResponse = await handle_outbound_gateway_request(
-				new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers: { "X-Bonobo-Workspace": "current" } }),
+				new Request("https://app.example.com/api/v1/files/list", {
+					method: "POST",
+					headers: { "X-Bonobo-Workspace": "current" },
+				}),
 				props,
 			);
 			const publicResponse = await handle_outbound_gateway_request(new Request("https://example.com/path"), props);
 			expect(filesResponse.status).toBe(200);
 			expect(publicResponse.status).toBe(200);
 			expect(fetchMock).toHaveBeenCalledTimes(2);
-		} finally { vi.unstubAllGlobals(); }
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("allows public HTTPS hostnames and blocks unsupported URL forms", () => {
@@ -999,7 +1081,10 @@ describe("outbound gateway", () => {
 					executionId: "exec_1",
 					allowPublic: true,
 					deniedHosts: [],
-					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+					app: {
+						origin: "https://app.example.com",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
 				},
 			);
 
@@ -1022,13 +1107,17 @@ describe("outbound gateway", () => {
 		try {
 			const response = await handle_outbound_gateway_request(
 				new Request("https://app.example.com/api/v1/files/list", {
-					method: "POST", headers: { "X-Bonobo-Workspace": workspace, Authorization: "Bearer user-token" },
+					method: "POST",
+					headers: { "X-Bonobo-Workspace": workspace, Authorization: "Bearer user-token" },
 				}),
 				{
 					executionId: "exec_1",
 					allowPublic: false,
 					deniedHosts: [],
-					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+					app: {
+						origin: "https://app.example.com",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
 				},
 			);
 
@@ -1047,22 +1136,53 @@ describe("outbound gateway", () => {
 	it("reads one MiB and preserves the full next cursor with only the named file headers", async () => {
 		const bytes = new Uint8Array(LIMITS.fileReadResponseBytes).map((_, index) => index % 256);
 		const cursor = "c".repeat(16 * 1024);
-		vi.stubGlobal("fetch", vi.fn(async () => new Response(bytes, { headers: {
-			"Content-Type": "application/octet-stream", "X-File-Content-Type": "application/x-custom",
-			"X-File-Revision": "revision-1", "X-File-Size": "2097152", "X-File-Next-Cursor": cursor,
-			"Set-Cookie": "private", "X-Private": "secret",
-		} })));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(bytes, {
+						headers: {
+							"Content-Type": "application/octet-stream",
+							"X-File-Content-Type": "application/x-custom",
+							"X-File-Revision": "revision-1",
+							"X-File-Size": "2097152",
+							"X-File-Next-Cursor": cursor,
+							"Set-Cookie": "private",
+							"X-Private": "secret",
+						},
+					}),
+			),
+		);
 		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", {
-				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: JSON.stringify({ path: "/reports/input.bin" }),
-			}), { executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
+			const response = await handle_outbound_gateway_request(
+				new Request("https://app.example.com/api/v1/files/read", {
+					method: "POST",
+					headers: { "X-Bonobo-Workspace": "personal" },
+					body: JSON.stringify({ path: "/reports/input.bin" }),
+				}),
+				{
+					executionId: "exec_1",
+					allowPublic: false,
+					deniedHosts: [],
+					app: {
+						origin: "https://app.example.com",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
+				},
+			);
 			expect(response.status).toBe(200);
 			expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 			expect(Object.fromEntries(response.headers)).toEqual({
-				"cache-control": "no-store", "content-type": "application/octet-stream", "x-file-content-type": "application/x-custom",
-				"x-file-revision": "revision-1", "x-file-size": "2097152", "x-file-next-cursor": cursor,
+				"cache-control": "no-store",
+				"content-type": "application/octet-stream",
+				"x-file-content-type": "application/x-custom",
+				"x-file-revision": "revision-1",
+				"x-file-size": "2097152",
+				"x-file-next-cursor": cursor,
 			});
-		} finally { vi.unstubAllGlobals(); }
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it.each([
@@ -1071,77 +1191,145 @@ describe("outbound gateway", () => {
 		["https://app.example.com/api/v1/files/read-bytes", "POST"],
 		["https://other.example.com/api/v1/files/read", "POST"],
 	])("keeps the public body limit for %s %s", async (url, method) => {
-		vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(LIMITS.fetchResponseBytes + 1))));
-		try {
-			const response = await handle_outbound_gateway_request(new Request(url, { method, headers: { "X-Bonobo-Workspace": "current" } }), {
-				executionId: "exec_1", allowPublic: true, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
-			});
-			expect(response.status).toBe(413);
-		} finally { vi.unstubAllGlobals(); }
-	});
-
-	it("refuses byte reads over one MiB and cancels their body", async () => {
-		const cancel = vi.fn();
-		vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
-			start(controller) { controller.enqueue(new Uint8Array(LIMITS.fileReadResponseBytes + 1)); }, cancel,
-		}))));
-		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", { method: "POST", headers: { "X-Bonobo-Workspace": "personal" } }), {
-				executionId: "exec_1", allowPublic: false, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
-			});
-			expect(response.status).toBe(413);
-			expect(cancel).toHaveBeenCalledOnce();
-		} finally { vi.unstubAllGlobals(); }
-	});
-
-	it.each(["/api/v1/files/list", "/elsewhere", "https://other.example.com/read"])("does not redirect a byte read to %s", async (location) => {
-		const cancel = vi.fn();
-		const fetchMock = vi.fn(async () => new Response(new ReadableStream({ cancel }), { status: 307, headers: { location } }));
-		vi.stubGlobal("fetch", fetchMock);
-		try {
-			const response = await handle_outbound_gateway_request(new Request("https://app.example.com/api/v1/files/read", {
-				method: "POST", headers: { "X-Bonobo-Workspace": "personal" }, body: "private file request",
-			}), { executionId: "exec_1", allowPublic: true, deniedHosts: [], app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } } });
-			expect(response.status).toBe(403);
-			expect(fetchMock).toHaveBeenCalledOnce();
-			expect(cancel).toHaveBeenCalledOnce();
-		} finally { vi.unstubAllGlobals(); }
-	});
-
-	it.each(["https://app.example.com/not-public-api", "https://other.example.com/redirect"])("does not forward the app grant or selector to %s", async (location) => {
-		const fetchMock = vi.fn(async (request: Request) => {
-			if (request.url.endsWith("/api/v1/files/list")) {
-				return new Response(null, { status: 302, headers: { location } });
-			}
-			return new Response("ok");
-		});
-		vi.stubGlobal("fetch", fetchMock);
-
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(new Uint8Array(LIMITS.fetchResponseBytes + 1))),
+		);
 		try {
 			const response = await handle_outbound_gateway_request(
-				new Request("https://app.example.com/api/v1/files/list", { method: "POST", headers: { "X-Bonobo-Workspace": "personal" } }),
+				new Request(url, { method, headers: { "X-Bonobo-Workspace": "current" } }),
 				{
 					executionId: "exec_1",
 					allowPublic: true,
 					deniedHosts: [],
-					app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+					app: {
+						origin: "https://app.example.com",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
 				},
 			);
-
-			expect(response.status).toBe(200);
-			const redirected = fetchMock.mock.calls[1]?.[0];
-			if (!(redirected instanceof Request)) {
-				throw new Error("expected redirected Request");
-			}
-			expect(redirected.url).toBe(location);
-			expect(redirected.headers.get("authorization")).toBeNull();
-			for (const [request] of fetchMock.mock.calls) {
-				expect(request.headers.get("x-bonobo-workspace")).toBeNull();
-			}
+			expect(response.status).toBe(413);
 		} finally {
 			vi.unstubAllGlobals();
 		}
 	});
+
+	it("refuses byte reads over one MiB and cancels their body", async () => {
+		const cancel = vi.fn();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								controller.enqueue(new Uint8Array(LIMITS.fileReadResponseBytes + 1));
+							},
+							cancel,
+						}),
+					),
+			),
+		);
+		try {
+			const response = await handle_outbound_gateway_request(
+				new Request("https://app.example.com/api/v1/files/read", {
+					method: "POST",
+					headers: { "X-Bonobo-Workspace": "personal" },
+				}),
+				{
+					executionId: "exec_1",
+					allowPublic: false,
+					deniedHosts: [],
+					app: {
+						origin: "https://app.example.com",
+						tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+					},
+				},
+			);
+			expect(response.status).toBe(413);
+			expect(cancel).toHaveBeenCalledOnce();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it.each(["/api/v1/files/list", "/elsewhere", "https://other.example.com/read"])(
+		"does not redirect a byte read to %s",
+		async (location) => {
+			const cancel = vi.fn();
+			const fetchMock = vi.fn(
+				async () => new Response(new ReadableStream({ cancel }), { status: 307, headers: { location } }),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			try {
+				const response = await handle_outbound_gateway_request(
+					new Request("https://app.example.com/api/v1/files/read", {
+						method: "POST",
+						headers: { "X-Bonobo-Workspace": "personal" },
+						body: "private file request",
+					}),
+					{
+						executionId: "exec_1",
+						allowPublic: true,
+						deniedHosts: [],
+						app: {
+							origin: "https://app.example.com",
+							tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+						},
+					},
+				);
+				expect(response.status).toBe(403);
+				expect(fetchMock).toHaveBeenCalledOnce();
+				expect(cancel).toHaveBeenCalledOnce();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+
+	it.each(["https://app.example.com/not-public-api", "https://other.example.com/redirect"])(
+		"does not forward the app grant or selector to %s",
+		async (location) => {
+			const fetchMock = vi.fn(async (request: Request) => {
+				if (request.url.endsWith("/api/v1/files/list")) {
+					return new Response(null, { status: 302, headers: { location } });
+				}
+				return new Response("ok");
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			try {
+				const response = await handle_outbound_gateway_request(
+					new Request("https://app.example.com/api/v1/files/list", {
+						method: "POST",
+						headers: { "X-Bonobo-Workspace": "personal" },
+					}),
+					{
+						executionId: "exec_1",
+						allowPublic: true,
+						deniedHosts: [],
+						app: {
+							origin: "https://app.example.com",
+							tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+						},
+					},
+				);
+
+				expect(response.status).toBe(200);
+				const redirected = fetchMock.mock.calls[1]?.[0];
+				if (!(redirected instanceof Request)) {
+					throw new Error("expected redirected Request");
+				}
+				expect(redirected.url).toBe(location);
+				expect(redirected.headers.get("authorization")).toBeNull();
+				for (const [request] of fetchMock.mock.calls) {
+					expect(request.headers.get("x-bonobo-workspace")).toBeNull();
+				}
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
 
 	it("blocks non-app hosts in app-only mode", async () => {
 		const fetchMock = vi.fn(async () => new Response("ok"));
@@ -1152,7 +1340,10 @@ describe("outbound gateway", () => {
 				executionId: "exec_1",
 				allowPublic: false,
 				deniedHosts: [],
-				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
+				app: {
+					origin: "https://app.example.com",
+					tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+				},
 			});
 
 			expect(response.status).toBe(403);
@@ -1245,49 +1436,61 @@ describe("outbound gateway", () => {
 		}
 	});
 
-	it.each([false, true])("keeps the original deadline while reading a stalled response body with file read=%s", async (fileRead) => {
-		vi.useFakeTimers();
-		let fetchSignal: AbortSignal | null = null;
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (_request: Request, init?: RequestInit) => {
-				const signal = init?.signal;
-				if (!signal) throw new Error("Expected an abort signal");
-				fetchSignal = signal;
-				await new Promise((resolve) => setTimeout(resolve, LIMITS.fetchTimeoutMs - 1000));
-				return new Response(
-					new ReadableStream<Uint8Array>({
-						start(controller) {
-							controller.enqueue(new Uint8Array([1]));
-							signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
-						},
+	it.each([false, true])(
+		"keeps the original deadline while reading a stalled response body with file read=%s",
+		async (fileRead) => {
+			vi.useFakeTimers();
+			let fetchSignal: AbortSignal | null = null;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (_request: Request, init?: RequestInit) => {
+					const signal = init?.signal;
+					if (!signal) throw new Error("Expected an abort signal");
+					fetchSignal = signal;
+					await new Promise((resolve) => setTimeout(resolve, LIMITS.fetchTimeoutMs - 1000));
+					return new Response(
+						new ReadableStream<Uint8Array>({
+							start(controller) {
+								controller.enqueue(new Uint8Array([1]));
+								signal.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+							},
+						}),
+					);
+				}),
+			);
+
+			try {
+				const pending = handle_outbound_gateway_request(
+					new Request(fileRead ? "https://app.example.com/api/v1/files/read" : "https://example.com/stalled", {
+						method: fileRead ? "POST" : "GET",
+						headers: { "X-Bonobo-Workspace": "personal" },
 					}),
+					{
+						executionId: "exec_1",
+						allowPublic: true,
+						deniedHosts: [],
+						app: {
+							origin: "https://app.example.com",
+							tokens: { current: "current-grant-token", personal: "personal-grant-token" },
+						},
+					},
 				);
-			}),
-		);
+				// Attach the rejection check before moving the clock. Otherwise the promise rejects with no
+				// handler yet and Node reports an unhandled rejection.
+				const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
 
-		try {
-			const pending = handle_outbound_gateway_request(new Request(fileRead ? "https://app.example.com/api/v1/files/read" : "https://example.com/stalled", { method: fileRead ? "POST" : "GET", headers: { "X-Bonobo-Workspace": "personal" } }), {
-				executionId: "exec_1",
-				allowPublic: true,
-				deniedHosts: [],
-				app: { origin: "https://app.example.com", tokens: { current: "current-grant-token", personal: "personal-grant-token" } },
-			});
-			// Attach the rejection check before moving the clock. Otherwise the promise rejects with no
-			// handler yet and Node reports an unhandled rejection.
-			const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
-
-			// The deadline starts when the request starts, not when the body arrives. So stop one
-			// millisecond short and check nothing aborted yet, then step over the deadline.
-			await vi.advanceTimersByTimeAsync(LIMITS.fetchTimeoutMs - 1);
-			expect(fetchSignal).toMatchObject({ aborted: false });
-			await vi.advanceTimersByTimeAsync(1);
-			await rejected;
-			expect(fetchSignal).toMatchObject({ aborted: true });
-			expect(vi.getTimerCount()).toBe(0);
-		} finally {
-			vi.unstubAllGlobals();
-			vi.useRealTimers();
-		}
-	});
+				// The deadline starts when the request starts, not when the body arrives. So stop one
+				// millisecond short and check nothing aborted yet, then step over the deadline.
+				await vi.advanceTimersByTimeAsync(LIMITS.fetchTimeoutMs - 1);
+				expect(fetchSignal).toMatchObject({ aborted: false });
+				await vi.advanceTimersByTimeAsync(1);
+				await rejected;
+				expect(fetchSignal).toMatchObject({ aborted: true });
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.unstubAllGlobals();
+				vi.useRealTimers();
+			}
+		},
+	);
 });

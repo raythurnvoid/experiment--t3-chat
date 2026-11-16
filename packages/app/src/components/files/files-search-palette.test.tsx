@@ -85,9 +85,10 @@ vi.mock("convex/react", async (importOriginal) => {
 					queryPushListeners.delete(listener);
 				};
 			}, []);
-			const key = args === "skip"
-				? "skip"
-				: JSON.stringify([args.clause, args.folderPath ?? null, args.savedStream, args.searchGeneration]);
+			const key =
+				args === "skip"
+					? "skip"
+					: JSON.stringify([args.clause, args.folderPath ?? null, args.savedStream, args.searchGeneration]);
 			const [loaded, setLoaded] = useState({ key, pageCount: 1 });
 			const pageCount = loaded.key === key ? loaded.pageCount : 1;
 			// The input's key and value suggestions page the metadata catalog. They stay empty.

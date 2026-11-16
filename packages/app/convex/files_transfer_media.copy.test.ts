@@ -7,13 +7,7 @@ import {
 	files_headless_tiptap_editor_create,
 	files_headless_tiptap_editor_get_markdown,
 } from "../shared/files-tiptap.ts";
-import {
-	mock_media_storage,
-	create_media,
-	save_media,
-	fixture,
-	map_refs,
-} from "./files_transfer_media.setup.test.ts";
+import { mock_media_storage, create_media, save_media, fixture, map_refs } from "./files_transfer_media.setup.test.ts";
 
 beforeEach(mock_media_storage);
 
@@ -333,38 +327,35 @@ describe("copy_transfer_file media", () => {
 		});
 	});
 
-	test.each([false, true])(
-		"rewrites only app media (replacement: %s)",
-		async (documentReplacement) => {
-			const f = await fixture({
-				documentReplacement,
-				documentText: (src) =>
-					`Before\n\n![Photo](${src})\n\n\`literal ${src}\`\n\n![External](https://example.test/photo.png)\n\nAfter\n`,
-			});
-			const mapped = await map_refs(f);
-			if (!mapped._yay || !("mediaDependencies" in mapped._yay)) throw new Error("Expected media mapping");
-			await f.t.action(internal.files_nodes_content.copy_transfer_file, {
-				itemId: f.document._id,
-				attempt: f.document.attempt,
-			});
-			const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
-			expect(item).toMatchObject({
-				state: "completed",
-				outputTarget: { kind: documentReplacement ? "saved" : "private" },
-			});
-			const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-				organizationId: f.destination.organizationId,
-				workspaceId: f.destination.workspaceId,
-				userId: f.destination.userId,
-				subject: { kind: "user", userId: f.destination.userId, plugin: null },
-				overlayUserId: f.destination.userId,
-				path: "/document.md",
-			});
-			expect(read?.content).toContain(`![Photo](${mapped._yay.mediaDependencies[0]!.src})`);
-			expect(read?.content).toContain(`\`literal ${f.sourceRef}\``);
-			expect(read?.content).toContain("![External](https://example.test/photo.png)");
-		},
-	);
+	test.each([false, true])("rewrites only app media (replacement: %s)", async (documentReplacement) => {
+		const f = await fixture({
+			documentReplacement,
+			documentText: (src) =>
+				`Before\n\n![Photo](${src})\n\n\`literal ${src}\`\n\n![External](https://example.test/photo.png)\n\nAfter\n`,
+		});
+		const mapped = await map_refs(f);
+		if (!mapped._yay || !("mediaDependencies" in mapped._yay)) throw new Error("Expected media mapping");
+		await f.t.action(internal.files_nodes_content.copy_transfer_file, {
+			itemId: f.document._id,
+			attempt: f.document.attempt,
+		});
+		const item = await f.t.run((ctx) => ctx.db.get("files_transfer_items", f.document._id));
+		expect(item).toMatchObject({
+			state: "completed",
+			outputTarget: { kind: documentReplacement ? "saved" : "private" },
+		});
+		const read = await f.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: f.destination.organizationId,
+			workspaceId: f.destination.workspaceId,
+			userId: f.destination.userId,
+			subject: { kind: "user", userId: f.destination.userId, plugin: null },
+			overlayUserId: f.destination.userId,
+			path: "/document.md",
+		});
+		expect(read?.content).toContain(`![Photo](${mapped._yay.mediaDependencies[0]!.src})`);
+		expect(read?.content).toContain(`\`literal ${f.sourceRef}\``);
+		expect(read?.content).toContain("![External](https://example.test/photo.png)");
+	});
 
 	test("copies a document with unselected and broken links and keeps them unchanged", async () => {
 		const missingRef = "bonobo-file://not-an-id";

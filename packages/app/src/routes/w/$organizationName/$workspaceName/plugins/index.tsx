@@ -149,11 +149,7 @@ function RoutePlugins() {
 					</div>
 				</header>
 
-				<PluginsManagementAccess
-					key={membershipId}
-					membershipId={membershipId}
-					organizationId={organizationId}
-				/>
+				<PluginsManagementAccess key={membershipId} membershipId={membershipId} organizationId={organizationId} />
 
 				<RoutePluginsGallery membershipId={membershipId} />
 			</div>

@@ -131,21 +131,25 @@ function picker_list(
 ) {
 	const streams = segments.flat();
 	const viewKey = JSON.stringify(streams[0]?.directoryView);
-	const viewsMatch = !directory || streams.every((stream) =>
-		stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
-	);
+	const viewsMatch =
+		!directory ||
+		streams.every((stream) => stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey);
 	const openIndex = segments.findIndex((streams) => streams.some((stream) => stream.status !== "Exhausted"));
 	const merges = (openIndex === -1 ? segments : segments.slice(0, openIndex + 1)).map(merge_tree_streams);
 	const blocking = merges.at(-1)?.blocking ?? null;
 	return {
 		rows: viewsMatch ? merges.flatMap((merge) => merge.rows) : [],
-		status: !viewsMatch || segments.some((streams) => streams.some((stream) =>
-			stream.status === "LoadingFirstPage" || (directory && stream.status === "LoadingMore"),
-		))
-			? ("loading" as const)
-			: openIndex === -1
-				? ("done" as const)
-				: ("more" as const),
+		status:
+			!viewsMatch ||
+			segments.some((streams) =>
+				streams.some(
+					(stream) => stream.status === "LoadingFirstPage" || (directory && stream.status === "LoadingMore"),
+				),
+			)
+				? ("loading" as const)
+				: openIndex === -1
+					? ("done" as const)
+					: ("more" as const),
 		loadMore: () => blocking?.loadMore(pageSize),
 	};
 }
@@ -181,8 +185,7 @@ function useFilesTreeKindSource(
 	const { pageSize, enabled } = args;
 	const streamArgs = files_tree_stream_args(args);
 	const options = { initialNumItems: pageSize };
-	const streamArgsOrSkip = (restricted: boolean) =>
-		enabled ? streamArgs.children(restricted) : ("skip" as const);
+	const streamArgsOrSkip = (restricted: boolean) => (enabled ? streamArgs.children(restricted) : ("skip" as const));
 	const open = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, streamArgsOrSkip(false), options);
 	const twin = useFilesPaginatedQuery(app_convex_api.files_tree.list_tree_children, streamArgsOrSkip(true), options);
 	return [open, twin];
@@ -220,10 +223,14 @@ const FilesTreeFolderPager = memo(function FilesTreeFolderPager(props: FilesTree
 		// arrive. So report only settled results. The provider keeps the rows it has until then.
 		const streams = [...folders, ...files];
 		const viewKey = JSON.stringify(streams[0]?.directoryView);
-		if (!streams.every((stream) =>
-			(stream.status === "CanLoadMore" || stream.status === "Exhausted") &&
-			stream.directoryView !== undefined && JSON.stringify(stream.directoryView) === viewKey,
-		)) {
+		if (
+			!streams.every(
+				(stream) =>
+					(stream.status === "CanLoadMore" || stream.status === "Exhausted") &&
+					stream.directoryView !== undefined &&
+					JSON.stringify(stream.directoryView) === viewKey,
+			)
+		) {
 			onResult(folderId, "loading");
 			return;
 		}
@@ -451,10 +458,7 @@ const FilesTreeProvider = Object.assign(
 					/>
 				))}
 				{isOwner !== true && folderRequests.size > 0 && (
-					<FilesTreeSharedRootsPager
-						membershipId={membershipId}
-						onResult={handleSharedRootsResult}
-					/>
+					<FilesTreeSharedRootsPager membershipId={membershipId} onResult={handleSharedRootsResult} />
 				)}
 				{[...pinnedNodeIds].map((nodeId) => (
 					<FilesTreePinWatcher key={nodeId} membershipId={membershipId} nodeId={nodeId} onResult={handlePinResult} />
@@ -652,12 +656,15 @@ const FilesTreeProvider = Object.assign(
 			// A short first page is ready. A refreshed view must refill the rows already shown.
 			const [wanted, setWanted] = useState({ scope, count: 0 });
 			const wantedCount = wanted.scope === scope ? wanted.count : 0;
-			const isSettled = children.status !== "loading" && (children.status === "done" || children.rows.length >= wantedCount);
+			const isSettled =
+				children.status !== "loading" && (children.status === "done" || children.rows.length >= wantedCount);
 			useEffect(() => {
 				if (children.status === "more" && children.rows.length < wantedCount) children.loadMore();
 			});
 			const key = JSON.stringify(children.rows);
-			const [heldChildren, setHeldChildren] = useState<{ scope: string; key: string; rows: FilesTreeRow[] } | null>(null);
+			const [heldChildren, setHeldChildren] = useState<{ scope: string; key: string; rows: FilesTreeRow[] } | null>(
+				null,
+			);
 			if (isSettled && (wanted.scope !== scope || children.rows.length > wantedCount)) {
 				setWanted({ scope, count: Math.max(wantedCount, children.rows.length) });
 			}
@@ -668,8 +675,8 @@ const FilesTreeProvider = Object.assign(
 			return {
 				children: {
 					...children,
-					status: isSettled ? children.status : "loading" as const,
-					rows: isSettled ? children.rows : (heldChildren?.scope === scope ? heldChildren.rows : []),
+					status: isSettled ? children.status : ("loading" as const),
+					rows: isSettled ? children.rows : heldChildren?.scope === scope ? heldChildren.rows : [],
 					loadMore: () => setWanted({ scope, count: children.rows.length + pageSize }),
 				},
 				shared: hasShared ? picker_list([shared], pageSize) : null,

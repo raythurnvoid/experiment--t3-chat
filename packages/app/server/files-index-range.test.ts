@@ -4,9 +4,24 @@ import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setu
 import { files_index_range_apply, files_index_range_phases } from "./files-index-range.ts";
 
 test.each(["asc", "desc"] as const)("native seek omits an empty %s window", (order) => {
-	for (const [start, end] of [[[1, 2], [1, 2]], [[2], [1]], [[1], [1, 2]]]) {
-		expect(files_index_range_phases({ fields: ["updatedAt", "_creationTime"], order,
-			start: start!, end: end!, startInclusive: false, endInclusive: true })).toEqual([]);
+	for (const [start, end] of [
+		[
+			[1, 2],
+			[1, 2],
+		],
+		[[2], [1]],
+		[[1], [1, 2]],
+	]) {
+		expect(
+			files_index_range_phases({
+				fields: ["updatedAt", "_creationTime"],
+				order,
+				start: start!,
+				end: end!,
+				startInclusive: false,
+				endInclusive: true,
+			}),
+		).toEqual([]);
 	}
 });
 
@@ -34,19 +49,34 @@ test.each(["asc", "desc"] as const)("native seek keeps the complete key in %s or
 	const start = key(nodes[5]!);
 	const end = key(nodes[19]!);
 	const phases = files_index_range_phases({
-		fields: ["updatedAt", "_creationTime", "_id"], order, start, end,
-		startInclusive: false, endInclusive: false,
+		fields: ["updatedAt", "_creationTime", "_id"],
+		order,
+		start,
+		end,
+		startInclusive: false,
+		endInclusive: false,
 	});
 	const ids = [];
 	for (const bounds of phases) {
 		let cursor: string | null = null;
 		while (true) {
-			const page = await t.run((ctx) => ctx.db.query("files_nodes")
-				.withIndex("by_org_ws_scope_archive_updatedAt", (q) =>
-					files_index_range_apply(q.eq("organizationId", scope.organizationId)
-						.eq("workspaceId", scope.workspaceId).eq("moveCohortId", undefined)
-						.eq("restrictedScopeNodeId", null).eq("archiveOperationId", null), bounds))
-				.order(order).paginate({ cursor, numItems: 3 }));
+			const page = await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_org_ws_scope_archive_updatedAt", (q) =>
+						files_index_range_apply(
+							q
+								.eq("organizationId", scope.organizationId)
+								.eq("workspaceId", scope.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("restrictedScopeNodeId", null)
+								.eq("archiveOperationId", null),
+							bounds,
+						),
+					)
+					.order(order)
+					.paginate({ cursor, numItems: 3 }),
+			);
 			ids.push(...page.page.map((node) => node._id));
 			if (page.isDone) break;
 			cursor = page.continueCursor;

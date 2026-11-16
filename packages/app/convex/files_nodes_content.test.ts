@@ -12,14 +12,8 @@ import {
 	test_save_file_pending_update,
 	test_spy_handler,
 } from "./setup.test.ts";
-import {
-	r2_confirmed_object_delete,
-	r2_server_side_copy,
-} from "./r2_client.ts";
-import {
-	r2_create_asset_key,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-} from "./r2_assets.ts";
+import { r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
+import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { copy_transfer_file } from "./files_nodes_content.ts";
@@ -1051,7 +1045,10 @@ describe("copy_transfer_file", () => {
 			});
 			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
 			expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.capture?.artifact).not.toBeNull();
-			const run = await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: copy.runId });
+			const run = await asUser.query(api.files_transfer_status.get, {
+				membershipId: db.membershipId,
+				runId: copy.runId,
+			});
 			await asUser.mutation(api.files_transfer.resolve_conflicts, {
 				membershipId: db.membershipId,
 				runId: copy.runId,

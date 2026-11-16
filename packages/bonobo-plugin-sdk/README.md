@@ -55,13 +55,13 @@ Exchange, renew, and seal-processing accept an optional persisted `requestId`. A
 
 The sealed grant then drives the upload pipeline — plain `Authorization: Bearer <psg_...>` calls (no service secret header), all POST, all requiring the `files:write` scope and the `processing` phase:
 
-| Route                                               | Body                                                                                 | Response                                                                                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Route                                               | Body                                                                                         | Response                                                                                                                                                         |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/api/v1/files/service-uploads/create-target`       | `{ idempotencyKey, targetKey, path, contentType, size, readOnly, nonCollaborative, force? }` | pending: `{ state: "pending", path, nodeId, uploadUrl, headers, uploadUrlExpiresAt }`; replay after confirm: `{ state: "committed", path, nodeId, actualBytes }` |
-| `/api/v1/files/service-uploads/remint`              | `{ idempotencyKey, targetKey }`                                                      | same union as create-target: a fresh asset and URL for a pending target, or `committed`                                                                         |
-| `/api/v1/files/service-uploads/finalize`            | `{ idempotencyKey, targetKey }`                                                      | `{ state: "pending" \| "committed" \| "released", path, nodeId, actualBytes \| null }`                                                                           |
-| `/api/v1/files/service-uploads/delete`              | `{ idempotencyKey, targetKey, force? }`                                                | `{ state: "deleted", paths }`                                                                                                                                    |
-| `/api/v1/files/service-uploads/archive-destination` | `{ requestId, previousRequestId?, force? }`                                            | `{ requestId, archivedNodes, complete, refused: [{ path, message, errorCode }] }`                                                                                  |
+| `/api/v1/files/service-uploads/remint`              | `{ idempotencyKey, targetKey }`                                                              | same union as create-target: a fresh asset and URL for a pending target, or `committed`                                                                          |
+| `/api/v1/files/service-uploads/finalize`            | `{ idempotencyKey, targetKey }`                                                              | `{ state: "pending" \| "committed" \| "released", path, nodeId, actualBytes \| null }`                                                                           |
+| `/api/v1/files/service-uploads/delete`              | `{ idempotencyKey, targetKey, force? }`                                                      | `{ state: "deleted", paths }`                                                                                                                                    |
+| `/api/v1/files/service-uploads/archive-destination` | `{ requestId, previousRequestId?, force? }`                                                  | `{ requestId, archivedNodes, complete, refused: [{ path, message, errorCode }] }`                                                                                |
 
 Contract highlights:
 
@@ -132,13 +132,13 @@ the token expires and API requests return 401.
 
 Mount API request and response types come from `BonoboHttpApi`:
 
-| Route | Purpose |
-| --- | --- |
-| `/api/v1/volumes/list` | List published and open copies with usage and limits. |
-| `/api/v1/volumes/stage` | Open a new staging copy and retire any previous staging copy for that mount and key. |
+| Route                        | Purpose                                                                                                  |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `/api/v1/volumes/list`       | List published and open copies with usage and limits.                                                    |
+| `/api/v1/volumes/stage`      | Open a new staging copy and retire any previous staging copy for that mount and key.                     |
 | `/api/v1/volumes/write-many` | Send up to 100 text files and 8 MB per call. Paths start with `/` within the copy, such as `/README.md`. |
-| `/api/v1/volumes/publish` | Swap the complete staging copy into view at once. |
-| `/api/v1/volumes/delete` | Hide a copy and queue cleanup. |
+| `/api/v1/volumes/publish`    | Swap the complete staging copy into view at once.                                                        |
+| `/api/v1/volumes/delete`     | Hide a copy and queue cleanup.                                                                           |
 
 Each copy holds at most 5,000 files and 30,000,000 bytes. Each installation holds at most 20,000
 files and 200,000,000 bytes across published and staging copies. The daily limit is 10,000 new paths
@@ -211,7 +211,11 @@ While the installation is disabled, and after an upgrade or a service account ch
 Many changes can share one notice. `data.revision` is the newest one. The body is:
 
 ```json
-{"type":"workspace.access.changed","timestamp":"2026-10-25T10:00:00.000Z","data":{"installationId":"...","revision":42}}
+{
+	"type": "workspace.access.changed",
+	"timestamp": "2026-10-25T10:00:00.000Z",
+	"data": { "installationId": "...", "revision": 42 }
+}
 ```
 
 Notices follow [Standard Webhooks](https://www.standardwebhooks.com/) v1. The headers are
@@ -321,14 +325,14 @@ type WriteAnswer = BonoboHttpResponse<"/api/v1/files/write">;
 - The `Bonobo*Request` and `Bonobo*Response` interfaces, and `BonoboPublicDoc`, are gone. The rules that lived in their doc blocks are in the table and the notes below it. Read the shapes off `BonoboHttpApi` instead.
 - `client.fetchJson` takes a generated route path instead of any `string`, and its `body` is typed from that path. A helper that forwards `path: string` and `body: unknown` no longer compiles; make it generic over the path, the way the "UI token API surface" section shows.
 
-| Route                              | Body                                                                                                                                                                                                                                                              | Response                                                                                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/v1/files/download-urls` | `{ fileNodeIds, expiresInSeconds?, download? }` (`expiresInSeconds`: 1–900, defaults to 900; the granted TTL is clamped below the remaining run-token lifetime with a one-second signing margin)                                                                                                 | `{ items, errors, truncated }`; each item is `{ fileNodeId, name, contentType, url, expiresAt }` (`expiresAt` in epoch ms) and each error is `{ fileNodeId, message }` |
-| `POST /api/v1/files/write`         | `{ path, content, overwrite?: "replace" \| "fail", access?: { readOnly?: boolean }, expectedParentNodeId?: string }` — editable text types use the normal content-type rules. `overwrite` defaults to `"replace"`; writing over an existing editable Markdown file replaces its content in place and keeps the same `nodeId`.  | `{ path, nodeId, contentType }`                                                                                                                   |
-| `POST /api/v1/files/touch`         | `{ paths }` — creates empty editable Markdown files, at most 8 per call, so members see where a run's outputs will land before the run fills them. Paths follow the `files/write` rule. The call is idempotent.                                                   | `{ files }`; each entry is `{ path, nodeId, created }`, and `created` is `false` when the file already existed                                     |
-| `POST /api/v1/activities/start`    | `{ title, timeoutMs }` (`title` up to 120 characters after trimming, or `""` to let the host compose one; `timeoutMs` at most `300000`, and a larger value answers `400`)                                                                                         | `{ activityId }`; a second call in the same run answers `409`                                                                                      |
-| `POST /api/v1/plugin-data/read`    | `{ collection, key }`                                                                                                                                                                                                                                             | `{ document }` — one stored document, or `null` when the key does not exist                                                                        |
-| `POST /api/v1/plugin-data/list`    | `{ collection, keyPrefix?, keyStartExclusive?, keyEndInclusive?, cursor?, limit? }`                                                                                                                                                                                | `{ documents, cursor, isDone }`                                                                                                                    |
+| Route                              | Body                                                                                                                                                                                                                                                                                                                          | Response                                                                                                                                                               |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/v1/files/download-urls` | `{ fileNodeIds, expiresInSeconds?, download? }` (`expiresInSeconds`: 1–900, defaults to 900; the granted TTL is clamped below the remaining run-token lifetime with a one-second signing margin)                                                                                                                              | `{ items, errors, truncated }`; each item is `{ fileNodeId, name, contentType, url, expiresAt }` (`expiresAt` in epoch ms) and each error is `{ fileNodeId, message }` |
+| `POST /api/v1/files/write`         | `{ path, content, overwrite?: "replace" \| "fail", access?: { readOnly?: boolean }, expectedParentNodeId?: string }` — editable text types use the normal content-type rules. `overwrite` defaults to `"replace"`; writing over an existing editable Markdown file replaces its content in place and keeps the same `nodeId`. | `{ path, nodeId, contentType }`                                                                                                                                        |
+| `POST /api/v1/files/touch`         | `{ paths }` — creates empty editable Markdown files, at most 8 per call, so members see where a run's outputs will land before the run fills them. Paths follow the `files/write` rule. The call is idempotent.                                                                                                               | `{ files }`; each entry is `{ path, nodeId, created }`, and `created` is `false` when the file already existed                                                         |
+| `POST /api/v1/activities/start`    | `{ title, timeoutMs }` (`title` up to 120 characters after trimming, or `""` to let the host compose one; `timeoutMs` at most `300000`, and a larger value answers `400`)                                                                                                                                                     | `{ activityId }`; a second call in the same run answers `409`                                                                                                          |
+| `POST /api/v1/plugin-data/read`    | `{ collection, key }`                                                                                                                                                                                                                                                                                                         | `{ document }` — one stored document, or `null` when the key does not exist                                                                                            |
+| `POST /api/v1/plugin-data/list`    | `{ collection, keyPrefix?, keyStartExclusive?, keyEndInclusive?, cursor?, limit? }`                                                                                                                                                                                                                                           | `{ documents, cursor, isDone }`                                                                                                                                        |
 
 `access: { readOnly: true }` on a `files/write` create sets the new file's local flag. It needs `workspace.files.manage-read-only`, or `files:read-only` for an API key, and ordinary Can edit. Optional top-level `force: true` passes Read-only for that request only and needs the same current grant. It never grants file access, broadens a seal or clears the flag. Anyone with Can edit may change the flag through the proper setter. Folder flags block direct list changes, not every descendant's content. Copy and Restore preserve source flags without an extra grant solely for preservation.
 
@@ -428,14 +432,14 @@ These public routes are also typed in `BonoboHttpApi`. Their types do not grant 
 Keep the service secret on the plugin server. Writer requests use both the current sealed `psg_`
 bearer and the `X-Bonobo-Service-Authorization` header.
 
-| Route | Writer request | Result |
-| --- | --- | --- |
-| `/api/v1/files/plugin-folders/ensure` | `{path,force?,writer:{resourceKey,rootNodeId},access?}` | Normal folder result plus `writer` with saved writer/root/folder IDs and generation |
-| `/api/v1/files/plugin-writers/inspect` | `{writerId,path,maxBytes}` | Current editable text and type, exact target/parent IDs, opaque revision, and generation |
-| `/api/v1/files/write` | Normal text fields, optional `force`, and `expectedParentNodeId`, plus `writer:{writerId,operationId,writerGeneration,sequence,expectedNodeId,expectedContentRevision,contentHash}` | Normal write result plus `receipt` |
-| `/api/v1/files/plugin-archive` | `{path,force?,writer:{writerId,operationId,writerGeneration,sequence,nodeId,expectedContentRevision?}}` | Count of items moved to Trash plus `receipt`; exactly one saved file |
-| `/api/v1/files/plugin-access/set` | `{path,access:{readOnly},writer:{writerId,operationId,writerGeneration}}` | Node ID plus exact `receipt` |
-| `/api/v1/files/plugin-writers/advance` | `{writerId,operationId,writerGeneration,nextGeneration}` | Generation receipt |
+| Route                                  | Writer request                                                                                                                                                                      | Result                                                                                   |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `/api/v1/files/plugin-folders/ensure`  | `{path,force?,writer:{resourceKey,rootNodeId},access?}`                                                                                                                             | Normal folder result plus `writer` with saved writer/root/folder IDs and generation      |
+| `/api/v1/files/plugin-writers/inspect` | `{writerId,path,maxBytes}`                                                                                                                                                          | Current editable text and type, exact target/parent IDs, opaque revision, and generation |
+| `/api/v1/files/write`                  | Normal text fields, optional `force`, and `expectedParentNodeId`, plus `writer:{writerId,operationId,writerGeneration,sequence,expectedNodeId,expectedContentRevision,contentHash}` | Normal write result plus `receipt`                                                       |
+| `/api/v1/files/plugin-archive`         | `{path,force?,writer:{writerId,operationId,writerGeneration,sequence,nodeId,expectedContentRevision?}}`                                                                             | Count of items moved to Trash plus `receipt`; exactly one saved file                     |
+| `/api/v1/files/plugin-access/set`      | `{path,access:{readOnly},writer:{writerId,operationId,writerGeneration}}`                                                                                                           | Node ID plus exact `receipt`                                                             |
+| `/api/v1/files/plugin-writers/advance` | `{writerId,operationId,writerGeneration,nextGeneration}`                                                                                                                            | Generation receipt                                                                       |
 
 The opaque resource key is 1–512 characters and belongs to the plugin. A null root ID creates an
 unused sealed root; later writers use its exact root ID. Repeating a key keeps the original IDs
@@ -697,11 +701,11 @@ A page can give the app's chat agent tools that run in the page. A page with `ag
 				"inputSchema": {
 					"type": "object",
 					"properties": { "subject": { "type": "string" }, "body": { "type": "string" } },
-					"required": ["subject", "body"]
-				}
-			}
-		]
-	}
+					"required": ["subject", "body"],
+				},
+			},
+		],
+	},
 }
 ```
 
@@ -757,12 +761,12 @@ The host's theme reaches the frame as `{ mode: "light" | "dark", tokens }`, once
 
 ```css
 .panel {
-  background: var(--color-base-1-03, #16161a);
-  color: var(--color-fg-12, #ececef);
+	background: var(--color-base-1-03, #16161a);
+	color: var(--color-fg-12, #ececef);
 
-  .dark & {
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-  }
+	.dark & {
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+	}
 }
 ```
 
@@ -836,13 +840,13 @@ A status the route does not declare — a gateway `503`, say — resolves like a
 
 `init` takes the rest of `RequestInit`: `signal`, extra `headers`, `keepalive`, `priority`, `cache`, `credentials`, `mode`, `referrer`, `referrerPolicy`, `integrity`. These are set after `init` is merged, so a caller's value never wins:
 
-| Field                              | Value                                                             |
-| ---------------------------------- | ----------------------------------------------------------------- |
-| `method`                           | always `POST`                                                     |
-| `body`                             | the `body` parameter, JSON-encoded                                |
-| `Authorization`                    | the session token, with one refresh-and-resend on a `401`         |
-| `Content-Type` and `Accept`        | `application/json`                                                |
-| `redirect`                         | `"error"` — following one would resend the bearer to another origin |
+| Field                       | Value                                                               |
+| --------------------------- | ------------------------------------------------------------------- |
+| `method`                    | always `POST`                                                       |
+| `body`                      | the `body` parameter, JSON-encoded                                  |
+| `Authorization`             | the session token, with one refresh-and-resend on a `401`           |
+| `Content-Type` and `Accept` | `application/json`                                                  |
+| `redirect`                  | `"error"` — following one would resend the bearer to another origin |
 
 `method`, `body` and `redirect` are removed from `init`'s type as well. The three headers cannot be: header names are case-insensitive, so the type cannot name them, and setting them last is the whole enforcement.
 
@@ -959,14 +963,14 @@ Three rules for a plugin that uses it:
 
 What each refusal means, replacing the old `_nay.name` vocabulary:
 
-| Answer                | Meaning                                                                                                                                                                               |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `409`                 | The serialization lock is held. `body.retryAfterMs` says how long to wait.                                                                                                            |
-| `429`                 | A rate limit. `rate_limited` always carries the wait in `body.retryAfterMs`; `call_limit_reached` (the plugin API call limit) has none, so check `errorCode` first.                       |
-| `401` / `403`         | The server answers the same for a lapsed session and a revoked plugin. `client.session.expiresAt()` versus `Date.now()` is the whole difference: past it, reload; before it, the frame lost access. |
-| `400` / `404` / `413` | The request was refused — an unknown endpoint, a missing `serializationKey`, a body too large. `body.message` says why.                                                                |
+| Answer                | Meaning                                                                                                                                                                                                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `409`                 | The serialization lock is held. `body.retryAfterMs` says how long to wait.                                                                                                                                                                                                                                   |
+| `429`                 | A rate limit. `rate_limited` always carries the wait in `body.retryAfterMs`; `call_limit_reached` (the plugin API call limit) has none, so check `errorCode` first.                                                                                                                                          |
+| `401` / `403`         | The server answers the same for a lapsed session and a revoked plugin. `client.session.expiresAt()` versus `Date.now()` is the whole difference: past it, reload; before it, the frame lost access.                                                                                                          |
+| `400` / `404` / `413` | The request was refused — an unknown endpoint, a missing `serializationKey`, a body too large. `body.message` says why.                                                                                                                                                                                      |
 | `500`                 | The backend did not run, or the host failed. It resolves like any other answer, with `body?.message` and `body?.runId`. So does any other `5xx`, and so does an answer whose body will not parse (`body` is `null` then). The outcome is unknown in all of these, so only retry work that is safe to repeat. |
-| a rejection           | No answer at all: a network failure, an aborted `signal`, or a session the host will not renew. Same rule — the outcome is unknown.                                                    |
+| a rejection           | No answer at all: a network failure, an aborted `signal`, or a session the host will not renew. Same rule — the outcome is unknown.                                                                                                                                                                          |
 
 ### Frontend page example
 

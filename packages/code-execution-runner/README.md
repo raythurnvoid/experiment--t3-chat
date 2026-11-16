@@ -210,7 +210,7 @@ them as canonical base64 for HTTP. There is no caller-supplied size. The app rea
 | `CODE_EXECUTION_RUNNER_SECRET`    | secret (required)      | Bearer token the caller must present.                         |
 | `CODE_EXECUTION_DISABLED`         | var (optional)         | Set to `"true"` to hard-disable execution (503 kill switch).  |
 | `CODE_EXECUTION_NETWORK_DISABLED` | var (optional)         | Set to `"true"` to reject requests that need outbound access. |
-| `PRESS_DENIED_HOSTS`              | var (optional)         | Comma list of Bonobo Senate hosts that code may not fetch.            |
+| `PRESS_DENIED_HOSTS`              | var (optional)         | Comma list of Bonobo Senate hosts that code may not fetch.    |
 | `LOADER`                          | worker_loaders binding | The Worker Loader binding (declared in `wrangler.jsonc`).     |
 
 ## Develop / deploy

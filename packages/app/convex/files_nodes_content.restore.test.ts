@@ -204,11 +204,13 @@ describe("cleanup_file_yjs_task", () => {
 				}),
 			),
 		);
-		const prepared = await t.action((ctx) => files_content_sources_action_prepare(ctx, {
-			nodeId,
-			assetId: contentSnapshotAssetId!,
-			text: "Original text\n",
-		}));
+		const prepared = await t.action((ctx) =>
+			files_content_sources_action_prepare(ctx, {
+				nodeId,
+				assetId: contentSnapshotAssetId!,
+				text: "Original text\n",
+			}),
+		);
 		if (prepared._nay) throw new Error(prepared._nay.message);
 		const finalized = await asUser.mutation(internal.files_nodes_content.finalize_file_collaboration_enable, {
 			preparedSourceHeadId: prepared._yay,
@@ -1241,7 +1243,10 @@ describe("restore_snapshot_r2", () => {
 					...fixture.scope,
 					path: sourceRootKind === "rich_text" ? "/restore.md" : "/restore.txt",
 				};
-				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs);
+				const content = await t.action(
+					internal.files_nodes_content.get_file_last_available_text_content_by_path,
+					readArgs,
+				);
 				expect(content?.content, "Passive reads keep the exact old draft").toBe(draftText);
 				expect(content?.pendingUpdateId).toBe(pending._id);
 				const other = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
@@ -1799,7 +1804,11 @@ describe("accept_file_pending_replacement", () => {
 			});
 			const readDraft = () =>
 				t.run(async (ctx) => {
-					const stateIds = [pending.content!.baseStateId, pending.content!.stagedStateId, pending.content!.unstagedStateId];
+					const stateIds = [
+						pending.content!.baseStateId,
+						pending.content!.stagedStateId,
+						pending.content!.unstagedStateId,
+					];
 					return {
 						pending: await ctx.db.get("files_pending_updates", pending._id),
 						states: await Promise.all(stateIds.map((id) => ctx.db.get("files_pending_update_yjs_states", id))),

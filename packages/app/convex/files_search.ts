@@ -122,9 +122,7 @@ export async function files_search_db_create_reader(
 		const pendingUpdate = entry.pendingUpdate;
 		const isMetadata = "fieldPath" in document && document.fieldPath.startsWith("metadata.");
 		const hasPendingContent =
-			pendingUpdate !== null &&
-			!pendingUpdate.preparation &&
-			files_pending_update_has_pending_chunks(pendingUpdate);
+			pendingUpdate !== null && !pendingUpdate.preparation && files_pending_update_has_pending_chunks(pendingUpdate);
 
 		// Drop an indexed pending doc once its proposal is gone or its revision moved on. A pending
 		// metadata doc belongs to a private draft only, and a pending content doc needs current

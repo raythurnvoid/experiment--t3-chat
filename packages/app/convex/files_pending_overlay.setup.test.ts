@@ -173,10 +173,10 @@ export async function fixture(transactionLimits?: NonNullable<Parameters<typeof 
 
 	const v_move = async (node: { id: Id<"files_nodes"> }, parent: { id: Id<"files_nodes"> } | null) => {
 		const moved = await test_move_nodes(t, asV, {
-				membershipId: vMember.membershipId,
-				itemIds: [node.id],
-				targetParentId: parent?.id ?? files_ROOT_ID,
-			});
+			membershipId: vMember.membershipId,
+			itemIds: [node.id],
+			targetParentId: parent?.id ?? files_ROOT_ID,
+		});
 		if (moved._nay) throw new Error(moved._nay.message);
 		await settle();
 	};

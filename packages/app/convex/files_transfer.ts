@@ -383,7 +383,10 @@ async function db_get_destination(
 			parent = saved._yay.parentId === files_ROOT_ID ? { kind: "root" } : { kind: "saved", id: saved._yay.parentId };
 		}
 	}
-	const entry = parent.kind === "root" ? null : await files_transfer_status_db_get_entry({ ctx, run: scope, target: parent, reader });
+	const entry =
+		parent.kind === "root"
+			? null
+			: await files_transfer_status_db_get_entry({ ctx, run: scope, target: parent, reader });
 	if (parent.kind !== "root" && (!entry || entry.node.kind !== "folder" || entry.path !== args.expectedPath))
 		return Result({ _nay: { message: "Destination changed" } });
 	const node =
@@ -2684,7 +2687,12 @@ export const retry_remaining = mutation({
 		if (previous) {
 			if (previous.requestHash !== requestHash)
 				return Result({ _nay: { message: "This request ID was already used for another transfer" } });
-			return Result({ _yay: { runId: previous._id, activityId: (await files_transfer_status_db_require_activity(ctx, previous._id))._id } });
+			return Result({
+				_yay: {
+					runId: previous._id,
+					activityId: (await files_transfer_status_db_require_activity(ctx, previous._id))._id,
+				},
+			});
 		}
 
 		const kindLabel = run.kind === "move" ? "Move" : "Copy";
@@ -2918,7 +2926,11 @@ async function db_select_sources(
 		.take(run.step === "normalize" ? 1 : 8);
 	const activity = await files_transfer_status_db_require_activity(ctx, run._id);
 	const scope = { ...run, ...run.sourceScope };
-	const reader = await files_visible_db_create_reader(ctx, { ...scope, subject: writeContext.subject, readLimit: 2048 });
+	const reader = await files_visible_db_create_reader(ctx, {
+		...scope,
+		subject: writeContext.subject,
+		readLimit: 2048,
+	});
 	let cursor = selection.cursor;
 	let added = 0;
 	let normalizingParentPath = selection.normalizingParentPath;
@@ -2938,8 +2950,7 @@ async function db_select_sources(
 		if (reader.exhausted && cursor !== selection.cursor) break;
 		if (!entry || (run.step === "normalize" && entry.path !== item.path)) {
 			// A source deleted after it was picked is not found, like `mv` on Linux. A locked one is denied.
-			const missing =
-				!entry && reader.active && (await reader.resolveTargetAccess(item.source)).status === "missing";
+			const missing = !entry && reader.active && (await reader.resolveTargetAccess(item.source)).status === "missing";
 			await db_stop_run({
 				ctx,
 				run,
@@ -3490,12 +3501,17 @@ async function db_commit_move(args: {
 		}
 		// An unchanged Move records its outcome without rewriting the saved header or its descendants.
 		await ctx.db.patch("files_transfer_items", item._id, {
-			state: "completed", outcome: "unchanged", plannedPath: source.path,
-			outputTarget: item.source, outputName: source.name, outputPath: source.path,
+			state: "completed",
+			outcome: "unchanged",
+			plannedPath: source.path,
+			outputTarget: item.source,
+			outputName: source.name,
+			outputPath: source.path,
 		});
 		await ctx.db.patch("activities", activity._id, {
 			progress: { ...activity.progress, completed: activity.progress.completed + 1 },
-			updatedAt: Date.now(), deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
+			updatedAt: Date.now(),
+			deadlineAt: run.fixedDeadline ? activity.deadlineAt : Date.now() + RUN_TIMEOUT_MS,
 		});
 		await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
 		return;

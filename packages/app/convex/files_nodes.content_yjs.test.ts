@@ -660,12 +660,22 @@ test("materialize_file_content saves and indexes every field beyond the old fron
 	expect(afterReject.assetCount).toBeGreaterThan(beforePush.assetCount);
 	expect(r2Writes.size).toBeGreaterThan(r2WriteCountBeforePush);
 	await test_finish_file_index(t, nodeId);
-	const indexed = await t.run((ctx) => ctx.db.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) => q
-			.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
-			.eq("sourceKind", "committed").eq("fileNodeId", nodeId)).collect());
-	expect(indexed.filter((doc) => doc.docKind === "value"), "every frontmatter value is indexed")
-		.toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
+	const indexed = await t.run((ctx) =>
+		ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
+			)
+			.collect(),
+	);
+	expect(
+		indexed.filter((doc) => doc.docKind === "value"),
+		"every frontmatter value is indexed",
+	).toHaveLength(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
 	overCapYjsDoc.destroy();
 });
 

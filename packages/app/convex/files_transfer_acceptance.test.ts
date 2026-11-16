@@ -249,7 +249,8 @@ describe("saved Move input acceptance", () => {
 		});
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.moveCohortId).toBeUndefined();
 		expect(
-			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
+			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: found.runId }))
+				?.activity,
 		).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 1, failed: 0, canceled: 0 },

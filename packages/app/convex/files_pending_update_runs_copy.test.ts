@@ -391,71 +391,67 @@ describe("scalable Copy Save", () => {
 
 	// Keep all 1,000 Copy outputs. Save and the test fork read indexed pages.
 	// Run this large check with test:files:full-size.
-	test(
-		"saves 1,000 Copy outputs beside one ordinary edit",
-		{ tags: ["full-size"], timeout: 0 },
-		async () => {
-			const f = await fixture();
-			const copies = await copied_folders({ f, count: 1_000 });
-			console.info("Copy Save scale ready proposals", copies.length);
-			const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
-				...f.scope,
-				target: { kind: "saved", id: f.sourceId },
-				destParent: { kind: "root" },
-				destName: "renamed-source",
-			});
-			if (moved._nay) throw new Error(moved._nay.message);
-			const ordinary = await f.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_target", (q) =>
-						q
-							.eq("organizationId", f.scope.organizationId)
-							.eq("workspaceId", f.scope.workspaceId)
-							.eq("userId", f.scope.userId)
-							.eq("target.kind", "saved")
-							.eq("target.id", f.sourceId),
-					)
-					.unique(),
+	test("saves 1,000 Copy outputs beside one ordinary edit", { tags: ["full-size"], timeout: 0 }, async () => {
+		const f = await fixture();
+		const copies = await copied_folders({ f, count: 1_000 });
+		console.info("Copy Save scale ready proposals", copies.length);
+		const moved = await f.t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+			...f.scope,
+			target: { kind: "saved", id: f.sourceId },
+			destParent: { kind: "root" },
+			destName: "renamed-source",
+		});
+		if (moved._nay) throw new Error(moved._nay.message);
+		const ordinary = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_organization_workspace_user_target", (q) =>
+					q
+						.eq("organizationId", f.scope.organizationId)
+						.eq("workspaceId", f.scope.workspaceId)
+						.eq("userId", f.scope.userId)
+						.eq("target.kind", "saved")
+						.eq("target.id", f.sourceId),
+				)
+				.unique(),
+		);
+		if (!ordinary) throw new Error("Expected the ordinary rename");
+		const { runId } = await start_review(f, [...copies, ordinary]);
+		console.info("Copy Save scale sealed selection", copies.length + 1);
+		expect(await plan_review(f, runId)).toMatchObject({
+			step: "running",
+			unitCount: 1_001,
+			plannedItemCount: 1_001,
+		});
+		const startedAt = Date.now();
+		// Each completed output takes 2 seconds, so the Save lasts over 30 minutes of app time.
+		const result = await finish_review({ f, runId, count: 1_001, stepMs: 2_000 });
+		expect(Date.now() - startedAt).toBeGreaterThan(30 * 60 * 1000);
+		expect(result?.activity).toMatchObject({
+			status: "succeeded",
+			progress: { completed: 1_001, blocked: 0, failed: 0 },
+		});
+		let cursor: string | null = null;
+		let published = 0;
+		while (true) {
+			const page = await f.t.run((ctx) =>
+				ctx.db.query("files_pending_node_publish_receipts").paginate({ cursor, numItems: 100 }),
 			);
-			if (!ordinary) throw new Error("Expected the ordinary rename");
-			const { runId } = await start_review(f, [...copies, ordinary]);
-			console.info("Copy Save scale sealed selection", copies.length + 1);
-			expect(await plan_review(f, runId)).toMatchObject({
-				step: "running",
-				unitCount: 1_001,
-				plannedItemCount: 1_001,
-			});
-			const startedAt = Date.now();
-			// Each completed output takes 2 seconds, so the Save lasts over 30 minutes of app time.
-			const result = await finish_review({ f, runId, count: 1_001, stepMs: 2_000 });
-			expect(Date.now() - startedAt).toBeGreaterThan(30 * 60 * 1000);
-			expect(result?.activity).toMatchObject({
-				status: "succeeded",
-				progress: { completed: 1_001, blocked: 0, failed: 0 },
-			});
-			let cursor: string | null = null;
-			let published = 0;
-			while (true) {
-				const page = await f.t.run((ctx) =>
-					ctx.db.query("files_pending_node_publish_receipts").paginate({ cursor, numItems: 100 }),
-				);
-				const savedNodes = await f.t.run((ctx) =>
-					Promise.all(page.page.map((receipt) => ctx.db.get("files_nodes", receipt.savedNodeId))),
-				);
-				for (const [index, receipt] of page.page.entries()) {
-					const saved = savedNodes[index];
-					expect(saved).toMatchObject({ publishedFromPrivateNodeId: receipt.privateNodeId, archiveOperationId: null });
-					published++;
-				}
-				if (page.isDone) break;
-				cursor = page.continueCursor;
+			const savedNodes = await f.t.run((ctx) =>
+				Promise.all(page.page.map((receipt) => ctx.db.get("files_nodes", receipt.savedNodeId))),
+			);
+			for (const [index, receipt] of page.page.entries()) {
+				const saved = savedNodes[index];
+				expect(saved).toMatchObject({ publishedFromPrivateNodeId: receipt.privateNodeId, archiveOperationId: null });
+				published++;
 			}
-			expect(published).toBe(1_000);
-			expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").first())).toBeNull();
-			expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/renamed-source" });
-		},
-	);
+			if (page.isDone) break;
+			cursor = page.continueCursor;
+		}
+		expect(published).toBe(1_000);
+		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").first())).toBeNull();
+		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", f.sourceId))).toMatchObject({ path: "/renamed-source" });
+	});
 
 	test("starts a Save above the Discard limit", async () => {
 		const f = await fixture();

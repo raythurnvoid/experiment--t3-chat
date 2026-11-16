@@ -58,7 +58,9 @@ describe("Bonobo Senate API client skill", () => {
 				expect(path.isAbsolute(relative), `${file}: ${match[1]}`).toBe(false);
 				expect(readFileSync(resolved, "utf8").length, `${file}: ${match[1]}`).toBeGreaterThan(0);
 				if (anchor !== undefined)
-					expect(heading_anchors(strip_code_blocks(readFileSync(resolved, "utf8"))), `${file}: ${match[1]}`).toContain(anchor);
+					expect(heading_anchors(strip_code_blocks(readFileSync(resolved, "utf8"))), `${file}: ${match[1]}`).toContain(
+						anchor,
+					);
 				linked.add(relative);
 			}
 		}

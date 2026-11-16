@@ -1122,7 +1122,8 @@ describe("service upload plan gate", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", fixture.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/recording.mp4")
 							.eq("archiveOperationId", null),
 					)
@@ -2340,7 +2341,8 @@ describe("service upload targets", () => {
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", fixture.organizationId)
-							.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", fixture.workspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", "/meetings/meeting-1/file-16.bin")
 							.eq("archiveOperationId", null),
 					)
@@ -2540,35 +2542,49 @@ describe("service upload targets", () => {
 			targetParentId: destination._yay.nodeId,
 		});
 		if (started._nay) throw new Error(started._nay.message);
-		expect(await asOwner.mutation(api.files_transfer.seal, {
-			membershipId: fixture.membershipId,
-			runId: started._yay.runId,
-		})).toEqual({ _yay: null });
-		const readAttempt = () => t.run(async (ctx) => ({
-			target: await ctx.db.get("plugin_service_storage_targets", target._id),
-			assets: await ctx.db.query("files_r2_assets").collect(),
-			attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
-			deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
-		}));
+		expect(
+			await asOwner.mutation(api.files_transfer.seal, {
+				membershipId: fixture.membershipId,
+				runId: started._yay.runId,
+			}),
+		).toEqual({ _yay: null });
+		const readAttempt = () =>
+			t.run(async (ctx) => ({
+				target: await ctx.db.get("plugin_service_storage_targets", target._id),
+				assets: await ctx.db.query("files_r2_assets").collect(),
+				attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
+				deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+			}));
 		let checked = false;
 		await test_finish_transfer_run(asOwner, started._yay.runId, async () => {
 			if (checked) return;
-			const captured = await t.run((ctx) => ctx.db.query("files_move_source_reservations")
-				.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", target.nodeId)).first());
+			const captured = await t.run((ctx) =>
+				ctx.db
+					.query("files_move_source_reservations")
+					.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", target.nodeId))
+					.first(),
+			);
 			if (!captured) return;
 			const before = await readAttempt();
 			for (const path of [CREATE_TARGET_PATH, REMINT_PATH]) {
-				await expect(call({
-					t, path, bearer: sealed,
-					body: path === CREATE_TARGET_PATH ? target_body() : { idempotencyKey: "meeting-1", targetKey: "recording" },
-				}), "a captured retry returns a typed busy reply").resolves.toMatchObject({ status: 409 });
+				await expect(
+					call({
+						t,
+						path,
+						bearer: sealed,
+						body: path === CREATE_TARGET_PATH ? target_body() : { idempotencyKey: "meeting-1", targetKey: "recording" },
+					}),
+					"a captured retry returns a typed busy reply",
+				).resolves.toMatchObject({ status: 409 });
 			}
 			expect(await readAttempt(), "busy retries leave the accepted attempt intact").toEqual(before);
 			checked = true;
 		});
 		expect(checked, "the real Move captured the pending upload").toBe(true);
 		const resumed = await call({
-			t, path: REMINT_PATH, bearer: sealed,
+			t,
+			path: REMINT_PATH,
+			bearer: sealed,
 			body: { idempotencyKey: "meeting-1", targetKey: "recording" },
 		});
 		expect(resumed.status, await resumed.clone().text()).toBe(200);
@@ -3931,7 +3947,8 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -4011,7 +4028,8 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -4065,7 +4083,8 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)
@@ -4156,7 +4175,8 @@ describe("service upload delete", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
-						.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings")
 						.eq("archiveOperationId", null),
 				)

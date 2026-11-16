@@ -1100,7 +1100,7 @@ test("Restore after exact target release cannot be undone by late Review content
 				await test_run_with_flush(f.t, (ctx) =>
 					files_move_content_db_finish(ctx, {
 						cohortId: f.cohortId,
-							contentId: candidateId,
+						contentId: candidateId,
 						fence: current.fence,
 						attemptFence: current.attemptFence,
 					}),

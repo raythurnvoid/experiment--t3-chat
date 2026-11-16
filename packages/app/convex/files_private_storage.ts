@@ -214,7 +214,11 @@ export async function files_private_storage_db_reserve(
 		const heldPublications = await ctx.db
 			.query("files_private_storage_reservations")
 			.withIndex("by_workspaceQuota_settlement_publicationBatch", (q) =>
-				q.eq("workspaceQuotaId", workspaceQuota._id).eq("settlement.kind", "held").eq("cohortContentId", undefined).gt("publicationBatchId", undefined),
+				q
+					.eq("workspaceQuotaId", workspaceQuota._id)
+					.eq("settlement.kind", "held")
+					.eq("cohortContentId", undefined)
+					.gt("publicationBatchId", undefined),
 			)
 			.take(PUBLICATION_HEADROOM_MAX_RESOURCES);
 		if (

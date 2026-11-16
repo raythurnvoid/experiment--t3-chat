@@ -485,8 +485,12 @@ describe("files_subtree_ops_db_count_recover", () => {
 			return top;
 		});
 		expect(
-			(await f.asOwner.mutation(api.files_sharing.restrict_node, { membershipId: f.db.membershipId, nodeId: folderNode._id }))
-				._nay,
+			(
+				await f.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: folderNode._id,
+				})
+			)._nay,
 		).toBeUndefined();
 		const activityId = (await f.t.run((ctx) => ctx.db.query("activities").collect())).find(
 			(activity) => activity.source.kind === "files_subtree_op",

@@ -520,25 +520,21 @@ export const owner_source_metadata = internalQuery({
 		const source = args.source;
 		const query =
 			source.kind === "pending"
-				? ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_pendingUpdate", (q) =>
-							q
-								.eq("pendingUpdateId", source.pendingUpdateId)
-								.eq("moveView.cohortId", args.cohortId ?? undefined)
-								.eq("moveView.view", args.cohortId === null ? undefined : "after"),
-						)
-				: ctx.db
-						.query("files_metadata_docs")
-						.withIndex("by_organization_workspace_source_fileNode", (q) =>
-							q
-								.eq("organizationId", source.organizationId)
-								.eq("workspaceId", source.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", source.nodeId)
-								.eq("moveView.cohortId", args.cohortId ?? undefined)
-								.eq("moveView.view", args.cohortId === null ? undefined : "after"),
-						);
+				? ctx.db.query("files_metadata_docs").withIndex("by_pendingUpdate", (q) =>
+						q
+							.eq("pendingUpdateId", source.pendingUpdateId)
+							.eq("moveView.cohortId", args.cohortId ?? undefined)
+							.eq("moveView.view", args.cohortId === null ? undefined : "after"),
+					)
+				: ctx.db.query("files_metadata_docs").withIndex("by_organization_workspace_source_fileNode", (q) =>
+						q
+							.eq("organizationId", source.organizationId)
+							.eq("workspaceId", source.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", source.nodeId)
+							.eq("moveView.cohortId", args.cohortId ?? undefined)
+							.eq("moveView.view", args.cohortId === null ? undefined : "after"),
+					);
 		return await query.paginate({ cursor: args.cursor, numItems: PAGE_SIZE, maximumBytesRead: 1024 * 1024 });
 	},
 });

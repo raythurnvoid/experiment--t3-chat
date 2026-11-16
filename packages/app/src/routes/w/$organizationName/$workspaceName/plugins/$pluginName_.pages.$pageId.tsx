@@ -203,9 +203,7 @@ function RoutePluginsPluginPage() {
 			{page.hasAgent ? (
 				<MyPanelGroup direction="horizontal">
 					<MyPanel id="route-plugins-plugin-page-frame" order={1} defaultSize={70} minSize={40}>
-						<div className={"RoutePluginsPluginPage-panel" satisfies RoutePluginsPluginPage_ClassNames}>
-							{frame}
-						</div>
+						<div className={"RoutePluginsPluginPage-panel" satisfies RoutePluginsPluginPage_ClassNames}>{frame}</div>
 					</MyPanel>
 					<MyPanelResizeHandle aria-label="Resize plugin page and agent panel" />
 					<MyPanel id="route-plugins-plugin-page-agent" order={2} defaultSize={30} minSize={20}>

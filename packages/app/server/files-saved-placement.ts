@@ -32,9 +32,13 @@ export async function files_saved_placement_db_get_view(
 ) {
 	const organizationId = db.normalizeId("organizations", args.organizationId);
 	const workspaceId = db.normalizeId("organizations_workspaces", args.workspaceId);
-	if (!organizationId || !workspaceId) return {
-		cohortId: null, view: null, generation: 0, migrationDirection: null,
-	};
+	if (!organizationId || !workspaceId)
+		return {
+			cohortId: null,
+			view: null,
+			generation: 0,
+			migrationDirection: null,
+		};
 	const slot = await db
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
@@ -62,7 +66,9 @@ export type files_saved_placement_View = Awaited<ReturnType<typeof files_saved_p
  */
 export async function files_saved_placement_db_get_directory_view(
 	db: QueryCtx["db"],
-	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId"> & { parentId: Doc<"files_nodes">["parentId"] },
+	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId"> & {
+		parentId: Doc<"files_nodes">["parentId"];
+	},
 ): Promise<files_DirectoryView> {
 	const anchor = await db
 		.query("files_saved_places")
@@ -192,7 +198,12 @@ export async function files_saved_placement_db_get_node(
 			.query("files_move_cohort_nodes")
 			.withIndex("by_cohort_node", (q) => q.eq("cohortId", cohort._id).eq("nodeId", nodeId))
 			.unique();
-		if (view === "before" && (record?.role === "allocated" || record?.role === "derived") && record.beforePlaceId === null) return null;
+		if (
+			view === "before" &&
+			(record?.role === "allocated" || record?.role === "derived") &&
+			record.beforePlaceId === null
+		)
+			return null;
 		throw should_never_happen("Saved placement candidate is missing", { nodeId, cohortId: cohort._id, view });
 	}
 	if (
@@ -218,8 +229,12 @@ export async function files_saved_placement_db_get_slot(
 ): Promise<Doc<"files_nodes"> | null> {
 	const organizationId = db.normalizeId("organizations", args.organizationId);
 	const workspaceId = db.normalizeId("organizations_workspaces", args.workspaceId);
-	const current = fixedView ? null : currentView ?? (
-		organizationId && workspaceId ? await files_saved_placement_db_get_view(db, { organizationId, workspaceId }) : null);
+	const current = fixedView
+		? null
+		: (currentView ??
+			(organizationId && workspaceId
+				? await files_saved_placement_db_get_view(db, { organizationId, workspaceId })
+				: null));
 	const selected =
 		fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);
 	if (organizationId && workspaceId && selected) {
@@ -256,7 +271,8 @@ export async function files_saved_placement_db_get_slot(
 		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+				.eq("workspaceId", args.workspaceId)
+				.eq("moveCohortId", undefined)
 				.eq("parentId", args.parentId)
 				.eq("name", args.name)
 				.eq("archiveOperationId", null),
@@ -348,12 +364,16 @@ export async function files_saved_placement_db_get_proposal(
 	if (view === "before") return proposal;
 	if (!item.afterProposal) return null;
 	const after = item.afterProposal;
-	const savedOutput = proposal.target.kind === "private" && after.target.kind === "saved"
-		? await db.get("files_move_cohort_nodes", item.nodeRecordId)
-		: null;
+	const savedOutput =
+		proposal.target.kind === "private" && after.target.kind === "saved"
+			? await db.get("files_move_cohort_nodes", item.nodeRecordId)
+			: null;
 	const sameTarget = after.target.kind === proposal.target.kind && after.target.id === proposal.target.id;
-	const publishedTarget = savedOutput?.cohortId === cohort._id && savedOutput.role === "allocated"
-		&& savedOutput.itemId === item._id && savedOutput.nodeId === after.target.id;
+	const publishedTarget =
+		savedOutput?.cohortId === cohort._id &&
+		savedOutput.role === "allocated" &&
+		savedOutput.itemId === item._id &&
+		savedOutput.nodeId === after.target.id;
 	if (
 		after.organizationId !== proposal.organizationId ||
 		after.workspaceId !== proposal.workspaceId ||
@@ -417,16 +437,28 @@ export async function files_saved_placement_db_get_publish_receipt(
 	fixedView?: files_saved_placement_FixedView,
 	currentView?: files_saved_placement_View,
 ) {
-	const current = fixedView ? null : currentView ?? await files_saved_placement_db_get_view(db, args);
-	const selected = fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);
+	const current = fixedView ? null : (currentView ?? (await files_saved_placement_db_get_view(db, args)));
+	const selected =
+		fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);
 	const normal = await db
 		.query("files_pending_node_publish_receipts")
-		.withIndex("by_privateNode", (q) => q.eq("privateNodeId", args.privateNodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined))
+		.withIndex("by_privateNode", (q) =>
+			q.eq("privateNodeId", args.privateNodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+		)
 		.unique();
-	const receipt = normal ?? (selected ? await db
-		.query("files_pending_node_publish_receipts")
-		.withIndex("by_privateNode", (q) => q.eq("privateNodeId", args.privateNodeId).eq("moveView.cohortId", selected.cohortId).eq("moveView.view", selected.view))
-		.unique() : null);
+	const receipt =
+		normal ??
+		(selected
+			? await db
+					.query("files_pending_node_publish_receipts")
+					.withIndex("by_privateNode", (q) =>
+						q
+							.eq("privateNodeId", args.privateNodeId)
+							.eq("moveView.cohortId", selected.cohortId)
+							.eq("moveView.view", selected.view),
+					)
+					.unique()
+			: null);
 	return await select_receipt(db, receipt, args, fixedView);
 }
 
@@ -441,16 +473,28 @@ export async function files_saved_placement_db_get_publish_receipt_by_saved_node
 	fixedView?: files_saved_placement_FixedView,
 	currentView?: files_saved_placement_View,
 ) {
-	const current = fixedView ? null : currentView ?? await files_saved_placement_db_get_view(db, args);
-	const selected = fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);
+	const current = fixedView ? null : (currentView ?? (await files_saved_placement_db_get_view(db, args)));
+	const selected =
+		fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);
 	const normal = await db
 		.query("files_pending_node_publish_receipts")
-		.withIndex("by_savedNode", (q) => q.eq("savedNodeId", args.savedNodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined))
+		.withIndex("by_savedNode", (q) =>
+			q.eq("savedNodeId", args.savedNodeId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+		)
 		.unique();
-	const receipt = normal ?? (selected ? await db
-		.query("files_pending_node_publish_receipts")
-		.withIndex("by_savedNode", (q) => q.eq("savedNodeId", args.savedNodeId).eq("moveView.cohortId", selected.cohortId).eq("moveView.view", selected.view))
-		.unique() : null);
+	const receipt =
+		normal ??
+		(selected
+			? await db
+					.query("files_pending_node_publish_receipts")
+					.withIndex("by_savedNode", (q) =>
+						q
+							.eq("savedNodeId", args.savedNodeId)
+							.eq("moveView.cohortId", selected.cohortId)
+							.eq("moveView.view", selected.view),
+					)
+					.unique()
+			: null);
 	return await select_receipt(db, receipt, args, fixedView);
 }
 
@@ -470,9 +514,14 @@ export async function files_saved_placement_db_resolve_read_target(
 	const privateNodeId = args.target.id;
 	const privateNode = await db.get("files_pending_nodes", privateNodeId);
 	// Published private links may be embedded in a file another member can read.
-	const receipt = privateNode && privateNode.organizationId === args.organizationId && privateNode.workspaceId === args.workspaceId
-		? await files_saved_placement_db_get_publish_receipt(db, { ...args, userId: privateNode.userId, privateNodeId }, fixedView)
-		: null;
+	const receipt =
+		privateNode && privateNode.organizationId === args.organizationId && privateNode.workspaceId === args.workspaceId
+			? await files_saved_placement_db_get_publish_receipt(
+					db,
+					{ ...args, userId: privateNode.userId, privateNodeId },
+					fixedView,
+				)
+			: null;
 	const source = receipt
 		? await files_saved_placement_db_get_node(db, receipt.savedNodeId, fixedView)
 		: await db

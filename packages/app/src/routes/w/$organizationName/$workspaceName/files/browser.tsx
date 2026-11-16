@@ -25,11 +25,7 @@ const RouteBrowser = memo(function RouteBrowser() {
 	if (session === undefined) {
 		return (
 			<div className={"RouteBrowser" satisfies RouteBrowser_ClassNames}>
-				<p
-					className={"RouteBrowser-message" satisfies RouteBrowser_ClassNames}
-					role="status"
-					aria-live="polite"
-				>
+				<p className={"RouteBrowser-message" satisfies RouteBrowser_ClassNames} role="status" aria-live="polite">
 					Loading…
 				</p>
 			</div>
@@ -40,12 +36,7 @@ const RouteBrowser = memo(function RouteBrowser() {
 	if (!session || session.mode !== "file" || session.sessionId !== search.session) {
 		return (
 			<div className={"RouteBrowser" satisfies RouteBrowser_ClassNames}>
-				<p
-					className={"RouteBrowser-message" satisfies RouteBrowser_ClassNames}
-					role="status"
-					tabIndex={-1}
-					autoFocus
-				>
+				<p className={"RouteBrowser-message" satisfies RouteBrowser_ClassNames} role="status" tabIndex={-1} autoFocus>
 					This browser session ended. Close this window and start again from Files.
 				</p>
 			</div>

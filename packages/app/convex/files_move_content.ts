@@ -202,28 +202,32 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	// Each probe below uses the same range as its page.
 	const source_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
 		table === "files_text_chunks" && content.beforeHeadId
-			? ctx.db.query("files_text_chunks").withIndex("by_contentHead_view_chunk", (q) =>
-					q.eq("contentHeadId", content.beforeHeadId)
-						.eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
-				)
+			? ctx.db
+					.query("files_text_chunks")
+					.withIndex("by_contentHead_view_chunk", (q) =>
+						q
+							.eq("contentHeadId", content.beforeHeadId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					)
 			: ctx.db
-			.query(table)
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q
-					.eq("organizationId", scope.organizationId)
-					.eq("workspaceId", scope.workspaceId)
-					.eq("fileNodeId", content.nodeId)
-					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined),
-			);
-	const source_updates = () => logOwnerId ? ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_contentHead_view_sequence", (q) =>
-				q
-					.eq("contentHeadId", logOwnerId)
-					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined),
-			) : null;
+					.query(table)
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", scope.organizationId)
+							.eq("workspaceId", scope.workspaceId)
+							.eq("fileNodeId", content.nodeId)
+							.eq("moveView.cohortId", undefined)
+							.eq("moveView.view", undefined),
+					);
+	const source_updates = () =>
+		logOwnerId
+			? ctx.db
+					.query("files_yjs_updates")
+					.withIndex("by_contentHead_view_sequence", (q) =>
+						q.eq("contentHeadId", logOwnerId).eq("moveView.cohortId", undefined).eq("moveView.view", undefined),
+					)
+			: null;
 	const pending_chunks = (table: "files_text_chunks" | "files_plain_text_chunks") =>
 		ctx.db
 			.query(table)

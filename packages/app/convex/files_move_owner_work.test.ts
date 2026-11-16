@@ -595,8 +595,8 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 	}
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer_status.get, { membershipId: f.db.membershipId, runId: f.runId }))
-			?.activity.status,
+		(await f.asUser.query(api.files_transfer_status.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
+			.status,
 	).toBe("succeeded");
 	for (const [index, proposal] of f.proposals.entries()) {
 		const final = await pending_scope_docs(f, proposal);
@@ -642,8 +642,8 @@ test("public Stop restores a partly staged unselected pending scope page", async
 	);
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
-		(await f.asUser.query(api.files_transfer_status.get, { membershipId: f.db.membershipId, runId: f.runId }))
-			?.activity.status,
+		(await f.asUser.query(api.files_transfer_status.get, { membershipId: f.db.membershipId, runId: f.runId }))?.activity
+			.status,
 	).toBe("canceled");
 	expect(await pending_scope_docs(f, proposal), "abort restores original pending content and metadata IDs").toEqual(
 		original,

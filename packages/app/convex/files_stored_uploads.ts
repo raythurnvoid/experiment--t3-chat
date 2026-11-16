@@ -71,9 +71,7 @@ export async function files_stored_uploads_db_admit(
 	// Atomic callers keep the `{ billedUserId }` answer, which some return validators check. Usage can
 	// pass the cap when accepted uploads settle late, so the free bytes never go below 0.
 	return Result({
-		_yay: args.admitWhatFits
-			? { billedUserId, refusedIndexes, freeBytes: Math.max(0, freeBytes) }
-			: { billedUserId },
+		_yay: args.admitWhatFits ? { billedUserId, refusedIndexes, freeBytes: Math.max(0, freeBytes) } : { billedUserId },
 	});
 }
 

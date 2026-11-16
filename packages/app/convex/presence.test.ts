@@ -103,10 +103,14 @@ describe("presence", () => {
 		});
 
 		for (const userId of [liveUser.userId, deletedUser.userId]) {
-			await t.withIdentity({ issuer: "https://clerk.test", external_id: userId, name: "Test User" }).mutation(
-				api.presence.heartbeat,
-				{ roomId: "presence-activity-room", userId, sessionId: `presence-activity-${userId}`, interval: 10_000 },
-			);
+			await t
+				.withIdentity({ issuer: "https://clerk.test", external_id: userId, name: "Test User" })
+				.mutation(api.presence.heartbeat, {
+					roomId: "presence-activity-room",
+					userId,
+					sessionId: `presence-activity-${userId}`,
+					interval: 10_000,
+				});
 		}
 
 		const activity = await t.run(async (ctx) =>

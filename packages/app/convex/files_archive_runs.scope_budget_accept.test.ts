@@ -41,7 +41,8 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 			{
 				...scope,
 				target,
-				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+				expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!
+					.pendingContentVersion,
 			},
 		);
 		if (batch._nay) throw new Error(batch._nay.message);
@@ -168,7 +169,8 @@ describe("scope change budgets with 3,000-chunk files at the longest path", () =
 				{
 					...scope,
 					target,
-					expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+					expectedPendingContentVersion: (await f.t.run((ctx) => ctx.db.get("files_nodes", target.id)))!
+						.pendingContentVersion,
 				},
 			);
 			if (batch._nay) throw new Error(batch._nay.message);

@@ -1399,7 +1399,8 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const preparedNodeId = await test_create_saved_text_file(t, {
-		membershipId: db.membershipId, path: "/snapshot-rate-source.md",
+		membershipId: db.membershipId,
+		path: "/snapshot-rate-source.md",
 	});
 	const restoreAssets = await t.run(async (ctx) => {
 		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
@@ -3928,7 +3929,8 @@ describe("apply_file_pending_move", () => {
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
 			...scope,
 			target,
-			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", target.id)))!
+				.pendingContentVersion,
 		});
 		if (batch._nay) throw new Error(batch._nay.message);
 		expect(
@@ -3966,11 +3968,13 @@ describe("apply_file_pending_move", () => {
 			(await t.run((ctx) => ctx.db.get("files_pending_updates", move.pendingUpdateId)))?.pendingMove?.replacesTarget,
 		).toEqual({ kind: "saved", id: occupantId });
 		expect(
-			(await test_rename_node(t, asUser, {
-				membershipId: db.membershipId,
-				nodeId: occupantId,
-				path: "previous.txt",
-			}))._nay,
+			(
+				await test_rename_node(t, asUser, {
+					membershipId: db.membershipId,
+					nodeId: occupantId,
+					path: "previous.txt",
+				})
+			)._nay,
 		).toBeUndefined();
 		const later = await asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
@@ -4522,14 +4526,17 @@ describe("files_nodes_create.create_file_node read-only barrier", () => {
 		const bothStarted = Promise.withResolvers<void>();
 		const latePut = Promise.withResolvers<void>();
 		let puts = 0;
-		vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-			if (init?.method !== "PUT") throw new Error("Expected only initial PUTs");
-			puts++;
-			if (puts === 1) return new Response("denied", { status: 403 });
-			bothStarted.resolve();
-			await latePut.promise;
-			return new Response(null, { status: 200 });
-		}));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method !== "PUT") throw new Error("Expected only initial PUTs");
+				puts++;
+				if (puts === 1) return new Response("denied", { status: 403 });
+				bothStarted.resolve();
+				await latePut.promise;
+				return new Response(null, { status: 200 });
+			}),
+		);
 		const creation = asUser.action(api.files_nodes_content.create_text_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
@@ -5238,7 +5245,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.contentHeadId!,
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
-			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!
+				.pendingContentVersion,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
@@ -5287,7 +5295,8 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 				preparedSourceHeadId: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.contentHeadId!,
 				membershipId: db.membershipId,
 				nodeId: seeded.nodeId,
-				expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
+				expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!
+					.pendingContentVersion,
 				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				expectedLastSequence: 0,
 				snapshotId: seeded.snapshotId,
@@ -5361,18 +5370,25 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			throw new Error(restoreStage._nay.message);
 		}
 
-		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.restoredSnapshotAssetId, {
-			size: files_get_utf8_byte_size(restoredMarkdown),
-		}));
-		const prepared = await t.action((ctx) => files_content_sources_action_prepare(ctx, {
-			nodeId: seeded.nodeId, assetId: seeded.restoredSnapshotAssetId, text: restoredMarkdown,
-		}));
+		await t.run((ctx) =>
+			ctx.db.patch("files_r2_assets", seeded.restoredSnapshotAssetId, {
+				size: files_get_utf8_byte_size(restoredMarkdown),
+			}),
+		);
+		const prepared = await t.action((ctx) =>
+			files_content_sources_action_prepare(ctx, {
+				nodeId: seeded.nodeId,
+				assetId: seeded.restoredSnapshotAssetId,
+				text: restoredMarkdown,
+			}),
+		);
 		if (prepared._nay) throw new Error(prepared._nay.message);
 		const restored = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 			preparedSourceHeadId: prepared._yay,
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
-			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await asUser.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!
+				.pendingContentVersion,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
@@ -5494,7 +5510,12 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 			await ctx.db.patch("files_yjs_snapshots", snapshot._id, { assetId: replacementAssetId });
 
 			const head = (await ctx.db.get("files_saved_content_heads", node.contentHeadId!))!;
-			return { assetId: asset._id, key: asset.r2Key, throughSequence: snapshot.sequence, logOwnerId: head.yjsContentHeadId! };
+			return {
+				assetId: asset._id,
+				key: asset.r2Key,
+				throughSequence: snapshot.sequence,
+				logOwnerId: head.yjsContentHeadId!,
+			};
 		});
 
 		const finiteDeleteSpy = vi.spyOn(R2.prototype, "deleteObject");
@@ -5557,7 +5578,8 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId: seeded.nodeId,
-			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!.pendingContentVersion,
+			expectedPendingContentVersion: (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!
+				.pendingContentVersion,
 			authorUserId: db.userId,
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,
@@ -5676,8 +5698,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		if (materialized._nay) {
 			throw new Error(materialized._nay.message);
 		}
-		await test_run_with_flush(t, (ctx) =>
-			ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() }));
+		await test_run_with_flush(t, (ctx) => ctx.db.patch("files_nodes", nodeId, { contentShapeMismatchAt: Date.now() }));
 
 		// The operator unlocked before repairing, so the final mutation accepts it.
 		await set_read_only_or_throw({ asUser, membershipId: db.membershipId, nodeId });

@@ -105,7 +105,15 @@ async function start_group(f: Awaited<ReturnType<typeof fixture>>, childCount = 
 	expect(unit).toMatchObject({ kind: "cohort", status: "preparing", itemCount: drafts.length });
 	const review = await f.asUser.query(api.files_pending_update_runs.get, { membershipId: f.db.membershipId, runId });
 	if (!review) throw new Error("Expected the Review Activity");
-	return { f, runId, unitId: unit._id, cohortId: unit.cohortId, activityId: review.activity._id, targetId: target._yay.nodeId, drafts };
+	return {
+		f,
+		runId,
+		unitId: unit._id,
+		cohortId: unit.cohortId,
+		activityId: review.activity._id,
+		targetId: target._yay.nodeId,
+		drafts,
+	};
 }
 
 async function ready_stage(initialGroup?: Awaited<ReturnType<typeof start_group>>, captureOldPreparation = false) {
@@ -121,10 +129,11 @@ async function ready_stage(initialGroup?: Awaited<ReturnType<typeof start_group>
 		const current = { cohortId, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, join: true };
 		const pending = await f.t.mutation(internal.files_move_cohorts.advance, current);
 		if (preparedContentId) {
-			expect(
-				pending,
-				"prepared content leaves the lean owner without saving another step",
-			).toMatchObject({ kind: "stage", contentId: preparedContentId, step: cohort.step });
+			expect(pending, "prepared content leaves the lean owner without saving another step").toMatchObject({
+				kind: "stage",
+				contentId: preparedContentId,
+				step: cohort.step,
+			});
 		}
 		if (!pending || pending.kind === "complete") throw new Error("Review ended before a stage request");
 		if (pending.kind === "next") continue;
@@ -183,19 +192,29 @@ async function stage_state(s: Awaited<ReturnType<typeof ready_stage>>) {
 			chunks: await ctx.db
 				.query("files_text_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("fileNodeId", content.nodeId),
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("fileNodeId", content.nodeId),
 				)
 				.collect(),
 			plainChunks: await ctx.db
 				.query("files_plain_text_chunks")
 				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("fileNodeId", content.nodeId),
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("fileNodeId", content.nodeId),
 				)
 				.collect(),
 			metadata: await ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("sourceKind", "committed").eq("fileNodeId", content.nodeId),
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", content.nodeId),
 				)
 				.collect(),
 			quotas: await ctx.db.query("quotas").collect(),
@@ -228,7 +247,9 @@ async function finish_group(group: Awaited<ReturnType<typeof start_group>>) {
 	const events = enqueue.mock.calls
 		.filter((call) => getFunctionName(call[1]) === "billing:ingest_events")
 		.flatMap((call) => (call[2] as { events: unknown[] }).events);
-	expect(events, "each accepted text is charged once").toHaveLength(group.drafts.filter((draft) => draft.text !== undefined).length);
+	expect(events, "each accepted text is charged once").toHaveLength(
+		group.drafts.filter((draft) => draft.text !== undefined).length,
+	);
 	expect(await group.f.t.run((ctx) => ctx.db.get("files_move_cohorts", group.cohortId))).toMatchObject({
 		phase: "complete",
 		visibleView: "after",
@@ -275,8 +296,9 @@ describe("Move content stage route", () => {
 			return result;
 		});
 		for (let pass = 0; pass < 1_000; pass++) {
-			expect(await member.f.t.mutation(internal.files_move_content.advance_stage, { ...current.args, join: false }))
-				.toEqual({ kind: "next", step: current.args.step + 1 });
+			expect(
+				await member.f.t.mutation(internal.files_move_content.advance_stage, { ...current.args, join: false }),
+			).toEqual({ kind: "next", step: current.args.step + 1 });
 			const content = await member.f.t.run((ctx) => ctx.db.get("files_move_cohort_content", current.args.contentId));
 			if (content?.sealed) break;
 			current = await ready_stage(group);
@@ -295,7 +317,9 @@ describe("Move content stage route", () => {
 			"scheduledFunctionArgsBytes",
 		]);
 		expect(peak!.measured.bytesRead, "the measurement includes the full prepared text read").toBeGreaterThan(700_000);
-		expect(peak!.measured.scheduledFunctionArgsBytes, "the wrapped stage measures real scheduled args").toBeGreaterThan(0);
+		expect(peak!.measured.scheduledFunctionArgsBytes, "the wrapped stage measures real scheduled args").toBeGreaterThan(
+			0,
+		);
 		console.info("700 KB wrapped content stage peaks", JSON.stringify(Object.fromEntries(peaks)));
 		await finish_group(group);
 	});
@@ -353,7 +377,10 @@ describe("Move content stage route", () => {
 		expect(s.oldPreparationFence).toBeLessThan(s.args.preparationFence);
 		const before = await stage_state(s);
 		expect(
-			await s.f.t.mutation(internal.files_move_content.advance_stage, { ...s.args, preparationFence: s.oldPreparationFence }),
+			await s.f.t.mutation(internal.files_move_content.advance_stage, {
+				...s.args,
+				preparationFence: s.oldPreparationFence,
+			}),
 			"an earlier preparation fence cannot stage current content",
 		).toBeNull();
 		expect(await stage_state(s), "an earlier preparation fence changes no current rows").toEqual(before);
@@ -375,7 +402,10 @@ describe("Move content stage route", () => {
 		expect(current.args.contentId, "a second real selected content exists").not.toBe(first.args.contentId);
 		const before = await stage_state(current);
 		expect(
-			await current.f.t.mutation(internal.files_move_content.advance_stage, { ...current.args, contentId: first.args.contentId }),
+			await current.f.t.mutation(internal.files_move_content.advance_stage, {
+				...current.args,
+				contentId: first.args.contentId,
+			}),
 			"heavy stage is bound to the selected content item",
 		).toBeNull();
 		expect(await stage_state(current)).toEqual(before);
@@ -388,27 +418,40 @@ describe("Move content stage route", () => {
 			const member = await member_fixture();
 			const s = await ready_stage(await start_group(member.f));
 			if (change === "stop") {
-				expect(await s.f.asUser.mutation(api.activities.request_stop, { membershipId: s.f.db.membershipId, activityId: s.activityId })).toEqual({ _yay: null });
+				expect(
+					await s.f.asUser.mutation(api.activities.request_stop, {
+						membershipId: s.f.db.membershipId,
+						activityId: s.activityId,
+					}),
+				).toEqual({ _yay: null });
 			} else if (change === "role") {
 				const organization = await s.f.t.run((ctx) => ctx.db.get("organizations", s.f.db.organizationId));
 				if (!organization?.defaultWorkspaceId) throw new Error("Expected the organization home");
-				expect(await member.asOwner.mutation(api.access_control.set_user_role, {
-					organizationId: s.f.db.organizationId,
-					workspaceId: organization.defaultWorkspaceId,
-					userId: s.f.db.userId,
-					role: "viewer",
-				})).toEqual({ _yay: null });
-				expect(await s.f.asUser.query(api.access_control.get_current_user_workspace_permission, {
-					membershipId: s.f.db.membershipId,
-					permission: "content.write",
-				})).toBe(false);
+				expect(
+					await member.asOwner.mutation(api.access_control.set_user_role, {
+						organizationId: s.f.db.organizationId,
+						workspaceId: organization.defaultWorkspaceId,
+						userId: s.f.db.userId,
+						role: "viewer",
+					}),
+				).toEqual({ _yay: null });
+				expect(
+					await s.f.asUser.query(api.access_control.get_current_user_workspace_permission, {
+						membershipId: s.f.db.membershipId,
+						permission: "content.write",
+					}),
+				).toBe(false);
 			} else if (change === "lifetime") {
-				expect(await member.asOwner.mutation(api.organizations.remove_user_from_organization, {
-					organizationId: s.f.db.organizationId,
-					userIdToRemove: s.f.db.userId,
-				})).toEqual({ _yay: null });
+				expect(
+					await member.asOwner.mutation(api.organizations.remove_user_from_organization, {
+						organizationId: s.f.db.organizationId,
+						userIdToRemove: s.f.db.userId,
+					}),
+				).toEqual({ _yay: null });
 				for (let pass = 0; pass < 100; pass++) {
-					const membership = await s.f.t.run((ctx) => ctx.db.get("organizations_workspaces_users", s.f.db.membershipId));
+					const membership = await s.f.t.run((ctx) =>
+						ctx.db.get("organizations_workspaces_users", s.f.db.membershipId),
+					);
 					if (!membership) break;
 					await s.f.t.mutation(internal.organizations.continue_remove_user_from_organization, {
 						organizationId: s.f.db.organizationId,
@@ -492,13 +535,30 @@ describe("Move content stage route", () => {
 					mode: "chain",
 				});
 			}
-			expect(await s.f.t.run((ctx) => ctx.db.get("files_move_cohorts", s.cohortId))).toMatchObject({ phase: "complete", publishedAt: null, visibleView: "before" });
+			expect(await s.f.t.run((ctx) => ctx.db.get("files_move_cohorts", s.cohortId))).toMatchObject({
+				phase: "complete",
+				publishedAt: null,
+				visibleView: "before",
+			});
 			for (const draft of s.drafts) {
-				expect(await s.f.t.run((ctx) => ctx.db.get("files_pending_updates", draft.proposal._id))).toMatchObject({ target: draft.proposal.target, revision: draft.proposal.revision, content: draft.proposal.content });
+				expect(await s.f.t.run((ctx) => ctx.db.get("files_pending_updates", draft.proposal._id))).toMatchObject({
+					target: draft.proposal.target,
+					revision: draft.proposal.revision,
+					content: draft.proposal.content,
+				});
 				if (draft.proposal.target.kind !== "private") throw new Error("Expected a private draft");
 				const privateNodeId = draft.proposal.target.id;
-				expect(await s.f.t.run((ctx) => ctx.db.get("files_pending_nodes", privateNodeId))).toMatchObject({ state: "active" });
-				expect(await s.f.t.run((ctx) => ctx.db.query("files_pending_node_publish_receipts").withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNodeId)).collect())).toEqual([]);
+				expect(await s.f.t.run((ctx) => ctx.db.get("files_pending_nodes", privateNodeId))).toMatchObject({
+					state: "active",
+				});
+				expect(
+					await s.f.t.run((ctx) =>
+						ctx.db
+							.query("files_pending_node_publish_receipts")
+							.withIndex("by_privateNode", (q) => q.eq("privateNodeId", privateNodeId))
+							.collect(),
+					),
+				).toEqual([]);
 			}
 		},
 	);
@@ -523,35 +583,58 @@ describe("Move content stage route", () => {
 			return await handler(ctx, args);
 		});
 		vi.spyOn(console, "error").mockImplementation(() => {});
-		await s.f.t.action(internal.files_move_run.run, { cohortId: s.cohortId, step: s.args.step, runGeneration: s.args.runGeneration, mode: "chain" });
-		expect(failed).toBe(true);
-		expect(resumes, "a stage failure resumes the descriptor step").toEqual([{
+		await s.f.t.action(internal.files_move_run.run, {
 			cohortId: s.cohortId,
-			step: s.descriptor.step,
+			step: s.args.step,
 			runGeneration: s.args.runGeneration,
-			error: { name: "move_step_failed", message: "This Move step failed. Review it again.", cause: { name: "move_step_failed", message: "Stage test failed before commit" } },
-		}]);
+			mode: "chain",
+		});
+		expect(failed).toBe(true);
+		expect(resumes, "a stage failure resumes the descriptor step").toEqual([
+			{
+				cohortId: s.cohortId,
+				step: s.descriptor.step,
+				runGeneration: s.args.runGeneration,
+				error: {
+					name: "move_step_failed",
+					message: "This Move step failed. Review it again.",
+					cause: { name: "move_step_failed", message: "Stage test failed before commit" },
+				},
+			},
+		]);
 		await test_finish_pending_update_run(s.f.asUser, s.runId);
-		expect(await s.f.t.run((ctx) => ctx.db.get("files_move_cohorts", s.cohortId))).toMatchObject({ phase: "complete", publishedAt: null, errorCode: "move_step_failed" });
+		expect(await s.f.t.run((ctx) => ctx.db.get("files_move_cohorts", s.cohortId))).toMatchObject({
+			phase: "complete",
+			publishedAt: null,
+			errorCode: "move_step_failed",
+		});
 	});
 
 	test("a lost stage reply keeps its committed step", async () => {
 		const s = await ready_stage();
 		// Setup advanced by hand. Queue the current step through the normal worker door.
-		expect(await s.f.t.mutation(internal.files_move_cohorts.handoff, {
-			cohortId: s.cohortId,
-			step: s.args.step,
-			runGeneration: s.args.runGeneration,
-		})).toBeNull();
+		expect(
+			await s.f.t.mutation(internal.files_move_cohorts.handoff, {
+				cohortId: s.cohortId,
+				step: s.args.step,
+				runGeneration: s.args.runGeneration,
+			}),
+		).toBeNull();
 		const before = (await stage_state(s)).cohort!;
 		const activityBefore = (await s.f.t.run((ctx) => ctx.db.get("activities", s.activityId)))!;
 		if (!before.runJob) throw new Error("Expected the native Move job");
 		const currentStage = { ...s.args, runGeneration: before.runJob.generation };
 		const owned = (await s.f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
-		expect(owned.args[0]).toEqual({ cohortId: s.cohortId, step: s.args.step, runGeneration: currentStage.runGeneration, mode: "chain" });
+		expect(owned.args[0]).toEqual({
+			cohortId: s.cohortId,
+			step: s.args.step,
+			runGeneration: currentStage.runGeneration,
+			mode: "chain",
+		});
 		await s.f.t.run(async (ctx) => {
 			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
-				if (job.state.kind === "pending" && job.scheduledTime <= Date.now() && job._id !== owned._id) await ctx.scheduler.cancel(job._id);
+				if (job.state.kind === "pending" && job.scheduledTime <= Date.now() && job._id !== owned._id)
+					await ctx.scheduler.cancel(job._id);
 		});
 		let lostReplies = 0;
 		let committed = before;
@@ -580,22 +663,37 @@ describe("Move content stage route", () => {
 		expect(committed).toMatchObject({ publishedAt: null, errorCode: null });
 		expect((await s.f.t.run((ctx) => ctx.db.system.get(owned._id)))?.state.kind).toBe("success");
 		expect((await stage_state(s)).cohort, "a lost stage reply keeps its committed step").toEqual(committed);
-		expect(resumes).toMatchObject([{ step: s.args.step, runGeneration: currentStage.runGeneration, error: { cause: { message: "Stage test lost the committed reply" } } }]);
+		expect(resumes).toMatchObject([
+			{
+				step: s.args.step,
+				runGeneration: currentStage.runGeneration,
+				error: { cause: { message: "Stage test lost the committed reply" } },
+			},
+		]);
 		expect(await s.f.t.mutation(internal.files_move_content.advance_stage, currentStage)).toBeNull();
 		expect((await stage_state(s)).cohort).toEqual(committed);
 		vi.setSystemTime(Date.now() + 3 * 60_000);
 		await s.f.t.mutation(internal.files_move_cohorts.recover, {});
 		for (let pass = 0; pass < 100; pass++) {
-			const job = await s.f.t.run(async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).find((job) => job.name === "files_move_cohorts:recover_page" && job.state.kind === "pending"));
+			const job = await s.f.t.run(async (ctx) =>
+				(await ctx.db.system.query("_scheduled_functions").collect()).find(
+					(job) => job.name === "files_move_cohorts:recover_page" && job.state.kind === "pending",
+				),
+			);
 			if (!job) break;
 			await s.f.t.run((ctx) => ctx.scheduler.cancel(job._id));
-			await s.f.t.mutation(internal.files_move_cohorts.recover_page, job.args[0] as FunctionArgs<typeof internal.files_move_cohorts.recover_page>);
+			await s.f.t.mutation(
+				internal.files_move_cohorts.recover_page,
+				job.args[0] as FunctionArgs<typeof internal.files_move_cohorts.recover_page>,
+			);
 		}
 		const recovered = (await stage_state(s)).cohort!;
 		expect(recovered.step).toBe(committed.step);
 		expect(recovered.runJob!.generation).toBeGreaterThan(committed.runJob!.generation);
 		expect(recovered.deadlineAt).toBe(committed.deadlineAt);
-		expect((await s.f.t.run((ctx) => ctx.db.get("activities", s.activityId)))?.deadlineAt).toBe(activityBefore.deadlineAt);
+		expect((await s.f.t.run((ctx) => ctx.db.get("activities", s.activityId)))?.deadlineAt).toBe(
+			activityBefore.deadlineAt,
+		);
 		await finish_group(s);
 	});
 
@@ -612,7 +710,10 @@ describe("Move content stage route", () => {
 				if (name === "files_move_cohorts:advance") leanCalls++;
 				if (name === "files_move_content:advance_stage") heavyCalls++;
 				const result = await runMutation(mutationArgs[0], mutationArgs[1], mutationArgs[2]);
-				if (!elapsed && name === (edge === "before" ? "files_move_cohorts:advance" : "files_move_content:advance_stage")) {
+				if (
+					!elapsed &&
+					name === (edge === "before" ? "files_move_cohorts:advance" : "files_move_content:advance_stage")
+				) {
 					elapsed = true;
 					vi.setSystemTime(Date.now() + 5_001);
 				}
@@ -620,16 +721,33 @@ describe("Move content stage route", () => {
 			});
 			return await handler(ctx, args);
 		});
-		await s.f.t.action(internal.files_move_run.run, { cohortId: s.cohortId, step: s.args.step, runGeneration: s.args.runGeneration, mode: "chain" });
+		await s.f.t.action(internal.files_move_run.run, {
+			cohortId: s.cohortId,
+			step: s.args.step,
+			runGeneration: s.args.runGeneration,
+			mode: "chain",
+		});
 		expect(elapsed).toBe(true);
 		expect(leanCalls).toBe(1);
-		expect(heavyCalls, edge === "before" ? "an expired action budget starts no content-stage RPC" : "the time handoff keeps one committed stage").toBe(edge === "before" ? 0 : 1);
+		expect(
+			heavyCalls,
+			edge === "before"
+				? "an expired action budget starts no content-stage RPC"
+				: "the time handoff keeps one committed stage",
+		).toBe(edge === "before" ? 0 : 1);
 		const after = (await stage_state(s)).cohort!;
-		expect(after.step, "the time handoff keeps the committed stage step").toBe(s.args.step + (edge === "before" ? 0 : 1));
+		expect(after.step, "the time handoff keeps the committed stage step").toBe(
+			s.args.step + (edge === "before" ? 0 : 1),
+		);
 		expect(after.runJob!.generation).toBeGreaterThan(before.runJob!.generation);
 		const successor = await s.f.t.run((ctx) => ctx.db.system.get(after.runJob!.id));
 		expect(successor?.state.kind).toBe("pending");
-		expect(successor?.args[0]).toEqual({ cohortId: s.cohortId, step: after.step, runGeneration: after.runJob!.generation, mode: "chain" });
+		expect(successor?.args[0]).toEqual({
+			cohortId: s.cohortId,
+			step: after.step,
+			runGeneration: after.runJob!.generation,
+			mode: "chain",
+		});
 		await finish_group(s);
 	});
 
@@ -637,18 +755,26 @@ describe("Move content stage route", () => {
 		const member = await member_fixture();
 		const s = await ready_stage(await start_group(member.f, 32));
 		// Setup advanced by hand. Queue the current step through the normal worker door.
-		expect(await s.f.t.mutation(internal.files_move_cohorts.handoff, {
-			cohortId: s.cohortId,
-			step: s.args.step,
-			runGeneration: s.args.runGeneration,
-		})).toBeNull();
+		expect(
+			await s.f.t.mutation(internal.files_move_cohorts.handoff, {
+				cohortId: s.cohortId,
+				step: s.args.step,
+				runGeneration: s.args.runGeneration,
+			}),
+		).toBeNull();
 		const before = (await stage_state(s)).cohort!;
 		if (!before.runJob) throw new Error("Expected the native Move job");
 		const owned = (await s.f.t.run((ctx) => ctx.db.system.get(before.runJob!.id)))!;
-		expect(owned.args[0]).toEqual({ cohortId: s.cohortId, step: s.args.step, runGeneration: before.runJob.generation, mode: "chain" });
+		expect(owned.args[0]).toEqual({
+			cohortId: s.cohortId,
+			step: s.args.step,
+			runGeneration: before.runJob.generation,
+			mode: "chain",
+		});
 		await s.f.t.run(async (ctx) => {
 			for (const job of await ctx.db.system.query("_scheduled_functions").collect())
-				if (job.state.kind === "pending" && job.scheduledTime <= Date.now() && job._id !== owned._id) await ctx.scheduler.cancel(job._id);
+				if (job.state.kind === "pending" && job.scheduledTime <= Date.now() && job._id !== owned._id)
+					await ctx.scheduler.cancel(job._id);
 		});
 		let leanCalls = 0;
 		let heavyCalls = 0;
@@ -670,7 +796,12 @@ describe("Move content stage route", () => {
 		expect((await s.f.t.run((ctx) => ctx.db.system.get(owned._id)))?.state.kind).toBe("success");
 		const successor = await s.f.t.run((ctx) => ctx.db.system.get(after.runJob!.id));
 		expect(successor?.state.kind).toBe("pending");
-		expect(successor?.args[0]).toEqual({ cohortId: s.cohortId, step: after.step, runGeneration: after.runJob!.generation, mode: "chain" });
+		expect(successor?.args[0]).toEqual({
+			cohortId: s.cohortId,
+			step: after.step,
+			runGeneration: after.runJob!.generation,
+			mode: "chain",
+		});
 		await finish_group(s);
 	});
 });

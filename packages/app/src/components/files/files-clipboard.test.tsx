@@ -14,7 +14,9 @@ import { AppActivitiesProvider } from "@/lib/app-activities-context.tsx";
 import type { FilesMoveIntake } from "@/lib/files-move-intake.ts";
 
 type TransferRun = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.get>>;
-type TransferItemPage = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.list_items>>;
+type TransferItemPage = NonNullable<
+	app_convex_FunctionReturnType<typeof app_convex_api.files_transfer_status.list_items>
+>;
 
 const {
 	mutationMock,
@@ -117,7 +119,14 @@ vi.mock("convex/react", async (importOriginal) => {
 });
 
 vi.mock("sonner", () => ({
-	toast: { error: toastErrorMock, loading: vi.fn(), dismiss: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() },
+	toast: {
+		error: toastErrorMock,
+		loading: vi.fn(),
+		dismiss: vi.fn(),
+		success: vi.fn(),
+		info: vi.fn(),
+		warning: vi.fn(),
+	},
 }));
 
 const SOURCE_ID = "source" as app_convex_Id<"files_nodes">;
@@ -685,8 +694,10 @@ describe("FilesClipboardProvider", () => {
 		intakeQueryMock.mockResolvedValue({ runId: RUN_ID, step: "apply", isFinished: true });
 		fireEvent.click(screen.getByRole("button", { name: "Retry Paste" }));
 		await waitFor(() =>
-			expect(screen.getByLabelText("Clipboard sources").textContent, "completed Cut IDs clear after accepted-run recovery")
-				.toBe(SECOND_ID),
+			expect(
+				screen.getByLabelText("Clipboard sources").textContent,
+				"completed Cut IDs clear after accepted-run recovery",
+			).toBe(SECOND_ID),
 		);
 		await waitFor(() => expect(intakeState.request).toBeNull());
 		expect(intakeQueryMock.mock.lastCall![1]).toEqual({ membershipId: "membership", requestId });
@@ -703,8 +714,10 @@ describe("FilesClipboardProvider", () => {
 		await screen.findByRole("button", { name: "Retry Paste" });
 		push_run(make_run({ kind: "move", status: "succeeded", movedNodeIds: [SOURCE_ID] }));
 		await waitFor(() =>
-			expect(screen.getByLabelText("Clipboard sources").textContent, "accepted Cut survives a browser storage error")
-				.toBe(SECOND_ID),
+			expect(
+				screen.getByLabelText("Clipboard sources").textContent,
+				"accepted Cut survives a browser storage error",
+			).toBe(SECOND_ID),
 		);
 		expect(intakeState.request).not.toBeNull();
 		intakeQueryMock.mockResolvedValue({ runId: RUN_ID, step: "apply", isFinished: true });
@@ -751,8 +764,10 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		await waitFor(() =>
-			expect(screen.queryByRole("button", { name: "Retry Paste" }), "a failed acceptance lookup has a visible Retry")
-				.toBeTruthy(),
+			expect(
+				screen.queryByRole("button", { name: "Retry Paste" }),
+				"a failed acceptance lookup has a visible Retry",
+			).toBeTruthy(),
 		);
 		const retry = screen.getByRole("button", { name: "Retry Paste" });
 		expect(intakeDeleteMock).not.toHaveBeenCalled();
@@ -782,8 +797,10 @@ describe("FilesClipboardProvider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		render(<TestClipboard />);
 		await screen.findByRole("button", { name: "Retry Stop" });
-		expect(screen.queryByRole("button", { name: "Forget saved selection" }), "unknown Stop still offers explicit Forget")
-			.toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Forget saved selection" }),
+			"unknown Stop still offers explicit Forget",
+		).toBeTruthy();
 		expect(intakeState.request).toMatchObject({ runId: null, stopRequested: true });
 		expect(intakeDeleteMock).not.toHaveBeenCalled();
 		expect(mutationMock).not.toHaveBeenCalled();
@@ -800,13 +817,16 @@ describe("FilesClipboardProvider", () => {
 		expect(intakeState.sourceIds).toEqual([SOURCE_ID, SECOND_ID]);
 		expect(intakeDeleteMock).not.toHaveBeenCalled();
 		if (newer) fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
-		expect(screen.getByText("Accepted moves may continue. This removes only the saved selection in this browser.")).toBeTruthy();
+		expect(
+			screen.getByText("Accepted moves may continue. This removes only the saved selection in this browser."),
+		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Forget saved selection" }));
 		await waitFor(() => expect(intakeState.request).toBeNull());
 		expect(intakeState.sourceIds).toEqual([]);
 		expect(intakeDeleteMock.mock.lastCall![1]).toEqual({ forget: true });
-		expect(screen.getByLabelText("Clipboard sources").textContent, "Forget clears only the matching Cut")
-			.toBe(newer ? SECOND_ID : "empty");
+		expect(screen.getByLabelText("Clipboard sources").textContent, "Forget clears only the matching Cut").toBe(
+			newer ? SECOND_ID : "empty",
+		);
 		expect(mutationMock, "Forget sends no server mutation").toHaveBeenCalledOnce();
 		expect(screen.getByLabelText("Paste busy").textContent).toBe("false");
 	});
@@ -1045,7 +1065,9 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(discard);
 		await screen.findByRole("button", { name: "Retry Stop" });
 		expect(intakeState.request, "unknown-ID Stop survives peer retirement").toMatchObject({
-			requestId: "late-unknown-stop", runId: null, stopRequested: true,
+			requestId: "late-unknown-stop",
+			runId: null,
+			stopRequested: true,
 		});
 		cleanup();
 		render(<TestClipboard />);
@@ -1069,7 +1091,9 @@ describe("FilesClipboardProvider", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Cut sources" }));
 		await press_paste();
 		fireEvent.click(await screen.findByRole("button", { name: "Forget saved selection" }));
-		await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Could not forget the saved selection. Try again."));
+		await waitFor(() =>
+			expect(toastErrorMock).toHaveBeenCalledWith("Could not forget the saved selection. Try again."),
+		);
 		expect(intakeState.request).not.toBeNull();
 		expect(intakeState.sourceIds).toEqual([SOURCE_ID, SECOND_ID]);
 		expect(screen.getByRole("button", { name: "Forget saved selection" }).hasAttribute("disabled")).toBe(false);
@@ -1467,7 +1491,9 @@ describe("FilesTransferRunModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		expect(await screen.findByText(lockedPath ?? "Unavailable item")).toBeTruthy();
 		expect(screen.getByText(lockedPath ? "Skipped: Permission denied" : "Skipped")).toBeTruthy();
-		expect(screen.getByText("Paths were recorded during this operation and may differ from current locations.")).toBeTruthy();
+		expect(
+			screen.getByText("Paths were recorded during this operation and may differ from current locations."),
+		).toBeTruthy();
 		expect(screen.queryByRole("link", { name: lockedPath ?? "Unavailable item" })).toBeNull();
 		if (!lockedPath) expect(screen.queryByText("/folder/secret-name")).toBeNull();
 	});

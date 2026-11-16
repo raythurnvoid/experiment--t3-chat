@@ -186,12 +186,15 @@ describe("api_key_setup_quick_fixes", () => {
 		],
 	])("removes the only scope and its trailing comma, keeping comments: %s", (text, expected) => {
 		const error = parse_personal(text).errors[0]!;
-		const fix = api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES).find((item) => item.title === "Remove this scope")!;
+		const fix = api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES).find(
+			(item) => item.title === "Remove this scope",
+		)!;
 		const changed = applyEdits(text, fix.edits);
 
-		expect(parse_personal(changed).errors.map((item) => item.code), "Removing the only scope leaves valid JSON").toEqual([
-			"scopes_empty",
-		]);
+		expect(
+			parse_personal(changed).errors.map((item) => item.code),
+			"Removing the only scope leaves valid JSON",
+		).toEqual(["scopes_empty"]);
 		expect(changed).toBe(expected);
 	});
 
@@ -203,10 +206,10 @@ describe("api_key_setup_quick_fixes", () => {
 		const fix = api_key_setup_quick_fixes(text, error, ALLOWED_SCOPES)[0]!;
 		const changed = applyEdits(text, fix.edits);
 
-		expect(parse_personal(changed).errors.map((item) => item.code), "Removing the only field leaves valid JSON").toEqual([
-			"missing_name",
-			"missing_scopes",
-		]);
+		expect(
+			parse_personal(changed).errors.map((item) => item.code),
+			"Removing the only field leaves valid JSON",
+		).toEqual(["missing_name", "missing_scopes"]);
 		expect(changed).toBe(expected);
 	});
 

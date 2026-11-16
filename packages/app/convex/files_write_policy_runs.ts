@@ -359,7 +359,8 @@ export const advance = internalMutation({
 				.withIndex("by_organization_workspace_archiveOperation_treePath", (q) => {
 					const scope = q
 						.eq("organizationId", run.organizationId)
-						.eq("workspaceId", run.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", run.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("archiveOperationId", null);
 					const lower =
 						pageCursor === null

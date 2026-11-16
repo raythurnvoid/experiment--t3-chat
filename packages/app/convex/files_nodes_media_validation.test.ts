@@ -236,10 +236,10 @@ describe("saved file media validation clocks", () => {
 		expect(
 			(
 				await test_move_nodes(f.t, f.asUser, {
-						membershipId: f.db.membershipId,
-						itemIds: [parent],
-						targetParentId: destination,
-					})
+					membershipId: f.db.membershipId,
+					itemIds: [parent],
+					targetParentId: destination,
+				})
 			)._nay,
 		).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.get("files_nodes", parent))).toMatchObject({
@@ -709,10 +709,10 @@ describe("saved file media validation clocks", () => {
 				expect(
 					(
 						await test_move_nodes(f.t, f.asUser, {
-								membershipId: scope.membershipId,
-								itemIds: [nodeId],
-								targetParentId: "root",
-							})
+							membershipId: scope.membershipId,
+							itemIds: [nodeId],
+							targetParentId: "root",
+						})
 					)._nay,
 				).toBeUndefined();
 				break;

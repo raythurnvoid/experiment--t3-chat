@@ -538,7 +538,10 @@ describe("full metadata reads", () => {
 			...reader.scope,
 			plan: { op: "eq" as const, fieldPath: "frontmatter.summary", value: "owner draft" },
 		};
-		const content = await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, readArgs);
+		const content = await fixture.t.action(
+			internal.files_nodes_content.get_file_last_available_text_content_by_path,
+			readArgs,
+		);
 		expect(content?.content).toBe(draftText);
 		expect(full_values([page(await read_path(reader, "frontmatter.summary"))])).toEqual(["owner draft"]);
 		expect((await text_search_files_all_pages(fixture.t, searchArgs)).items.map((item) => item.path)).toEqual([
@@ -547,19 +550,23 @@ describe("full metadata reads", () => {
 		expect((await test_meta_search(fixture.t, metadataArgs)).items.map((item) => item.path)).toEqual([readArgs.path]);
 		// A member without this draft still reads the saved version.
 		expect(
-			(await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-				...readArgs,
-				userId: fixture.db.userId,
-				subject: { kind: "user", userId: fixture.db.userId, plugin: null },
-			}))?.content,
+			(
+				await fixture.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...readArgs,
+					userId: fixture.db.userId,
+					subject: { kind: "user", userId: fixture.db.userId, plugin: null },
+				})
+			)?.content,
 		).toBe(savedText);
 		expect(full_values([page(await read_path(fixture, "frontmatter.summary"))])).toEqual(["saved snapshot"]);
 		expect(
-			(await text_search_files_all_pages(fixture.t, {
-				...searchArgs,
-				userId: fixture.db.userId,
-				subject: { kind: "user", userId: fixture.db.userId, plugin: null },
-			})).items,
+			(
+				await text_search_files_all_pages(fixture.t, {
+					...searchArgs,
+					userId: fixture.db.userId,
+					subject: { kind: "user", userId: fixture.db.userId, plugin: null },
+				})
+			).items,
 		).toEqual([]);
 		expect((await test_meta_search(fixture.t, { ...metadataArgs, userId: fixture.db.userId })).items).toEqual([]);
 		expect(

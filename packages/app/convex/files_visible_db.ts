@@ -113,8 +113,7 @@ export async function files_visible_db_create_reader(
 			progress = await resume.store.get(progressKey);
 			const parentPath = input.path.slice(0, input.path.lastIndexOf("/")) || "/";
 			const cached =
-				progress ??
-				(parentPath === input.rootPath ? null : await resume.store.get(`${key}:parent:${parentPath}`));
+				progress ?? (parentPath === input.rootPath ? null : await resume.store.get(`${key}:parent:${parentPath}`));
 			if (cached) parent = JSON.parse(cached) as Parent;
 			if (parent.fence !== resume.fence) return { status: "invalidated" as const };
 			const slash = input.path.indexOf("/", parent.path === "/" ? 1 : parent.path.length + 1);

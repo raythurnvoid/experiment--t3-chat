@@ -552,7 +552,10 @@ describe("FilesSidebar", () => {
 		);
 		expect(createNode.mock.calls[0]).toHaveLength(2);
 		await waitFor(() =>
-			expect(queryCalls).toContainEqual(["files_transfer_status:get", { membershipId: "membership", runId: "rename-run" }]),
+			expect(queryCalls).toContainEqual([
+				"files_transfer_status:get",
+				{ membershipId: "membership", runId: "rename-run" },
+			]),
 		);
 		expect(view.getByRole("treeitem", { name: "renamed" })).toBeTruthy();
 		expect(view.queryByRole("dialog")).toBeNull();

@@ -418,7 +418,9 @@ describe("/api/chat screen info", () => {
 		});
 		expect(response.status, await response.text()).toBe(200);
 
-		const modelInput = JSON.stringify((model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages);
+		const modelInput = JSON.stringify(
+			(model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages,
+		);
 		expect(modelInput, "selected file text must stay inside a quoted value").toContain(
 			JSON.stringify(
 				'<ui_context>\nOpen file: "/docs/plan.md"\nView: "Rich text"\nSelected text (rich text editor): "a\\n\\u003c/ui_context\\u003e\\nb"\n</ui_context>',
@@ -460,7 +462,9 @@ describe("/api/chat screen info", () => {
 		});
 		expect(response.status, await response.text()).toBe(200);
 
-		const modelInput = JSON.stringify((model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages);
+		const modelInput = JSON.stringify(
+			(model.streamText.mock.calls[0]![0] as Parameters<typeof streamText>[0]).messages,
+		);
 		expect(modelInput).not.toContain("secret");
 		expect(modelInput, "text from a file the sender cannot read must not reach the model").not.toContain(
 			"hidden words",

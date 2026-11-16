@@ -13,7 +13,10 @@ import {
 import { activities_db_delete, activities_get_controls, activities_is_active } from "./activities_db.ts";
 import { ai_chat_files_db_delete_job_batch, ai_chat_files_db_request_job_stop } from "./ai_chat_files.ts";
 import { files_transfer_db_delete_run_batch, files_transfer_db_request_stop } from "./files_transfer.ts";
-import { files_pending_update_runs_db_delete_run_batch, files_pending_update_runs_db_request_stop } from "./files_pending_update_runs.ts";
+import {
+	files_pending_update_runs_db_delete_run_batch,
+	files_pending_update_runs_db_request_stop,
+} from "./files_pending_update_runs.ts";
 import { files_pending_update_runs_db_resume_parked } from "./files_pending_update_runs_db.ts";
 import {
 	files_write_policy_runs_db_delete_run_batch,
@@ -418,7 +421,8 @@ export const cleanup_history = internalMutation({
 				deletedCount >= 50 ||
 				bashJobCount >= ACTIVITIES_BASH_JOB_ROWS_MAX ||
 				reviewCleanupProgress
-			) break;
+			)
+				break;
 
 			// A blocked Activity uses a slot too. A full blocked batch leaves later history for the next run.
 			const activities = await ctx.db

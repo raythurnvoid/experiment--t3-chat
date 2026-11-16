@@ -6,22 +6,19 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"workers_dev": true,
 	"vars": {
-		"PLUGIN_RUNNER_ARTIFACT_PREFIX": "plugins/"
+		"PLUGIN_RUNNER_ARTIFACT_PREFIX": "plugins/",
 	},
 	"secrets": {
-		"required": [
-			"PLUGIN_RUNNER_SECRET",
-			"PLUGIN_RUNNER_HOST_SECRET"
-		]
+		"required": ["PLUGIN_RUNNER_SECRET", "PLUGIN_RUNNER_HOST_SECRET"],
 	},
 	"worker_loaders": [{ "binding": "LOADER" }],
 	"r2_buckets": [
 		{
 			"binding": "PLUGIN_ARTIFACTS",
-			"bucket_name": "bonobo-senate-press-files"
-		}
+			"bucket_name": "bonobo-senate-press-files",
+		},
 	],
 	"observability": {
-		"enabled": true
-	}
+		"enabled": true,
+	},
 }

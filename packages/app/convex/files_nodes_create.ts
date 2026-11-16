@@ -429,7 +429,8 @@ export const create_file_node = internalMutation({
 					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
 							.eq("organizationId", authorOrganizationId)
-							.eq("workspaceId", authorWorkspaceId).eq("moveCohortId", undefined)
+							.eq("workspaceId", authorWorkspaceId)
+							.eq("moveCohortId", undefined)
 							.eq("path", prefixPath)
 							.eq("archiveOperationId", null),
 					)

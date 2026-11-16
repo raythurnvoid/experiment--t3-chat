@@ -5929,7 +5929,8 @@ export const create_browser_download_node = internalMutation({
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", candidate)
 						.eq("archiveOperationId", null),
 				)

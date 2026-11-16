@@ -156,15 +156,22 @@ describe("files_sort_compare", () => {
 });
 
 describe("files_sort_key_of", () => {
-	const facts = { kind: "file" as const, name: "File2.10", createdAt: 1, updatedAt: 2, extension: "10", contentByteSize: 0 };
+	const facts = {
+		kind: "file" as const,
+		name: "File2.10",
+		createdAt: 1,
+		updatedAt: 2,
+		extension: "10",
+		contentByteSize: 0,
+	};
 
 	test("keeps raw file.extension and exact index suffixes", () => {
-		expect(files_sort_key_of({ sort: [{ field: "extension", direction: "asc" }], facts, metadataParts: new Map() })).toEqual(
-			{
-				parts: [["10", "file012.0210", "File2.10"]],
-				nameKey: ["file012.0210", "File2.10"],
-			},
-		);
+		expect(
+			files_sort_key_of({ sort: [{ field: "extension", direction: "asc" }], facts, metadataParts: new Map() }),
+		).toEqual({
+			parts: [["10", "file012.0210", "File2.10"]],
+			nameKey: ["file012.0210", "File2.10"],
+		});
 		expect(
 			files_sort_key_of({ sort: [{ field: "created", direction: "asc" }], facts, metadataParts: new Map() }).parts,
 		).toEqual([[1]]);

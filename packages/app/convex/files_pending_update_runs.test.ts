@@ -934,10 +934,10 @@ describe("review jobs", () => {
 		expect(
 			(
 				await test_move_nodes(f.t, f.asUser, {
-						membershipId: f.db.membershipId,
-						itemIds: [childId],
-						targetParentId: parentId,
-					})
+					membershipId: f.db.membershipId,
+					itemIds: [childId],
+					targetParentId: parentId,
+				})
 			)._nay,
 		).toBeUndefined();
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_review_versions").first())).toEqual(reviewVersion);
@@ -1179,7 +1179,9 @@ describe("review jobs", () => {
 		const cleanupPages = { before: [] as number[], after: [] as number[] };
 		const stagedIds: Id<"files_metadata_docs">[] = [];
 		const cleanupIds = { before: [] as Id<"files_metadata_docs">[], after: [] as Id<"files_metadata_docs">[] };
-		const originals = new Set((await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect())).map((row) => row._id));
+		const originals = new Set(
+			(await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect())).map((row) => row._id),
+		);
 		const copies = new Set<Id<"files_metadata_docs">>();
 		test_spy_handler(advance_cohort, async (handler, ctx, args) => {
 			const query = vi.spyOn(ctx, "runQuery");
@@ -1190,24 +1192,45 @@ describe("review jobs", () => {
 				let copied = 0;
 				for (const [index, call] of insert.mock.calls.entries()) {
 					const fields = call[1] as Partial<Doc<"files_metadata_docs">>;
-					if (call[0] !== "files_metadata_docs" || fields.sourceKind !== "committed" || fields.moveView?.view !== "after") continue;
-					copies.add(await insert.mock.results[index]!.value as Id<"files_metadata_docs">);
+					if (
+						call[0] !== "files_metadata_docs" ||
+						fields.sourceKind !== "committed" ||
+						fields.moveView?.view !== "after"
+					)
+						continue;
+					copies.add((await insert.mock.results[index]!.value) as Id<"files_metadata_docs">);
 					copied++;
 				}
 				// Several native pages can share one parent. Keep their real boundaries and IDs.
 				for (const [index, [reference, queryArgs]] of query.mock.calls.entries()) {
 					const name = getFunctionName(reference);
-					const pageArgs = queryArgs as { family?: string; view: "before" | "after"; cohortId: Id<"files_move_cohorts"> };
-					if (name !== "files_move_pages:metadata" && !(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")) continue;
-					const page = await query.mock.results[index]!.value as { page: Doc<"files_metadata_docs">[] };
+					const pageArgs = queryArgs as {
+						family?: string;
+						view: "before" | "after";
+						cohortId: Id<"files_move_cohorts">;
+					};
+					if (
+						name !== "files_move_pages:metadata" &&
+						!(name === "files_move_pages:side_cleanup" && pageArgs.family === "files_metadata_docs")
+					)
+						continue;
+					const page = (await query.mock.results[index]!.value) as { page: Doc<"files_metadata_docs">[] };
 					const ids = page.page.map((row) => row._id);
 					if (name === "files_move_pages:metadata") {
-						expect(ids.every((id) => originals.has(id)), "Staging reads the exact original metadata docs").toBe(true);
+						expect(
+							ids.every((id) => originals.has(id)),
+							"Staging reads the exact original metadata docs",
+						).toBe(true);
 						staged += ids.length;
 						stagePages.push(ids.length);
 						stagedIds.push(...ids);
 					} else {
-						expect(page.page.every((row) => row.moveView?.cohortId === pageArgs.cohortId && row.moveView.view === pageArgs.view), "Cleanup reads the exact tagged metadata view").toBe(true);
+						expect(
+							page.page.every(
+								(row) => row.moveView?.cohortId === pageArgs.cohortId && row.moveView.view === pageArgs.view,
+							),
+							"Cleanup reads the exact tagged metadata view",
+						).toBe(true);
 						cleanupPages[pageArgs.view].push(ids.length);
 						cleanupIds[pageArgs.view].push(...ids);
 					}
@@ -1220,21 +1243,31 @@ describe("review jobs", () => {
 			}
 		});
 		await f.t.mutation(internal.files_pending_update_runs.advance, { runId });
-		const firstUnit = await f.t.run((ctx) => ctx.db.query("files_pending_update_run_units")
-			.withIndex("by_run_order", (q) => q.eq("runId", runId)).first());
+		const firstUnit = await f.t.run((ctx) =>
+			ctx.db
+				.query("files_pending_update_run_units")
+				.withIndex("by_run_order", (q) => q.eq("runId", runId))
+				.first(),
+		);
 		if (!firstUnit?.cohortId) throw new Error("Expected the review cohort");
 		// Check a real page early. The old page size must fail here, before the full job finishes.
 		for (let pass = 0; pass < 10_000; pass++) {
 			const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", firstUnit.cohortId!));
 			if (!cohort) throw new Error("Missing review cohort");
-			if (stagePages.length) expect(stagePages[0], "Saved metadata staging moves all 20 fields in its first page").toBe(20);
+			if (stagePages.length)
+				expect(stagePages[0], "Saved metadata staging moves all 20 fields in its first page").toBe(20);
 			if (cleanupPages.before.length) {
 				expect(cohort.publishedAt).not.toBeNull();
 				expect(cleanupPages.before[0], "Saved metadata cleanup takes 64 rows when they fit").toBe(64);
 				break;
 			}
 			if (cohort.phase === "complete") throw new Error("Review completed without metadata cleanup");
-			await f.t.action(internal.files_move_run.run, { cohortId: cohort._id, step: cohort.step, runGeneration: cohort.runJob?.generation ?? null, mode: "step" });
+			await f.t.action(internal.files_move_run.run, {
+				cohortId: cohort._id,
+				step: cohort.step,
+				runGeneration: cohort.runJob?.generation ?? null,
+				mode: "step",
+			});
 			if (pass === 9999) throw new Error("Review did not reach metadata cleanup");
 		}
 		const result = await finish_review(f, runId);
@@ -1267,9 +1300,13 @@ describe("review jobs", () => {
 				return [id, path, path];
 			}),
 		]);
-		expect(saved.every((node) => node.archiveOperationId?.endsWith(`-${unit.cohortId}`) && node.moveCohortId === undefined)).toBe(true);
+		expect(
+			saved.every((node) => node.archiveOperationId?.endsWith(`-${unit.cohortId}`) && node.moveCohortId === undefined),
+		).toBe(true);
 		const metadata = await f.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
-		expect(metadata.map((row) => [row.sourceKind === "committed" ? row.fileNodeId : undefined, row.fieldPath]).sort()).toEqual(
+		expect(
+			metadata.map((row) => [row.sourceKind === "committed" ? row.fileNodeId : undefined, row.fieldPath]).sort(),
+		).toEqual(
 			fileIds.flatMap((id) => Array.from({ length: 20 }, (_, field) => [id, `frontmatter.tag${field}`])).sort(),
 		);
 		expect(
@@ -1280,7 +1317,11 @@ describe("review jobs", () => {
 			metadata.every((row) => row.sourceKind === "committed" && row.yjsSequence === 1 && row.moveView === undefined),
 		).toBe(true);
 		const paths = new Map(saved.map((node) => [node._id, node.path]));
-		expect(metadata.every((row) => row.sourceKind === "committed" && row.path === paths.get(row.fileNodeId) && row.treePath === row.path)).toBe(true);
+		expect(
+			metadata.every(
+				(row) => row.sourceKind === "committed" && row.path === paths.get(row.fileNodeId) && row.treePath === row.path,
+			),
+		).toBe(true);
 		expect(await f.t.run((ctx) => ctx.db.query("files_pending_updates").collect())).toEqual([]);
 	});
 

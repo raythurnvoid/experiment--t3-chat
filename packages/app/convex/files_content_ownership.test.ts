@@ -97,12 +97,21 @@ async function ready_content_review(indexBeforeReview = false) {
 		textContent: text,
 	});
 	if (indexBeforeReview) {
-		expect(await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
-			membershipId: db.membershipId, nodeId, acknowledgeDropCollaborativeHistory: true,
-		})).toHaveProperty("_yay");
-		expect(await asUser.action(api.files_nodes_content.replace_file_content, {
-			membershipId: db.membershipId, nodeId, requestId: "save-before-review", text,
-		})).toHaveProperty("_yay");
+		expect(
+			await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			}),
+		).toHaveProperty("_yay");
+		expect(
+			await asUser.action(api.files_nodes_content.replace_file_content, {
+				membershipId: db.membershipId,
+				nodeId,
+				requestId: "save-before-review",
+				text,
+			}),
+		).toHaveProperty("_yay");
 		await t.mutation(internal.files_index.start, { nodeId });
 	}
 	const accepted = text.replace("status: saved", "status: accepted");
@@ -361,8 +370,12 @@ test("native Save indexes a full legal frontmatter set with the saved owner", as
 
 test("an index build from before Review cannot replace accepted content or metadata", async () => {
 	const f = await ready_content_review(true);
-	const before = await f.t.run((ctx) => ctx.db.query("files_index_states")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	const before = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+			.unique(),
+	);
 	expect(before?.activeRunId, "the older index build exists before Review publishes").not.toBeNull();
 	await f.t.mutation(internal.files_move_cohorts.advance, f.args);
 	await test_finish_pending_update_run(f.asUser, f.runId, { stepwise: true });
@@ -378,18 +391,35 @@ test("an index build from before Review cannot replace accepted content or metad
 test("Save after the Review flip survives publication cleanup", async () => {
 	const f = await ready_content_review(true);
 	await f.t.mutation(internal.files_move_cohorts.advance, f.args);
-	const side = await f.t.run((ctx) => ctx.db.query("files_index_states")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	const side = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+			.unique(),
+	);
 	expect(side?.movePublication, "the Review has flipped but its index promotion is unfinished").not.toBeNull();
 	const newerText = text.replace("status: saved", "status: newer");
-	expect(await f.asUser.action(api.files_nodes_content.replace_file_content, {
-		membershipId: f.db.membershipId, nodeId: f.nodeId, requestId: "save-after-review-flip", text: newerText,
-	})).toHaveProperty("_yay");
-	const newer = await f.t.run((ctx) => ctx.db.query("files_index_states")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	expect(
+		await f.asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: f.db.membershipId,
+			nodeId: f.nodeId,
+			requestId: "save-after-review-flip",
+			text: newerText,
+		}),
+	).toHaveProperty("_yay");
+	const newer = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+			.unique(),
+	);
 	await test_finish_pending_update_run(f.asUser, f.runId, { stepwise: true });
-	const after = await f.t.run((ctx) => ctx.db.query("files_index_states")
-		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId)).unique());
+	const after = await f.t.run((ctx) =>
+		ctx.db
+			.query("files_index_states")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", f.nodeId))
+			.unique(),
+	);
 	expect(after?.requestedHeadId, "Review cleanup keeps the newer Save source request").toBe(newer?.requestedHeadId);
 	expect(after?.requestedRevision).toBe(newer?.requestedRevision);
 	await test_finish_file_index(f.t, f.nodeId);

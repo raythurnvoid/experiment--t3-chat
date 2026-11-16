@@ -6,7 +6,13 @@ import { encodeStateAsUpdate } from "yjs";
 import { api, internal } from "./_generated/api.js";
 import { files_pending_updates_action_stage_private_state_family } from "./files_pending_updates.ts";
 import { r2_confirmed_object_delete } from "./r2_client.ts";
-import { test_save_file_pending_update, test_convex, test_create_saved_text_file, test_finish_file_index, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_save_file_pending_update,
+	test_convex,
+	test_create_saved_text_file,
+	test_finish_file_index,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import {
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_set_file_metadata,
@@ -500,9 +506,18 @@ describe("agent file write source", () => {
 					metadata: { workspace: "personal", entries: [{ key: "private-note", value: true }] },
 				});
 			if (!revoked) {
-				const node = await f.t.run((ctx) => ctx.db.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) => q.eq("organizationId", f.home.organizationId)
-						.eq("workspaceId", f.home.workspaceId).eq("moveCohortId", undefined).eq("path", "/notes")).unique());
+				const node = await f.t.run((ctx) =>
+					ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+							q
+								.eq("organizationId", f.home.organizationId)
+								.eq("workspaceId", f.home.workspaceId)
+								.eq("moveCohortId", undefined)
+								.eq("path", "/notes"),
+						)
+						.unique(),
+				);
 				if (!node) throw new Error("Expected the saved folder");
 				await test_finish_file_index(f.t, node._id);
 			}

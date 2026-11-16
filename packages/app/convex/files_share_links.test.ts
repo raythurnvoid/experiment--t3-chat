@@ -131,14 +131,17 @@ describe("set_node_share_link", () => {
 		const asAnonymousOwner = f.t.withIdentity({ issuer: process.env.VITE_CONVEX_HTTP_URL!, subject: f.db.userId });
 		const args = { membershipId: f.db.membershipId, nodeId: f.nodeId };
 
-		const refused = await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true });
+		const refused = await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, {
+			...args,
+			enabled: true,
+		});
 		expect(refused._nay?.message).toBe("Sign in to create a public link");
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
 
 		await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: true });
-		expect(await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: false })).toEqual(
-			{ _yay: null },
-		);
+		expect(
+			await asAnonymousOwner.mutation(api.files_share_links.set_node_share_link, { ...args, enabled: false }),
+		).toEqual({ _yay: null });
 		expect(await read_links(f.t, f.nodeId)).toHaveLength(0);
 	});
 
@@ -289,7 +292,9 @@ describe("set_node_share_link", () => {
 		const refused = await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...fileArgs, enabled: true });
 		expect(refused._nay?.message).toBe("Wait until the access change of a folder above finishes");
 		expect(await read_links(f.t, nodeId)).toHaveLength(0);
-		expect(await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...fileArgs, enabled: false })).toEqual({
+		expect(
+			await f.asOwner.mutation(api.files_share_links.set_node_share_link, { ...fileArgs, enabled: false }),
+		).toEqual({
 			_yay: null,
 		});
 

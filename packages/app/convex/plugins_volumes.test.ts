@@ -617,13 +617,16 @@ describe("volume tenant API isolation", () => {
 			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 				const value = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
 				const parsed = new URL(value);
-				const key = parsed.searchParams.get("key") ?? decodeURIComponent(parsed.pathname.replace(/^\/test-files-bucket\//u, ""));
+				const key =
+					parsed.searchParams.get("key") ?? decodeURIComponent(parsed.pathname.replace(/^\/test-files-bucket\//u, ""));
 				if (value.startsWith("https://r2.test/upload?") && init?.method === "PUT" && key) {
 					objects.set(key, init.body ?? "");
 					return new Response(null, { status: 200 });
 				}
 				const body = key ? objects.get(key) : undefined;
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+				return body === undefined
+					? new Response(null, { status: 404 })
+					: new Response(body, { headers: { ETag: '"saved-file"' } });
 			}),
 		);
 		const tenantPath = "/tenant-visible.md";

@@ -452,8 +452,7 @@ async function db_validate_items(
 }
 
 async function db_capture_review(ctx: MutationCtx, proposal: Doc<"files_pending_updates">, kind: "accept" | "discard") {
-	if (kind === "discard")
-		return { reviewHeader: null, reviewSource: null, expectedDestinationParentPath: null };
+	if (kind === "discard") return { reviewHeader: null, reviewSource: null, expectedDestinationParentPath: null };
 	// Keep the reviewed links when the owner edits a proposal during Save.
 	const {
 		_id: _proposalId,

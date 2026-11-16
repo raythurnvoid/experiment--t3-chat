@@ -13,13 +13,15 @@ describe("CHILD_BUNDLE_JS", () => {
 		const window: { __pwCleanupScreenshot?: () => void } = {};
 		const document = {
 			createTreeWalker: (root: unknown) => ({ currentNode: root, nextNode: () => false }),
-			querySelectorAll: () => [{
-				style: {
-					getPropertyValue: () => "blue",
-					getPropertyPriority: () => "important",
-					setProperty,
+			querySelectorAll: () => [
+				{
+					style: {
+						getPropertyValue: () => "blue",
+						getPropertyPriority: () => "important",
+						setProperty,
+					},
 				},
-			}],
+			],
 		};
 
 		// Playwright sends this wrapper to the page, where worker helpers do not exist.

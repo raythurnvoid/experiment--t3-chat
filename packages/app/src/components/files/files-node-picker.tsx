@@ -317,8 +317,16 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 				}
 			: ("skip" as const);
 	const searchOptions = { initialNumItems: FILES_NODE_PICKER_PAGE_SIZE };
-	const normalSearch = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.normal), searchOptions);
-	const cohortSearch = useFilesPaginatedQuery(app_convex_api.files_nodes.search_saved, searchArgs(savedView.cohort), searchOptions);
+	const normalSearch = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		searchArgs(savedView.normal),
+		searchOptions,
+	);
+	const cohortSearch = useFilesPaginatedQuery(
+		app_convex_api.files_nodes.search_saved,
+		searchArgs(savedView.cohort),
+		searchOptions,
+	);
 	const search = files_merge_search_lists(
 		savedView.normal === null ? [] : [normalSearch, ...(savedView.cohort === null ? [] : [cohortSearch])],
 		true,
@@ -340,16 +348,14 @@ export const FilesNodePicker = memo(function FilesNodePicker(props: FilesNodePic
 						},
 					],
 		);
-	const searchRows = search.rows.map(
-		(row): FilesNodePicker_Row => ({
-			nodeId: row.nodeId,
-			name: path_name_of(row.path),
-			path: row.path,
-			kind: row.kind,
-			contentType: row.contentType,
-			locked: row.locked,
-		}),
-	);
+	const searchRows = search.rows.map((row): FilesNodePicker_Row => ({
+		nodeId: row.nodeId,
+		name: path_name_of(row.path),
+		path: row.path,
+		kind: row.kind,
+		contentType: row.contentType,
+		locked: row.locked,
+	}));
 	const sharedRows = browse.shared ? toPickerRows(browse.shared.rows) : [];
 	const childRows = toPickerRows(browse.children.rows);
 

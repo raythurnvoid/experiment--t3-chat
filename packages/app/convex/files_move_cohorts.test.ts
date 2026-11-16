@@ -359,10 +359,12 @@ describe("Move cohort publication", () => {
 		let restricted = false;
 		const finished = await finish_cohort(f, async (cohort) => {
 			if (restricted || cohort.workPhase !== "publish") return;
-			expect(await f.asUser.mutation(api.files_sharing.restrict_node, {
-				membershipId: f.db.membershipId,
-				nodeId: f.nodes[0]!,
-			})).toEqual({ _yay: null });
+			expect(
+				await f.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: f.nodes[0]!,
+				}),
+			).toEqual({ _yay: null });
 			restricted = true;
 		});
 		expect(restricted).toBe(true);
@@ -780,15 +782,20 @@ describe("Move cohort and folder-wide jobs", () => {
 	test("a Move into a restricted folder rechecks the moved file's comments after publication", async () => {
 		const w = await transfer_workspace();
 		// The raw membership fixture has no lifetime yet. Intake must not create that authority fact here.
-		await w.t.run(async (ctx) => organizations_membership_lifetimes_db_ensure(
-			ctx, (await ctx.db.get("organizations_workspaces_users", w.db.membershipId))!,
-		));
+		await w.t.run(async (ctx) =>
+			organizations_membership_lifetimes_db_ensure(
+				ctx,
+				(await ctx.db.get("organizations_workspaces_users", w.db.membershipId))!,
+			),
+		);
 		const file = await test_create_saved_text_file(w.t, { membershipId: w.db.membershipId, path: "/plan.md" });
 		const target = await w.folder("/restricted");
-		expect(await w.asUser.mutation(api.files_sharing.restrict_node, {
-			membershipId: w.db.membershipId,
-			nodeId: target,
-		})).toEqual({ _yay: null });
+		expect(
+			await w.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: w.db.membershipId,
+				nodeId: target,
+			}),
+		).toEqual({ _yay: null });
 		const reader = await add_reader(w);
 		const asReader = w.t.withIdentity({ issuer: "https://clerk.test", external_id: reader.userId });
 		// Each comment makes its author a member of the file's channel, so both people have counts.

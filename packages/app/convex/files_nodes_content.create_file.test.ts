@@ -296,7 +296,10 @@ describe("create_file_node", () => {
 		const parentId = await folder("docs");
 		const destination = { parentId, path: "block.md/a/note.md" };
 		expect(
-			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, { ...scope, ...destination }),
+			await t.query(internal.files_nodes_create_preflight.get_create_file_node_write_preflight, {
+				...scope,
+				...destination,
+			}),
 		).toEqual({ canWrite: true, targetNodeId: null });
 		const existingAssets = await insertAssets();
 		const existing = await t.mutation(internal.files_nodes_create.create_file_node, {

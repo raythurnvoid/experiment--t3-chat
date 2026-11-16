@@ -21,7 +21,10 @@ beforeEach(() => {
 		url: "https://r2.test/upload",
 	}));
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response(null, { status: 200 })),
+	);
 });
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -278,10 +281,12 @@ describe("Messages authority capture", () => {
 		const f = await test_create_saved_placement_fixture();
 		const channelId = await f.t.run((ctx) => insert_file_channel(ctx, f.db, f.nodeId));
 		const before = await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.db));
-		expect(await f.asUser.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.nodeId,
-		})).toEqual({ _yay: null });
+		expect(
+			await f.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+			}),
+		).toEqual({ _yay: null });
 		expect(await f.t.run((ctx) => channels_notifications_db_get_authority_pins(ctx.db, f.db))).toEqual(before);
 		expect(await f.t.run((ctx) => ctx.db.query("channels_access_jobs").collect())).toMatchObject([{ channelId }]);
 	});

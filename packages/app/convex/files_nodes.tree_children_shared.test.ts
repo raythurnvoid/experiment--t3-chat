@@ -59,9 +59,17 @@ describe("list_tree_children_shared", () => {
 			).toEqual({ _yay: null });
 			await f.t.finishAllScheduledFunctions(vi.runAllTimers, 5_000);
 			const normal = await f.read_page({
-				...member, kind: "file", sort: BY_STATUS, filter: PRESENT, principalIndex: 0, paginationOpts: FIRST_PAGE,
+				...member,
+				kind: "file",
+				sort: BY_STATUS,
+				filter: PRESENT,
+				principalIndex: 0,
+				paginationOpts: FIRST_PAGE,
 			});
-			expect(normal.page.map((row) => row._id), "the member can read shared metadata before Move").toEqual(ids);
+			expect(
+				normal.page.map((row) => row._id),
+				"the member can read shared metadata before Move",
+			).toEqual(ids);
 			const destination = await f.asOwner.mutation(api.files_nodes.create_folder_node, {
 				membershipId: f.db.membershipId,
 				parentId: "root",
@@ -80,11 +88,13 @@ describe("list_tree_children_shared", () => {
 				targetParentId: destination._yay.nodeId,
 			});
 			if (started._nay) throw new Error(started._nay.message);
-			const readCohort = () => f.t.run((ctx) =>
-				ctx.db.query("files_move_cohorts")
-					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
-					.unique(),
-			);
+			const readCohort = () =>
+				f.t.run((ctx) =>
+					ctx.db
+						.query("files_move_cohorts")
+						.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", started._yay.runId))
+						.unique(),
+				);
 			for (let step = 0; step < 100; step++) {
 				const cohort = await readCohort();
 				if (cohort?.workPhase === "publish") break;
@@ -99,7 +109,8 @@ describe("list_tree_children_shared", () => {
 			}
 			const cohort = await readCohort();
 			expect(cohort, "the public Move stages real metadata and share rows before publication").toMatchObject({
-				workPhase: "publish", visibleView: "before",
+				workPhase: "publish",
+				visibleView: "before",
 			});
 			if (!cohort) throw new Error("Expected the Move cohort");
 			const read = (owner: boolean, pageView?: files_IndexDirectoryView, cursor: string | null = null) => {
@@ -136,16 +147,19 @@ describe("list_tree_children_shared", () => {
 				for (const owner of [false, true]) {
 					const first = await read(owner);
 					expect(
-						first.page.map((row) => [row._id, row.path]), "the selected metadata stream returns a real saved row",
+						first.page.map((row) => [row._id, row.path]),
+						"the selected metadata stream returns a real saved row",
 					).toEqual([[ids[0], `${view === "before" ? "" : "/destination"}/table/a.md`]]);
 					expect(
-						first.directoryView, "nonempty shared and restricted metadata pages use the selected directory tag",
+						first.directoryView,
+						"nonempty shared and restricted metadata pages use the selected directory tag",
 					).toEqual(expectedView);
 					expect(first.isDone, "the access check starts from a real continuation").toBe(false);
 					const next = await read(owner, first.directoryView, first.continueCursor);
 					expect(next.directoryView).toEqual(expectedView);
 					expect(
-						next.page.map((row) => row._id), "matching tagged continuations reach another metadata row",
+						next.page.map((row) => row._id),
+						"matching tagged continuations reach another metadata row",
 					).toEqual([ids[1]]);
 				}
 			}

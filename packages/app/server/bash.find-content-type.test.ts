@@ -101,11 +101,13 @@ describe("bash_run_command", () => {
 			expect(exact.stdout).toBe(`${restricted_mount}/typed/a-locked/open/deep.dat\n`);
 			const result = await runner.run({ command: `find ${restricted_mount}/typed --content-type image/` });
 			expect.soft(result.stdout).toBe(`${restricted_mount}/typed/z-hit.dat\n`);
-			expect.soft(result.stderr).toBe(
-				["a-locked", "b-locked"]
-					.map((name) => `find: '${restricted_mount}/typed/${name}': Permission denied\n`)
-					.join(""),
-			);
+			expect
+				.soft(result.stderr)
+				.toBe(
+					["a-locked", "b-locked"]
+						.map((name) => `find: '${restricted_mount}/typed/${name}': Permission denied\n`)
+						.join(""),
+				);
 			expect.soft(result.metadata.exitCode).toBe(1);
 		});
 

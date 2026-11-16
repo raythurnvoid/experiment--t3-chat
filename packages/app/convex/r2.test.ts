@@ -12,15 +12,8 @@ import {
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 } from "./setup.test.ts";
-import {
-	r2,
-	r2_confirmed_object_delete,
-	r2_server_side_copy,
-} from "./r2_client.ts";
-import {
-	r2_enqueue_object_deletion_job,
-	r2_PUT_MAY_ARRIVE_MARGIN_MS,
-} from "./r2_assets.ts";
+import { r2, r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
+import { r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { files_media_validation_db_advance_version } from "./files_media_validation.ts";
 import { files_updated_by_db_delete_for_node } from "./files_updated_by.ts";
 import {
@@ -599,7 +592,8 @@ async function get_active_file_node_by_path(
 		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId).eq("moveCohortId", undefined)
+				.eq("workspaceId", args.workspaceId)
+				.eq("moveCohortId", undefined)
 				.eq("path", args.path)
 				.eq("archiveOperationId", null),
 		)
@@ -2592,45 +2586,88 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const parent = await asUser.mutation(api.files_nodes.create_folder_node, { membershipId: db.membershipId, parentId: "root", path: "uploads" });
-		const destination = await asUser.mutation(api.files_nodes.create_folder_node, { membershipId: db.membershipId, parentId: "root", path: "moved" });
+		const parent = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path: "uploads",
+		});
+		const destination = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: "root",
+			path: "moved",
+		});
 		if (parent._nay || destination._nay) throw new Error("Expected folders");
 		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
-			membershipId: db.membershipId, parentId: parent._yay.nodeId, filename: "file.png", contentType: "image/png", size: 1024,
+			membershipId: db.membershipId,
+			parentId: parent._yay.nodeId,
+			filename: "file.png",
+			contentType: "image/png",
+			size: 1024,
 		});
 		if (upload._nay) throw new Error(upload._nay.message);
 		const { nodeId, assetId } = upload._yay;
 		const join = vi.spyOn(pending_overlay, "files_pending_overlay_db_can_join_step").mockResolvedValue(false);
 		onTestFinished(() => join.mockRestore());
 		const started = await asUser.mutation(api.files_transfer.accept_input, {
-			membershipId: db.membershipId, requestId: crypto.randomUUID(), kind: "move", expectedSourceCount: 1,
-			sourceIds: [parent._yay.nodeId], targetParentId: destination._yay.nodeId,
+			membershipId: db.membershipId,
+			requestId: crypto.randomUUID(),
+			kind: "move",
+			expectedSourceCount: 1,
+			sourceIds: [parent._yay.nodeId],
+			targetParentId: destination._yay.nodeId,
 		});
 		if (started._nay) throw new Error(started._nay.message);
-		expect(await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId })).toEqual({ _yay: null });
-		const event = { assetId, r2Key: expected_asset_key({ ...db, assetId }), size: 2048, eventId: "ordinary-oversized-move" };
+		expect(
+			await asUser.mutation(api.files_transfer.seal, { membershipId: db.membershipId, runId: started._yay.runId }),
+		).toEqual({ _yay: null });
+		const event = {
+			assetId,
+			r2Key: expected_asset_key({ ...db, assetId }),
+			size: 2048,
+			eventId: "ordinary-oversized-move",
+		};
 		const cleanupNow = Date.now() + 9 * DAY_MS;
-		const snapshot = () => t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", nodeId), asset: await ctx.db.get("files_r2_assets", assetId),
-			deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
-		}));
-		let checked = false;
-		await test_finish_transfer_run(asUser, started._yay.runId, async () => {
-			if (checked) return;
-			const holds = await t.run(async (ctx) => ({
-				parent: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", parent._yay.nodeId)).first(),
-				child: await ctx.db.query("files_move_source_reservations").withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", nodeId)).first(),
+		const snapshot = () =>
+			t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", nodeId),
+				asset: await ctx.db.get("files_r2_assets", assetId),
+				deletions: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
 			}));
-			if (holds.parent?.mode !== "children" || holds.child) return;
-			const before = await snapshot();
-			if (mode === "retire") await expect(t.mutation(internal.r2.retire_missing_upload, { assetId, _test_now: cleanupNow }), "missing ordinary upload waits without throwing").resolves.toBeNull();
-			else {
-				await expect(t.mutation(internal.r2.process_uploaded_asset_event, event), "oversized ordinary upload waits without throwing").resolves.toEqual({ _yay: null });
-				expect(await t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toHaveLength(1);
-			}
-			expect(await snapshot(), "parent hold preserves the unfinished upload").toEqual(before);
-			checked = true;
-		}, { stepwise: true });
+		let checked = false;
+		await test_finish_transfer_run(
+			asUser,
+			started._yay.runId,
+			async () => {
+				if (checked) return;
+				const holds = await t.run(async (ctx) => ({
+					parent: await ctx.db
+						.query("files_move_source_reservations")
+						.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", parent._yay.nodeId))
+						.first(),
+					child: await ctx.db
+						.query("files_move_source_reservations")
+						.withIndex("by_source", (q) => q.eq("source.kind", "saved").eq("source.id", nodeId))
+						.first(),
+				}));
+				if (holds.parent?.mode !== "children" || holds.child) return;
+				const before = await snapshot();
+				if (mode === "retire")
+					await expect(
+						t.mutation(internal.r2.retire_missing_upload, { assetId, _test_now: cleanupNow }),
+						"missing ordinary upload waits without throwing",
+					).resolves.toBeNull();
+				else {
+					await expect(
+						t.mutation(internal.r2.process_uploaded_asset_event, event),
+						"oversized ordinary upload waits without throwing",
+					).resolves.toEqual({ _yay: null });
+					expect(await t.run((ctx) => ctx.db.query("files_move_waiters").collect())).toHaveLength(1);
+				}
+				expect(await snapshot(), "parent hold preserves the unfinished upload").toEqual(before);
+				checked = true;
+			},
+			{ stepwise: true },
+		);
 		expect(checked, "native Move reached the parent-only hold").toBe(true);
 		if (mode === "retire") await t.mutation(internal.r2.retire_missing_upload, { assetId, _test_now: cleanupNow });
 		else await t.mutation(internal.r2.process_uploaded_asset_event, event);
@@ -2718,39 +2755,57 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(finalizedAsset).not.toBeNull();
 	});
 
-	test.each(["assetId", "snapshotAssetId"] as const)("keeps an asset owned by preparing content through %s", async (field) => {
-		const t = test_convex();
-		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
-		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
-			membershipId: db.membershipId, parentId: "root", filename: "saved.png", contentType: "image/png", size: 128,
-		});
-		if (upload._nay) throw new Error(upload._nay.message);
-		const now = Date.now();
-		const assetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1, r2Key: "test/preparing-content" });
-		const headId = await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			if (!node?.contentHeadId) throw new Error("Expected the saved content owner");
-			const head = await ctx.db.get("files_saved_content_heads", node.contentHeadId);
-			if (!head) throw new Error("Expected the saved content header");
-			const { _id, _creationTime, ...values } = head;
-			// Only the candidate owns this asset. It has no physical snapshot or Move asset claim.
-			await ctx.db.insert("files_saved_content_heads", { ...values, [field]: assetId, ready: false, retired: true });
-			return await ctx.db.insert("files_saved_content_heads", { ...values, [field]: assetId, ready: false, retired: false });
-		});
-		const sweep = () => t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
-			_test_now: now, _test_disableReschedule: true,
-		});
-		expect((await sweep()).deletedCount, "A preparing head keeps its owned asset").toBe(0);
-		expect(await get_deletion_job_by_key(t, "test/preparing-content")).toBeNull();
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).not.toBeNull();
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_saved_content_heads", headId, { retired: true });
-			await ctx.db.patch("files_r2_assets", assetId, { unfinalizedExpiresAt: now - 1 });
-		});
-		expect((await sweep()).deletedCount, "Retired heads do not keep unused assets").toBe(1);
-		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
-	});
+	test.each(["assetId", "snapshotAssetId"] as const)(
+		"keeps an asset owned by preparing content through %s",
+		async (field) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: "root",
+				filename: "saved.png",
+				contentType: "image/png",
+				size: 128,
+			});
+			if (upload._nay) throw new Error(upload._nay.message);
+			const now = Date.now();
+			const assetId = await seed_unfinalized_asset(t, {
+				...db,
+				unfinalizedExpiresAt: now - 1,
+				r2Key: "test/preparing-content",
+			});
+			const headId = await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", upload._yay.nodeId);
+				if (!node?.contentHeadId) throw new Error("Expected the saved content owner");
+				const head = await ctx.db.get("files_saved_content_heads", node.contentHeadId);
+				if (!head) throw new Error("Expected the saved content header");
+				const { _id, _creationTime, ...values } = head;
+				// Only the candidate owns this asset. It has no physical snapshot or Move asset claim.
+				await ctx.db.insert("files_saved_content_heads", { ...values, [field]: assetId, ready: false, retired: true });
+				return await ctx.db.insert("files_saved_content_heads", {
+					...values,
+					[field]: assetId,
+					ready: false,
+					retired: false,
+				});
+			});
+			const sweep = () =>
+				t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+					_test_now: now,
+					_test_disableReschedule: true,
+				});
+			expect((await sweep()).deletedCount, "A preparing head keeps its owned asset").toBe(0);
+			expect(await get_deletion_job_by_key(t, "test/preparing-content")).toBeNull();
+			expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).not.toBeNull();
+			await t.run(async (ctx) => {
+				await ctx.db.patch("files_saved_content_heads", headId, { retired: true });
+				await ctx.db.patch("files_r2_assets", assetId, { unfinalizedExpiresAt: now - 1 });
+			});
+			expect((await sweep()).deletedCount, "Retired heads do not keep unused assets").toBe(1);
+			expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+		},
+	);
 
 	test("a batched sweep reschedules itself until the backlog is drained", async () => {
 		vi.useFakeTimers();
@@ -3829,8 +3884,8 @@ describe("recover_unfinalized_upload_publication", () => {
 		const upload = await create_upload_fixture({ t, db, filename: "oversized-recovery.bin", size: 8 });
 		r2Objects.set(upload.key, new Uint8Array(9));
 		r2ObjectMetadata.set(upload.key, { size: 9, etag: "oversized-recovery-etag" });
-		const expiresAt = await t.run(async (ctx) =>
-			(await ctx.db.get("files_r2_assets", upload.assetId))!.uploadUrlExpiresAt!,
+		const expiresAt = await t.run(
+			async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))!.uploadUrlExpiresAt!,
 		);
 		const before = await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first());
 		const recovery = {
@@ -3859,7 +3914,7 @@ describe("recover_unfinalized_upload_publication", () => {
 					.withIndex("by_workspace_quotaName", (q) =>
 						q.eq("workspaceId", db.workspaceId).eq("quotaName", "stored_file_bytes"),
 					)
-				.first(),
+					.first(),
 			),
 		).toBeNull();
 		expect(await t.run((ctx) => ctx.db.query("billing_usage_snapshots").first())).toEqual(before);
@@ -4670,7 +4725,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		const kept = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),
 			asset: await ctx.db.get("files_r2_assets", upload.assetId),
-			chunks: (await ctx.db.query("files_text_chunks").collect()).filter((chunk) => "fileNodeId" in chunk && chunk.fileNodeId === upload.nodeId),
+			chunks: (await ctx.db.query("files_text_chunks").collect()).filter(
+				(chunk) => "fileNodeId" in chunk && chunk.fileNodeId === upload.nodeId,
+			),
 		}));
 		// Retrying cannot change the text, so the upload settles as a stored file with no text.
 		expect(kept.node).toMatchObject({ assetId: upload.assetId, textKind: null });

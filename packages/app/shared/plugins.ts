@@ -1045,7 +1045,9 @@ export const plugins_PAGE_AGENT_TOOL_NAME_REGEX = /^[a-z][a-z0-9_]{0,47}$/u;
 
 const page_agent_tool_schema = z
 	.object({
-		name: z.string().regex(plugins_PAGE_AGENT_TOOL_NAME_REGEX, "Page agent tool names must match ^[a-z][a-z0-9_]{0,47}$"),
+		name: z
+			.string()
+			.regex(plugins_PAGE_AGENT_TOOL_NAME_REGEX, "Page agent tool names must match ^[a-z][a-z0-9_]{0,47}$"),
 		/**
 		 * Model-facing text. It reaches the system tools list, so the review reads it like a skill.
 		 */

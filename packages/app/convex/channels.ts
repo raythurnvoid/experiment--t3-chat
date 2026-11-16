@@ -559,8 +559,7 @@ export const open_direct_channel_by_id = mutation({
 		const member = access._yay.member;
 		if (!member) return Result({ _nay: { message: "Not found" } });
 		// Visible and stale choices are reads. Charge only a real reopen.
-		if (member.visibilityRevision !== args.expectedVisibilityRevision)
-			return Result({ _yay: { opened: false } });
+		if (member.visibilityRevision !== args.expectedVisibilityRevision) return Result({ _yay: { opened: false } });
 		if (!member.hidden && member.hiddenAtMainSequence === null) return Result({ _yay: { opened: true } });
 		const limit = await rate_limiter_limit_by_key(ctx, { name: "channels_write", key: context._yay.userAuth.id });
 		if (limit) return Result({ _nay: { message: limit.message } });

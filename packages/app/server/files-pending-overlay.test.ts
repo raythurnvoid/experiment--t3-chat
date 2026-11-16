@@ -87,7 +87,6 @@ describe("files_pending_overlay_window_ranges", () => {
 			for (const treePath of ["/a", "/b", "/c"]) rows.push({ kind: "file", lowercaseExtension, treePath });
 		expect_exact_windows(["kind", "lowercaseExtension", "treePath"], rows);
 	});
-
 });
 
 describe("files_pending_overlay_list", () => {
@@ -681,9 +680,8 @@ describe("files_pending_overlay_search_name", () => {
 		const paths: string[] = [];
 		let cursor: string | null = null;
 		for (let page = 0; page < 10; page++) {
-			const result: Awaited<ReturnType<typeof files_pending_overlay_search_name>> = await files_pending_overlay_search_name(
-				{ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">,
-				{
+			const result: Awaited<ReturnType<typeof files_pending_overlay_search_name>> =
+				await files_pending_overlay_search_name({ runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">, {
 					organizationId: f.db.organizationId,
 					workspaceId: f.db.workspaceId,
 					visibilityUserId: f.db.userId,
@@ -693,8 +691,7 @@ describe("files_pending_overlay_search_name", () => {
 					query: "target",
 					numItems: 1,
 					cursor,
-				},
-			);
+				});
 			if (result._nay) throw new Error(result._nay.message);
 			paths.push(...result._yay.items.map((item) => item.path));
 			if (result._yay.isDone) break;

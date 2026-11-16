@@ -2112,10 +2112,7 @@ describe("public API routes", () => {
 describe("invoke file write preconditions", () => {
 	async function seed_file_writer(t: ReturnType<typeof test_convex>) {
 		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "invoke-file-writer" }));
-		const capabilities: plugins_Capability[] = [
-			"workspace.files.own-write",
-			"workspace.files.manage-read-only",
-		];
+		const capabilities: plugins_Capability[] = ["workspace.files.own-write", "workspace.files.manage-read-only"];
 		const fixture = await seed_installation(t, { userId, acceptedCapabilities: capabilities, plan: "Pay As You Go" });
 		const run = await start_plugin_run({ t, fixture, acceptedCapabilities: capabilities, tokenSeed: "e" });
 		await t.run((ctx) =>
@@ -2349,10 +2346,10 @@ describe("invoke file write preconditions", () => {
 					expect(
 						(
 							await test_move_nodes(t, fixture.asUser, {
-									membershipId: fixture.membershipId,
-									itemIds: [fixture.parentId],
-									targetParentId: files_ROOT_ID,
-								})
+								membershipId: fixture.membershipId,
+								itemIds: [fixture.parentId],
+								targetParentId: files_ROOT_ID,
+							})
 						)._nay,
 					).toBeUndefined();
 				} else {

@@ -76,15 +76,13 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 async function create(f: Fixture, kind: "public" | "private" = "public", name = "general") {
 	vi.setSystemTime(Date.now() + 2_001);
-	const result = await f
-		.as(f.sender)
-		.mutation(api.channels.create_channel, {
-			membershipId: f.sender.membershipId,
-			kind,
-			name,
-			topic: "",
-			layout: "messages",
-		});
+	const result = await f.as(f.sender).mutation(api.channels.create_channel, {
+		membershipId: f.sender.membershipId,
+		kind,
+		name,
+		topic: "",
+		layout: "messages",
+	});
 	if (result._nay) throw new Error(result._nay.message);
 	return result._yay.channelId;
 }
@@ -123,14 +121,12 @@ function summary(f: Fixture, person = f.reader) {
 }
 
 async function invite(f: Fixture, channelId: Id<"channels">) {
-	const result = await f
-		.as(f.sender)
-		.mutation(api.channels.add_channel_members, {
-			membershipId: f.sender.membershipId,
-			channelId,
-			userIds: [f.reader.userId],
-			level: "member",
-		});
+	const result = await f.as(f.sender).mutation(api.channels.add_channel_members, {
+		membershipId: f.sender.membershipId,
+		channelId,
+		userIds: [f.reader.userId],
+		level: "member",
+	});
 	if (result._nay) throw new Error(result._nay.message);
 }
 
@@ -177,12 +173,10 @@ describe("Messages totals", () => {
 			unreadInbox: 54,
 			unreadThreads: 0,
 		});
-		const page = await f
-			.as(f.reader)
-			.query(api.channels_messages.list_my_inbox, {
-				membershipId: f.reader.membershipId,
-				paginationOpts: { cursor: null, numItems: 50 },
-			});
+		const page = await f.as(f.reader).query(api.channels_messages.list_my_inbox, {
+			membershipId: f.reader.membershipId,
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
 		expect(page.page).toHaveLength(50);
 		expect(page.isDone).toBe(false);
 		await f.as(f.reader).mutation(api.channels.join_channel, { membershipId: f.reader.membershipId, channelId });
@@ -225,12 +219,10 @@ describe("Messages totals", () => {
 			.mutation(api.channels.mark_read, { membershipId: f.reader.membershipId, channelId, sequence: 2 });
 		await settle(f);
 		expect(await summary(f)).toMatchObject({ unreadInbox: 0, unreadThreads: 1 });
-		await f
-			.as(f.reader)
-			.mutation(api.channels_messages.delete_message, {
-				membershipId: f.reader.membershipId,
-				messageId: root.messageId,
-			});
+		await f.as(f.reader).mutation(api.channels_messages.delete_message, {
+			membershipId: f.reader.membershipId,
+			messageId: root.messageId,
+		});
 		await settle(f);
 		expect(await summary(f), "deleted root with live replies remains an unread followed thread").toMatchObject({
 			unreadThreads: 1,
@@ -245,13 +237,11 @@ describe("Messages totals", () => {
 		const root = await send(f, { kind: "channel", channelId }, { mentionUserIds: [f.reader.userId] });
 		await settle(f);
 		expect(await summary(f)).toMatchObject({ mentionChannels: 1, unreadInbox: 1, unreadThreads: 1 });
-		await f
-			.as(f.reader)
-			.mutation(api.channels_messages.mark_thread_read, {
-				membershipId: f.reader.membershipId,
-				rootMessageId: root.rootMessageId,
-				replySequence: 0,
-			});
+		await f.as(f.reader).mutation(api.channels_messages.mark_thread_read, {
+			membershipId: f.reader.membershipId,
+			rootMessageId: root.rootMessageId,
+			replySequence: 0,
+		});
 		await settle(f);
 		expect(await summary(f), "sequence zero must clear even when the reply cursor stays zero").toMatchObject({
 			mentionChannels: 0,
@@ -265,21 +255,17 @@ describe("Messages totals", () => {
 		async (door) => {
 			const f = await fixture();
 			const channelId = await create(f);
-			await f
-				.as(f.sender)
-				.mutation(api.channels.set_channel_resolvable_threads, {
-					membershipId: f.sender.membershipId,
-					channelId,
-					resolvableThreads: true,
-				});
+			await f.as(f.sender).mutation(api.channels.set_channel_resolvable_threads, {
+				membershipId: f.sender.membershipId,
+				channelId,
+				resolvableThreads: true,
+			});
 			const root = await send(f, { kind: "channel", channelId }, {}, f.reader);
 			await send(f, { kind: "thread", rootMessageId: root.rootMessageId });
-			await f
-				.as(f.reader)
-				.mutation(api.channels_messages.unfollow_thread, {
-					membershipId: f.reader.membershipId,
-					rootMessageId: root.rootMessageId,
-				});
+			await f.as(f.reader).mutation(api.channels_messages.unfollow_thread, {
+				membershipId: f.reader.membershipId,
+				rootMessageId: root.rootMessageId,
+			});
 			await settle(f);
 			expect(await summary(f)).toMatchObject({ unreadThreads: 0 });
 			const args = { membershipId: f.sender.membershipId, rootMessageId: root.rootMessageId };
@@ -301,22 +287,18 @@ describe("Messages access and identity", () => {
 		const channelId = await create(f, "private");
 		await invite(f, channelId);
 		const root = await send(f, { kind: "channel", channelId }, {}, f.reader);
-		await f
-			.as(f.sender)
-			.mutation(api.channels.remove_channel_member, {
-				membershipId: f.sender.membershipId,
-				channelId,
-				userId: f.reader.userId,
-			});
+		await f.as(f.sender).mutation(api.channels.remove_channel_member, {
+			membershipId: f.sender.membershipId,
+			channelId,
+			userId: f.reader.userId,
+		});
 		const reply = await send(f, { kind: "thread", rootMessageId: root.rootMessageId });
 		await settle(f);
 		const read = () =>
-			f
-				.as(f.reader)
-				.query(api.channels_messages.list_my_threads, {
-					membershipId: f.reader.membershipId,
-					paginationOpts: { cursor: null, numItems: 50 },
-				});
+			f.as(f.reader).query(api.channels_messages.list_my_threads, {
+				membershipId: f.reader.membershipId,
+				paginationOpts: { cursor: null, numItems: 50 },
+			});
 		expect((await read()).page).toEqual([]);
 		const follower = await f.t.run((ctx) =>
 			ctx.db
@@ -329,13 +311,11 @@ describe("Messages access and identity", () => {
 		await settle(f);
 		expect((await read()).page[0]?.state).toBe("readable");
 		expect(await summary(f)).toMatchObject({ unreadThreads: 1 });
-		await f
-			.as(f.sender)
-			.mutation(api.channels.remove_channel_member, {
-				membershipId: f.sender.membershipId,
-				channelId,
-				userId: f.reader.userId,
-			});
+		await f.as(f.sender).mutation(api.channels.remove_channel_member, {
+			membershipId: f.sender.membershipId,
+			channelId,
+			userId: f.reader.userId,
+		});
 		await settle(f);
 		const locked = (await read()).page;
 		expect(locked).toEqual([{ state: "locked", followerId: follower!._id, kind: "thread" }]);
@@ -352,12 +332,10 @@ describe("Messages access and identity", () => {
 	});
 	test("same-membership restore catches up only main activity after Close", async () => {
 		const f = await fixture();
-		const opened = await f
-			.as(f.sender)
-			.mutation(api.channels.open_direct_channel, {
-				membershipId: f.sender.membershipId,
-				otherUserIds: [f.reader.userId, f.owner.userId],
-			});
+		const opened = await f.as(f.sender).mutation(api.channels.open_direct_channel, {
+			membershipId: f.sender.membershipId,
+			otherUserIds: [f.reader.userId, f.owner.userId],
+		});
 		const channelId = opened._yay!.channelId;
 		const root = await send(f, { kind: "channel", channelId });
 		await f.as(f.reader).mutation(api.channels.hide_direct_channel, { membershipId: f.reader.membershipId, channelId });
@@ -388,36 +366,30 @@ describe("Messages access and identity", () => {
 		await invite(f, channelId);
 		const message = await send(f, { kind: "channel", channelId }, { mentionUserIds: [f.reader.userId] });
 		await settle(f);
-		await f
-			.as(f.sender)
-			.mutation(api.channels.remove_channel_member, {
-				membershipId: f.sender.membershipId,
-				channelId,
-				userId: f.reader.userId,
-			});
+		await f.as(f.sender).mutation(api.channels.remove_channel_member, {
+			membershipId: f.sender.membershipId,
+			channelId,
+			userId: f.reader.userId,
+		});
 		expect(await summary(f)).toMatchObject({ state: "updating" });
 		await settle(f);
 		const before = await summary(f);
 		const read = () =>
-			f
-				.as(f.reader)
-				.query(api.channels_messages.list_my_inbox, {
-					membershipId: f.reader.membershipId,
-					paginationOpts: { cursor: null, numItems: 50 },
-				});
+			f.as(f.reader).query(api.channels_messages.list_my_inbox, {
+				membershipId: f.reader.membershipId,
+				paginationOpts: { cursor: null, numItems: 50 },
+			});
 		const locked = (await read()).page;
 		expect(locked).toEqual([{ state: "locked", inboxId: expect.any(String), kind: "mention" }]);
-		await f
-			.as(f.sender)
-			.mutation(api.channels_messages.edit_message, {
-				membershipId: f.sender.membershipId,
-				messageId: message.messageId,
-				expectedRevision: 0,
-				body: "Edited",
-				mentionUserIds: [],
-				fileMentionIds: [],
-				fileQuotes: [],
-			});
+		await f.as(f.sender).mutation(api.channels_messages.edit_message, {
+			membershipId: f.sender.membershipId,
+			messageId: message.messageId,
+			expectedRevision: 0,
+			body: "Edited",
+			mentionUserIds: [],
+			fileMentionIds: [],
+			fileQuotes: [],
+		});
 		await f
 			.as(f.sender)
 			.mutation(api.channels.rename_channel, { membershipId: f.sender.membershipId, channelId, name: "secret-rename" });
@@ -460,12 +432,10 @@ describe("Messages access and identity", () => {
 
 	test("Close ignores ordinary replies, stale opens, and retried accepted sends", async () => {
 		const f = await fixture();
-		const opened = await f
-			.as(f.sender)
-			.mutation(api.channels.open_direct_channel, {
-				membershipId: f.sender.membershipId,
-				otherUserIds: [f.reader.userId],
-			});
+		const opened = await f.as(f.sender).mutation(api.channels.open_direct_channel, {
+			membershipId: f.sender.membershipId,
+			otherUserIds: [f.reader.userId],
+		});
 		const channelId = opened._yay!.channelId;
 		const clientMessageId = crypto.randomUUID();
 		const root = await send(f, { kind: "channel", channelId }, { clientMessageId }, f.reader);
@@ -476,13 +446,11 @@ describe("Messages access and identity", () => {
 		await f.as(f.reader).mutation(api.channels.hide_direct_channel, { membershipId: f.reader.membershipId, channelId });
 		await send(f, { kind: "thread", rootMessageId: root.rootMessageId });
 		await send(f, { kind: "channel", channelId }, { clientMessageId }, f.reader);
-		const stale = await f
-			.as(f.reader)
-			.mutation(api.channels.open_direct_channel_by_id, {
-				membershipId: f.reader.membershipId,
-				channelId,
-				expectedVisibilityRevision: revision,
-			});
+		const stale = await f.as(f.reader).mutation(api.channels.open_direct_channel_by_id, {
+			membershipId: f.reader.membershipId,
+			channelId,
+			expectedVisibilityRevision: revision,
+		});
 		expect(stale._yay?.opened).toBe(false);
 		expect((await state())!.member!.hidden).toBe(true);
 		await send(f, { kind: "thread", rootMessageId: root.rootMessageId }, { alsoInChannel: true });
@@ -664,23 +632,19 @@ describe("Messages paging", () => {
 				});
 		}
 		for (const section of ["starred", "channels", "direct", "files"] as const) {
-			const first = await f
-				.as(f.reader)
-				.query(api.channels.list_my_channels, {
-					membershipId: f.reader.membershipId,
-					section,
-					paginationOpts: { cursor: null, numItems: 50 },
-				});
+			const first = await f.as(f.reader).query(api.channels.list_my_channels, {
+				membershipId: f.reader.membershipId,
+				section,
+				paginationOpts: { cursor: null, numItems: 50 },
+			});
 			expect(first.page, `${section} first page stays full despite excluded joins`).toHaveLength(50);
 			expect(first.page.every((item) => item.state === "readable")).toBe(true);
 			expect(first.isDone).toBe(false);
-			const next = await f
-				.as(f.reader)
-				.query(api.channels.list_my_channels, {
-					membershipId: f.reader.membershipId,
-					section,
-					paginationOpts: { cursor: first.continueCursor, numItems: 50 },
-				});
+			const next = await f.as(f.reader).query(api.channels.list_my_channels, {
+				membershipId: f.reader.membershipId,
+				section,
+				paginationOpts: { cursor: first.continueCursor, numItems: 50 },
+			});
 			expect(next.page).toHaveLength(section === "starred" || section === "direct" ? 10 : 50);
 			expect(new Set([...first.page, ...next.page].map((item) => item.memberId)).size).toBe(
 				first.page.length + next.page.length,
@@ -703,15 +667,13 @@ describe("Messages paging", () => {
 		await create(f, "public", "a".repeat(80));
 		const key = (await summary(f))!.accessScopeKey;
 		const read = (prefix: string) =>
-			f
-				.as(f.reader)
-				.query(api.channels.browse_public_channels, {
-					membershipId: f.reader.membershipId,
-					accessScopeKey: key,
-					archived: false,
-					prefix,
-					paginationOpts: { cursor: null, numItems: 50 },
-				});
+			f.as(f.reader).query(api.channels.browse_public_channels, {
+				membershipId: f.reader.membershipId,
+				accessScopeKey: key,
+				archived: false,
+				prefix,
+				paginationOpts: { cursor: null, numItems: 50 },
+			});
 		expect((await read(" ALPHA- ")).page).toHaveLength(1);
 		expect((await read("alpha")).page).toHaveLength(1);
 		expect((await read("a")).page).toHaveLength(2);
@@ -825,13 +787,11 @@ describe("Messages repair", () => {
 				.unique(),
 		))!;
 		await f.t.mutation(internal.channels_notifications.drain_summary_job, { jobId: old._id, _test_batchSize: 1 });
-		await f
-			.as(f.sender)
-			.mutation(api.channels.remove_channel_member, {
-				membershipId: f.sender.membershipId,
-				channelId,
-				userId: f.reader.userId,
-			});
+		await f.as(f.sender).mutation(api.channels.remove_channel_member, {
+			membershipId: f.sender.membershipId,
+			channelId,
+			userId: f.reader.userId,
+		});
 		await invite(f, channelId);
 		await f.t.mutation(internal.channels_notifications.drain_summary_job, { jobId: old._id });
 		expect(await summary(f)).toMatchObject({ state: "updating" });
@@ -913,12 +873,10 @@ describe("Messages repair", () => {
 		))!;
 		await f.t.mutation(internal.channels_notifications.drain_summary_job, { jobId: job._id, _test_batchSize: 1 });
 		await f.t.mutation(internal.channels_notifications.drain_summary_job, { jobId: job._id, _test_batchSize: 1 });
-		await f
-			.as(f.sender)
-			.mutation(api.channels_messages.delete_message, {
-				membershipId: f.sender.membershipId,
-				messageId: first.messageId,
-			});
+		await f.as(f.sender).mutation(api.channels_messages.delete_message, {
+			membershipId: f.sender.membershipId,
+			messageId: first.messageId,
+		});
 		await send(f, { kind: "channel", channelId }, { mentionUserIds: [f.reader.userId] });
 		await settle(f);
 		expect(await summary(f)).toMatchObject({ state: "delayed", unreadInbox: 2 });
@@ -950,15 +908,13 @@ describe("Messages repair", () => {
 		expect(first?.state).toBe("updating");
 		expect(second?.state).toBe("updating");
 		expect(second?.accessScopeKey).not.toBe(first?.accessScopeKey);
-		const stale = await f
-			.as(f.reader)
-			.query(api.channels.browse_public_channels, {
-				membershipId: f.reader.membershipId,
-				accessScopeKey: oldKey,
-				archived: false,
-				prefix: "",
-				paginationOpts: { cursor: null, numItems: 50 },
-			});
+		const stale = await f.as(f.reader).query(api.channels.browse_public_channels, {
+			membershipId: f.reader.membershipId,
+			accessScopeKey: oldKey,
+			archived: false,
+			prefix: "",
+			paginationOpts: { cursor: null, numItems: 50 },
+		});
 		expect(stale.page).toEqual([]);
 		await settle(f);
 		expect(await summary(f)).toMatchObject({ state: "delayed", unreadInbox: 1 });

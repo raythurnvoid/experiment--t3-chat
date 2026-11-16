@@ -104,8 +104,7 @@ type Scope = { organizationId: Id<"organizations">; workspaceId: Id<"organizatio
  */
 function files_access_version_messages_file_changed(before: Fields | null, after: Fields | null) {
 	return (
-		(before === null) !== (after === null) ||
-		MESSAGES_FILE_FIELDS.some((field) => before?.[field] !== after?.[field])
+		(before === null) !== (after === null) || MESSAGES_FILE_FIELDS.some((field) => before?.[field] !== after?.[field])
 	);
 }
 

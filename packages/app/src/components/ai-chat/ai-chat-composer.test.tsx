@@ -71,7 +71,9 @@ const mentionTreeNodes = [
  */
 function mention_pages(query: unknown, args: Record<string, unknown>) {
 	return getFunctionName(query as FunctionReference<"query">) ===
-		getFunctionName(app_convex_api.files_tree.list_tree_children) && args.stream === "normal" && args.restricted === false
+		getFunctionName(app_convex_api.files_tree.list_tree_children) &&
+		args.stream === "normal" &&
+		args.restricted === false
 		? mentionTreeNodes.filter((node) => node.parentId === args.parentId && node.kind === args.kind)
 		: [];
 }

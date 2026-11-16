@@ -193,8 +193,7 @@ URLs carry that mode in their query. The web slot keeps its existing object name
 the file slot adds `:file`. Existing any-mode sessions must be closed before
 deploying this strict contract.
 Operational outcomes return HTTP 200 with `{ ok: true }` or
-`{ ok: false, error: { code, message } }`. Transport failures (401, 400, 413,
-503) use `{ ok: false, error }` with no session detail.
+`{ ok: false, error: { code, message } }`. Transport failures (401, 400, 413, 503) use `{ ok: false, error }` with no session detail.
 
 - `POST /internal/browser/open` — claim admission, acquire one provider
   browser, and load the snapshot. Body: `mode: "file"`, optional `attemptId`
@@ -345,7 +344,7 @@ Operational outcomes return HTTP 200 with `{ ok: true }` or
    The object checks that the URL, hello, and stored session have the same ids.
 2. The object owns all viewer sockets and answers
    `{ t: "hello", mode, viewerId, viewport, control, controlGen, loadGen, tabId, tabGen,
-   viewGen, viewedTabId, policyRevision, tabs }`. One shared CDP
+viewGen, viewedTabId, policyRevision, tabs }`. One shared CDP
    screencast produces JPEG frames for all viewers. Provider credentials and
    raw CDP commands never reach the client.
 3. Each `{ t: "frame", seq, loadGen, tabId, tabGen, viewGen }` is immediately followed by its binary
@@ -469,7 +468,7 @@ the shared selected tab. Agent commands name their own exact tab.
 - File choosers and downloads: see Downloads and uploads below.
 - Viewer messages may be 16,384 characters. New messages:
   `{ t: "nav", seq, controlGen, tabId, tabGen, viewGen,
-  action: "go"|"back"|"forward"|"reload"|"stop", url? }`
+action: "go"|"back"|"forward"|"reload"|"stop", url? }`
   (answered by `{ t: "nav-ack", seq, ok, code? }`), and the input kind
   `text.insert` (1–4000 characters, one paste-like call). The object pushes
   `{ t: "location", url, title, loading, canGoBack, canGoForward }`,
@@ -538,7 +537,7 @@ Chrome never saves a file (`Browser.setDownloadBehavior` `deny`). Web mode
 catches downloads itself and keeps them only in object memory.
 
 - The host page always has the `Fetch` pattern `{ urlPattern: "*",
-  resourceType: "Document", requestStage: "Response" }`. Every pause gets
+resourceType: "Document", requestStage: "Response" }`. Every pause gets
   exactly one answer, even when a step throws. 3xx, 204, 205, HEAD, and network
   errors continue. A download is `Content-Disposition: attachment` or a type
   Chrome does not show. Chrome shows `text/html`, `text/plain`, `text/css`,
@@ -716,19 +715,19 @@ session open. Only a hard timeout of the isolate closes the session.
 
 ## Configuration
 
-| Name                     | Kind              | Purpose                                                        |
-| ------------------------ | ----------------- | -------------------------------------------------------------- |
-| `BROWSER_RUNNER_SECRET`  | secret (required) | Bearer token the caller must present.                          |
-| `BROWSER_PROFILE_KEY`    | secret (required) | 32 random bytes, base64. One half of the saved-cookie key.     |
-| `BROWSER_RUNNER_DISABLED`| var (optional)    | Set to `"true"` to refuse new work (503 kill switch).          |
-| `BROWSER_PREVIEW_URL`    | var               | The `/v0` runtime URL the browser bytes come from.             |
-| `BROWSER_WEB_DENIED_HOSTS` | var             | Comma list of hosts web mode may not open (and their subdomains). |
-| `BROWSER_APP_ORIGINS`    | var               | Comma list of app origins allowed to call `PUT /viewer/upload` (CORS). |
-| `BROWSER`                | browser binding   | The Browser Run binding (declared in `wrangler.jsonc`).        |
-| `LOADER`                 | worker_loaders    | The Worker Loader binding (declared in `wrangler.jsonc`).      |
-| `BROWSER_SESSIONS`       | durable object    | Session, lease, and deadline state.                            |
-| `BROWSER_REGISTRY`       | durable object    | Deployment and workspace admission slots.                      |
-| `PLAYWRITER_SESSIONS`    | durable object    | Remote socket, target, revisions, budgets, and receipts.         |
+| Name                       | Kind              | Purpose                                                                |
+| -------------------------- | ----------------- | ---------------------------------------------------------------------- |
+| `BROWSER_RUNNER_SECRET`    | secret (required) | Bearer token the caller must present.                                  |
+| `BROWSER_PROFILE_KEY`      | secret (required) | 32 random bytes, base64. One half of the saved-cookie key.             |
+| `BROWSER_RUNNER_DISABLED`  | var (optional)    | Set to `"true"` to refuse new work (503 kill switch).                  |
+| `BROWSER_PREVIEW_URL`      | var               | The `/v0` runtime URL the browser bytes come from.                     |
+| `BROWSER_WEB_DENIED_HOSTS` | var               | Comma list of hosts web mode may not open (and their subdomains).      |
+| `BROWSER_APP_ORIGINS`      | var               | Comma list of app origins allowed to call `PUT /viewer/upload` (CORS). |
+| `BROWSER`                  | browser binding   | The Browser Run binding (declared in `wrangler.jsonc`).                |
+| `LOADER`                   | worker_loaders    | The Worker Loader binding (declared in `wrangler.jsonc`).              |
+| `BROWSER_SESSIONS`         | durable object    | Session, lease, and deadline state.                                    |
+| `BROWSER_REGISTRY`         | durable object    | Deployment and workspace admission slots.                              |
+| `PLAYWRITER_SESSIONS`      | durable object    | Remote socket, target, revisions, budgets, and receipts.               |
 
 The `dev` environment repeats every binding explicitly and deploys as
 `bonobo-senate-browser-runner-dev`. The top-level (prod) name stays disabled

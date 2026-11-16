@@ -45,17 +45,22 @@ beforeEach(() => {
 		url: `https://r2.test/put?key=${encodeURIComponent(key)}`,
 	}));
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
 	vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 	billingCalls = vi.spyOn(Workpool.prototype, "enqueueAction").mock.calls;
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-			const key = url.searchParams.get("key") ?? decodeURIComponent(url.pathname.replace(/^\/test-files-bucket\//u, ""));
+			const key =
+				url.searchParams.get("key") ?? decodeURIComponent(url.pathname.replace(/^\/test-files-bucket\//u, ""));
 			if (init?.method !== "PUT") {
 				const body = key ? objects.get(key) : undefined;
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+				return body === undefined
+					? new Response(null, { status: 404 })
+					: new Response(body, { headers: { ETag: '"saved-file"' } });
 			}
 			if (!key || typeof init.body !== "string") throw new Error("Expected a text PUT");
 			activePuts += 1;
@@ -516,7 +521,11 @@ async function volume_nodes(f: Awaited<ReturnType<typeof fixture>>) {
 		return await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
-				q.eq("organizationId", f.owner.organizationId).eq("workspaceId", volume._id).eq("moveCohortId", undefined).eq("archiveOperationId", null),
+				q
+					.eq("organizationId", f.owner.organizationId)
+					.eq("workspaceId", volume._id)
+					.eq("moveCohortId", undefined)
+					.eq("archiveOperationId", null),
 			)
 			.collect();
 	});

@@ -136,15 +136,13 @@ describe("rate_limiter_get_plugin_volume_daily_files_left", () => {
 		const t = test_convex();
 		const key = "organization:workspace:source-plugin";
 		expect(
-			await t.run((ctx) =>
-				rate_limiter_limit_by_key(ctx, { name: "plugins_volume_daily_files", key, count: 10_000 }),
-			),
+			await t.run((ctx) => rate_limiter_limit_by_key(ctx, { name: "plugins_volume_daily_files", key, count: 10_000 })),
 		).toBeNull();
 		expect(await t.run((ctx) => rate_limiter_get_plugin_volume_daily_files_left(ctx, { key, now }))).toBe(0);
 		// Keep the process clock old, like a cached query result, and pass the next day's clock.
-		expect(
-			await t.run((ctx) => rate_limiter_get_plugin_volume_daily_files_left(ctx, { key, now: now + 1_000 })),
-		).toBe(10_000);
+		expect(await t.run((ctx) => rate_limiter_get_plugin_volume_daily_files_left(ctx, { key, now: now + 1_000 }))).toBe(
+			10_000,
+		);
 	});
 
 	test("keeps separate plugin keys within one workspace", async () => {

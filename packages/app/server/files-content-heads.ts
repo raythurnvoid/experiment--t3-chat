@@ -116,18 +116,26 @@ export function files_content_heads_db_for_head(ctx: MutationCtx, head: Head): M
 	writes.pin(head);
 	return new Proxy(ctx.db, {
 		get(target, property) {
-			if (property === "insert") return async (table: TableNames, value: Fields) => {
-				if (!CONTENT_TABLES.has(table) && table !== "file_stats") return await target.insert(table, value as never);
-				if (head.retired || value.fileNodeId !== head.fileNodeId ||
-					value.organizationId !== head.organizationId || value.workspaceId !== head.workspaceId)
-					throw should_never_happen("Content candidate does not match its owner", { table, headId: head._id });
-				// Keep catalog counts, access checks and reservations on the normal write path.
-				const next = {
-					...value, ...(CONTENT_TABLES.has(table) && has_content(table, value as ContentDoc) ? { contentHeadId: head._id } : {}),
+			if (property === "insert")
+				return async (table: TableNames, value: Fields) => {
+					if (!CONTENT_TABLES.has(table) && table !== "file_stats") return await target.insert(table, value as never);
+					if (
+						head.retired ||
+						value.fileNodeId !== head.fileNodeId ||
+						value.organizationId !== head.organizationId ||
+						value.workspaceId !== head.workspaceId
+					)
+						throw should_never_happen("Content candidate does not match its owner", { table, headId: head._id });
+					// Keep catalog counts, access checks and reservations on the normal write path.
+					const next = {
+						...value,
+						...(CONTENT_TABLES.has(table) && has_content(table, value as ContentDoc)
+							? { contentHeadId: head._id }
+							: {}),
+					};
+					writes.stageInsert(next, head);
+					return await target.insert(table, next as never);
 				};
-				writes.stageInsert(next, head);
-				return await target.insert(table, next as never);
-			};
 			const value: unknown = Reflect.get(target, property);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
@@ -202,10 +210,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				if (!node || node.kind !== "file") return null;
 				const completed = content.phaseCursor === "finish:done" || content.phaseCursor === "abort:done";
 				// Completed history cannot borrow today's content owner.
-				if (
-					completed &&
-					(node.moveCohortId !== content.cohortId || !content.beforeHeadId || !content.afterHeadId)
-				)
+				if (completed && (node.moveCohortId !== content.cohortId || !content.beforeHeadId || !content.afterHeadId))
 					return null;
 				if (!inserted && (!content.beforeHeadId || !content.afterHeadId))
 					throw should_never_happen("Review content has no owners", { contentId });
@@ -216,7 +221,8 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				const prepared = content.prepared !== null;
 				let after = inserted ? before : content.afterHeadId!;
 				if (prepared && after === before && !completed) {
-					const place = await raw.query("files_saved_places")
+					const place = await raw
+						.query("files_saved_places")
 						.withIndex("by_cohort_view_node", (q) =>
 							q.eq("cohortId", content.cohortId).eq("view", "after").eq("nodeId", node._id),
 						)
@@ -227,7 +233,10 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 						workspaceId: node.workspaceId,
 						fileNodeId: node._id,
 						yjsContentHeadId: null,
-						...(await values(place ?? node, content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null)),
+						...(await values(
+							place ?? node,
+							content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null,
+						)),
 						ready: content.sealed,
 						retired: false,
 					});
@@ -317,7 +326,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		dirty.add(node._id);
 		const retired = kept === heads.after ? heads.before : heads.after;
 		const currentId = node.contentHeadId === heads.before ? kept : node.contentHeadId;
-		if (retired !== kept && retired !== currentId && !await files_content_retention_db_index_uses_head(raw, retired))
+		if (retired !== kept && retired !== currentId && !(await files_content_retention_db_index_uses_head(raw, retired)))
 			await raw.patch("files_saved_content_heads", retired, { ready: false, retired: true });
 	}
 
@@ -327,8 +336,11 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 		if (table === "files_yjs_snapshots" && !("assetId" in patch)) return;
 		if (
 			table === "files_yjs_docs_last_sequences" &&
-			!["lastSequence", "lineageGeneration", "unmaterializedUpdateCount", "unmaterializedUpdateBytes"].some((key) => key in patch)
-		) return;
+			!["lastSequence", "lineageGeneration", "unmaterializedUpdateCount", "unmaterializedUpdateBytes"].some(
+				(key) => key in patch,
+			)
+		)
+			return;
 		const doc = await raw.get(table, id as Id<typeof table>);
 		if (!doc) return;
 		const nodeId = table === "files_nodes" ? (id as Id<"files_nodes">) : (doc as ContentDoc).fileNodeId!;
@@ -351,7 +363,10 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 			if ("yjsLastSequenceId" in patch && patch.yjsLastSequenceId !== head.yjsLastSequenceId) {
 				next.yjsContentHeadId = patch.yjsLastSequenceId ? head._id : null;
 				const sequence = patch.yjsLastSequenceId
-					? await raw.get("files_yjs_docs_last_sequences", patch.yjsLastSequenceId as Id<"files_yjs_docs_last_sequences">)
+					? await raw.get(
+							"files_yjs_docs_last_sequences",
+							patch.yjsLastSequenceId as Id<"files_yjs_docs_last_sequences">,
+						)
 					: null;
 				next.sequence = sequence
 					? {
@@ -478,16 +493,24 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 					await write();
 					// Location and text edits keep the owner assigned above. Do not read each chunk twice.
 					if (
-						CONTENT_TABLES.has(table) && property === "patch" &&
+						CONTENT_TABLES.has(table) &&
+						property === "patch" &&
 						!["fileNodeId", "sourceKind", "fieldPath"].some((key) => key in patch!)
-					) return;
+					)
+						return;
 					if (property === "delete") {
 						if (table === "files_nodes") {
 							// Old and candidate heads belong to the existing paged cohort cleanup.
 							const node = old as Doc<"files_nodes"> | null;
-							if (node?.contentHeadId && await raw.get("files_saved_content_heads", node.contentHeadId))
+							if (node?.contentHeadId && (await raw.get("files_saved_content_heads", node.contentHeadId)))
 								await raw.delete("files_saved_content_heads", node.contentHeadId);
-							if (node && await raw.query("files_index_states").withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id)).first())
+							if (
+								node &&
+								(await raw
+									.query("files_index_states")
+									.withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id))
+									.first())
+							)
 								await ctx.scheduler.runAfter(0, internal.files_index.start, { nodeId: node._id });
 						} else if (old && "fileNodeId" in old) dirty.add(old.fileNodeId as Id<"files_nodes">);
 						return;
@@ -519,9 +542,15 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 	const writes = {
 		db,
 		runMutation,
-		pin(head: Head) { pinned.set(head._id, head); },
-		stageInsert(value: Fields, head: Head) { if (!head.ready && !head.retired) stagedInserts.add(value); },
-		isStagedInsert(value: Fields) { return stagedInserts.has(value); },
+		pin(head: Head) {
+			pinned.set(head._id, head);
+		},
+		stageInsert(value: Fields, head: Head) {
+			if (!head.ready && !head.retired) stagedInserts.add(value);
+		},
+		isStagedInsert(value: Fields) {
+			return stagedInserts.has(value);
+		},
 		async flush() {
 			for (const nodeId of dirty) {
 				const node = await raw.get("files_nodes", nodeId);
@@ -551,12 +580,7 @@ export function files_content_heads_db_wrap(ctx: MutationCtx): ContentWrites {
 				const cohort = (await raw.get("files_move_cohorts", node.moveCohortId))!;
 				const candidate = heads.after !== heads.before ? await raw.get("files_saved_content_heads", heads.after) : null;
 				// A published head owns later edits. Its copied place must never overwrite them.
-				if (
-					candidate &&
-					cohort.publishedAt === null &&
-					content.phaseCursor !== "abort:done" &&
-					after
-				) {
+				if (candidate && cohort.publishedAt === null && content.phaseCursor !== "abort:done" && after) {
 					const { lastSequenceId: _id, ...sequence } = content.afterSequence ?? { lastSequenceId: null };
 					await sync_head(candidate, {
 						...(await values(after, content.afterSequence ? (sequence as NonNullable<Head["sequence"]>) : null)),

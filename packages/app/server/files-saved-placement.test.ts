@@ -49,7 +49,9 @@ describe("saved placement foundation", () => {
 			await ctx.db.patch("files_saved_places", record.afterPlaceId!, { pendingContentVersion: 2 });
 			await ctx.db.patch("files_nodes", f.nodeId, { pendingContentVersion: 7 });
 		});
-		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(1);
+		expect((await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion).toBe(
+			1,
+		);
 		await f.publish();
 		expect(
 			(await f.t.run((ctx) => files_saved_placement_db_get_node(ctx.db, f.nodeId)))?.pendingContentVersion,
@@ -241,34 +243,50 @@ describe("saved placement foundation", () => {
 
 	test("a partial private proposal can only target its exact allocated saved output", async () => {
 		const f = await fixture();
-		const itemId = await f.t.run(async ctx => {
-			const receipt = await ctx.db.query("files_pending_node_publish_receipts")
-				.withIndex("by_savedNode", q => q.eq("savedNodeId", f.nodeId)).unique();
+		const itemId = await f.t.run(async (ctx) => {
+			const receipt = await ctx.db
+				.query("files_pending_node_publish_receipts")
+				.withIndex("by_savedNode", (q) => q.eq("savedNodeId", f.nodeId))
+				.unique();
 			if (!receipt) throw new Error("Expected the public Save receipt");
 			const { _id, _creationTime, moveCohortId: _marker, ...header } = f.proposal;
 			const target = { kind: "private" as const, id: receipt.privateNodeId };
 			await ctx.db.patch("files_pending_updates", _id, { target, moveCohortId: f.cohortId });
 			const itemId = await ctx.db.insert("files_move_cohort_items", {
-				cohortId: f.cohortId, order: 0, origin: { kind: "transfer", itemId: f.itemId },
-				pendingUpdateId: _id, reviewedRevision: header.revision, selectedContentStateId: null,
-				target, privateVersion: null, nodeRecordId: f.recordId,
+				cohortId: f.cohortId,
+				order: 0,
+				origin: { kind: "transfer", itemId: f.itemId },
+				pendingUpdateId: _id,
+				reviewedRevision: header.revision,
+				selectedContentStateId: null,
+				target,
+				privateVersion: null,
+				nodeRecordId: f.recordId,
 				afterProposal: { ...header, target: { kind: "saved", id: f.nodeId }, revision: header.revision + 1 },
-				contentId: null, replacementItemId: null, status: "staged", validatedEpoch: null, billingState: "none",
+				contentId: null,
+				replacementItemId: null,
+				status: "staged",
+				validatedEpoch: null,
+				billingState: "none",
 			});
 			await ctx.db.patch("files_move_cohort_nodes", f.recordId, { itemId, role: "allocated", beforePlaceId: null });
 			return itemId;
 		});
 		await f.publish();
-		expect((await f.t.run(ctx => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id)))?.target,
-			"private partial content follows its exact allocated output").toEqual({ kind: "saved", id: f.nodeId });
-		await f.t.run(async ctx => {
+		expect(
+			(await f.t.run((ctx) => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id)))?.target,
+			"private partial content follows its exact allocated output",
+		).toEqual({ kind: "saved", id: f.nodeId });
+		await f.t.run(async (ctx) => {
 			const item = (await ctx.db.get("files_move_cohort_items", itemId))!;
 			await ctx.db.patch("files_move_cohort_items", itemId, {
 				afterProposal: { ...item.afterProposal!, target: { kind: "saved", id: f.parentId } },
 			});
 		});
-		await expect(f.t.run(ctx => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id)),
-			"another saved target cannot replace the allocated output").rejects.toThrow("Saved after proposal changes its owner or target");
+		await expect(
+			f.t.run((ctx) => files_saved_placement_db_get_proposal(ctx.db, f.proposal._id)),
+			"another saved target cannot replace the allocated output",
+		).rejects.toThrow("Saved after proposal changes its owner or target");
 	});
 
 	test("reads staged counters until a newer content head replaces them", async () => {
@@ -293,10 +311,20 @@ describe("saved placement foundation", () => {
 				},
 			});
 			const itemId = await ctx.db.insert("files_move_cohort_items", {
-				cohortId: f.cohortId, order: 0, origin: { kind: "transfer", itemId: f.itemId },
-				pendingUpdateId: f.proposal._id, reviewedRevision: f.proposal.revision, selectedContentStateId: null,
-				target: f.proposal.target, privateVersion: null, nodeRecordId: f.recordId,
-				afterProposal: null, contentId: null, replacementItemId: null, status: "staged", validatedEpoch: null,
+				cohortId: f.cohortId,
+				order: 0,
+				origin: { kind: "transfer", itemId: f.itemId },
+				pendingUpdateId: f.proposal._id,
+				reviewedRevision: f.proposal.revision,
+				selectedContentStateId: null,
+				target: f.proposal.target,
+				privateVersion: null,
+				nodeRecordId: f.recordId,
+				afterProposal: null,
+				contentId: null,
+				replacementItemId: null,
+				status: "staged",
+				validatedEpoch: null,
 				billingState: "none",
 			});
 			return await ctx.db.insert("files_move_cohort_content", {
@@ -305,11 +333,27 @@ describe("saved placement foundation", () => {
 				afterHeadId,
 				itemId,
 				operationBatchId: null,
-				phase: "sealed", phaseCursor: null, nextChunkIndex: 0, acceptedTextInputId: null,
-				unstagedTextInputId: null, acceptedTextDigest: null, sourceSnapshotSequence: null,
-				afterYjsSnapshotAssetId: null, preparationFence: 1, storageBytes: 0, storageResourceCount: 0,
-				privateByteDelta: 0, privateNodeDelta: 0, privateAccountingAdded: false, storedByteDelta: 0, storedUpload: false, preparedMediaSet: null,
-				previousVersion: null, acceptedVersion: null, previousVersionSnapshotId: null, acceptedVersionSnapshotId: null,
+				phase: "sealed",
+				phaseCursor: null,
+				nextChunkIndex: 0,
+				acceptedTextInputId: null,
+				unstagedTextInputId: null,
+				acceptedTextDigest: null,
+				sourceSnapshotSequence: null,
+				afterYjsSnapshotAssetId: null,
+				preparationFence: 1,
+				storageBytes: 0,
+				storageResourceCount: 0,
+				privateByteDelta: 0,
+				privateNodeDelta: 0,
+				privateAccountingAdded: false,
+				storedByteDelta: 0,
+				storedUpload: false,
+				preparedMediaSet: null,
+				previousVersion: null,
+				acceptedVersion: null,
+				previousVersionSnapshotId: null,
+				acceptedVersionSnapshotId: null,
 				nodeId: f.nodeId,
 				pendingUpdateId: f.proposal._id,
 				reviewedRevision: f.proposal.revision,
@@ -363,9 +407,17 @@ describe("saved placement foundation", () => {
 			unmaterializedUpdateCount: 1,
 			unmaterializedUpdateBytes: 20,
 		});
-		expect(await f.asUser.query(api.files_yjs_load.get_file_last_yjs_sequence, {
-			membershipId: f.db.membershipId, nodeId: f.nodeId,
-		}), "the editor sees the selected sequence head").toEqual({ yjsLastSequenceId: sequence._id, lastSequence: 7, pendingContentVersion: f.saved.pendingContentVersion });
+		expect(
+			await f.asUser.query(api.files_yjs_load.get_file_last_yjs_sequence, {
+				membershipId: f.db.membershipId,
+				nodeId: f.nodeId,
+			}),
+			"the editor sees the selected sequence head",
+		).toEqual({
+			yjsLastSequenceId: sequence._id,
+			lastSequence: 7,
+			pendingContentVersion: f.saved.pendingContentVersion,
+		});
 		expect((await f.t.run((ctx) => ctx.db.get("files_yjs_docs_last_sequences", sequence._id)))?.lastSequence).toBe(
 			sequence.lastSequence,
 		);
@@ -403,9 +455,10 @@ describe("saved placement foundation", () => {
 			const query = vi.spyOn(ctx.db, "query");
 			try {
 				const number = await files_saved_placement_db_get_search_generation(ctx.db, db);
-				expect(query.mock.calls.map(([table]) => table), "search reads only its counter range").toEqual([
-					"files_move_search_generations",
-				]);
+				expect(
+					query.mock.calls.map(([table]) => table),
+					"search reads only its counter range",
+				).toEqual(["files_move_search_generations"]);
 				return number;
 			} finally {
 				query.mockRestore();
@@ -421,9 +474,10 @@ describe("saved placement foundation", () => {
 			const query = vi.spyOn(ctx.db, "query");
 			try {
 				await files_saved_placement_db_bump_search_generation(ctx, db);
-				expect(query.mock.calls.map(([table]) => table), "a first bump reads the counter range once").toEqual([
-					"files_move_search_generations",
-				]);
+				expect(
+					query.mock.calls.map(([table]) => table),
+					"a first bump reads the counter range once",
+				).toEqual(["files_move_search_generations"]);
 			} finally {
 				query.mockRestore();
 			}
@@ -486,9 +540,10 @@ describe("saved placement foundation", () => {
 		const f = await fixture();
 		const before = await f.asUser.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
 		if (!before?.cohortId || !before.view) throw new Error("Expected the active saved view");
-		const savedStream = kind === "normal"
-			? { kind, generation: before.generation - 1 }
-			: { kind, cohortId: before.cohortId, view: before.view, generation: before.generation };
+		const savedStream =
+			kind === "normal"
+				? { kind, generation: before.generation - 1 }
+				: { kind, cohortId: before.cohortId, view: before.view, generation: before.generation };
 		const args = {
 			membershipId: f.db.membershipId,
 			savedStream,

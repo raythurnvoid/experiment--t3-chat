@@ -312,8 +312,14 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 			["~~~\n```js\nx\n```\n~~~\n", "~~~\n```js\nx\n```\n~~~\n"],
 			["~~~a`b\nx\n~~~\n", "~~~a`b\nx\n~~~\n"],
 			["1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n", "1. Step:\n   ```sh\n   a\n     b\n   ```\n2. Next\n"],
-			["1. Install\n  - run setup\n    - on Windows\n2. Done\n", "1. Install\n   - run setup\n     - on Windows\n2. Done\n"],
-			["Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n", "Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n"],
+			[
+				"1. Install\n  - run setup\n    - on Windows\n2. Done\n",
+				"1. Install\n   - run setup\n     - on Windows\n2. Done\n",
+			],
+			[
+				"Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n",
+				"Intro\n\n<pre data-frontmatter>a: 1\n---\n![x](bonobo-file://S)</pre>\n",
+			],
 			["<pre data-frontmatter>a: 1\n---\nb</pre>\n", "<pre data-frontmatter>a: 1\n---\nb</pre>\n"],
 		] as const;
 		for (const [fixture, expected] of fixtures) {

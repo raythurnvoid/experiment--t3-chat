@@ -158,7 +158,10 @@ export async function finish_discovery(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 150; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_status.get, {
+			membershipId: fixture.db.membershipId,
+			runId,
+		});
 		if (!view) throw new Error("Missing run");
 		if (view.step === "apply" || (view.activity.status !== "queued" && view.activity.status !== "running")) return view;
 		await fixture.t.mutation(internal.files_transfer.advance, { runId });
@@ -171,7 +174,10 @@ export async function finish_folder_copy(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 300; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_status.get, {
+			membershipId: fixture.db.membershipId,
+			runId,
+		});
 		if (!view) throw new Error("Missing run");
 		if (view.activity.status !== "queued" && view.activity.status !== "running" && view.activity.status !== "stopping")
 			return view;
@@ -207,7 +213,10 @@ export async function finish_copy_with_workers(
 	runId: Id<"files_transfer_runs">,
 ) {
 	for (let step = 0; step < 300; step += 1) {
-		const view = await fixture.asUser.query(api.files_transfer_status.get, { membershipId: fixture.db.membershipId, runId });
+		const view = await fixture.asUser.query(api.files_transfer_status.get, {
+			membershipId: fixture.db.membershipId,
+			runId,
+		});
 		if (!view) throw new Error("Missing run");
 		if (view.activity.status !== "queued" && view.activity.status !== "running" && view.activity.status !== "stopping")
 			return view;
@@ -234,7 +243,8 @@ export async function get_node(fixture: Awaited<ReturnType<typeof create_folder_
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
 					.eq("organizationId", fixture.db.organizationId)
-					.eq("workspaceId", fixture.db.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", fixture.db.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("path", path)
 					.eq("archiveOperationId", null),
 			)

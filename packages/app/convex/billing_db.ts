@@ -427,7 +427,10 @@ export async function billing_db_resend_rejected_usage_events(ctx: MutationCtx) 
 	const docs = await ctx.db.query("billing_usage_event_rejected").take(OUTBOX_BATCH_SIZE);
 	if (docs.length === 0) return 0;
 	for (const doc of docs) await ctx.db.delete("billing_usage_event_rejected", doc._id);
-	await db_insert_outbox_events(ctx, docs.map((doc) => doc.event));
+	await db_insert_outbox_events(
+		ctx,
+		docs.map((doc) => doc.event),
+	);
 	return docs.length;
 }
 

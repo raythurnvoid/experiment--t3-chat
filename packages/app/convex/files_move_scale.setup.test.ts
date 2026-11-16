@@ -62,7 +62,11 @@ export type Fixture = Awaited<ReturnType<typeof create_fixture>>;
 type Metrics = Awaited<ReturnType<MutationCtx["meta"]["getTransactionMetrics"]>>;
 export type Metadata = Extract<Doc<"files_metadata_docs">, { sourceKind: "committed" }>;
 
-export async function create_folder(fixture: Fixture, path: string, parentId: Id<"files_nodes"> | "root" = files_ROOT_ID) {
+export async function create_folder(
+	fixture: Fixture,
+	path: string,
+	parentId: Id<"files_nodes"> | "root" = files_ROOT_ID,
+) {
 	const created = await fixture.asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: fixture.db.membershipId,
 		parentId,
@@ -105,8 +109,9 @@ export function measure_move(
 			peak.cost[key] = Math.max(peak.cost[key], cost[key]);
 			const fraction = budgetFraction;
 			if (cost[key] >= limits[key] * fraction) console.info("Move scale over budget", JSON.stringify({ phase, cost }));
-			expect(cost[key], `${phase}: ${key} stays below ${fraction * 100}% of the Convex limit`)
-				.toBeLessThan(limits[key] * fraction);
+			expect(cost[key], `${phase}: ${key} stays below ${fraction * 100}% of the Convex limit`).toBeLessThan(
+				limits[key] * fraction,
+			);
 		}
 		peak.calls++;
 		peaks.set(phase, peak);
@@ -143,7 +148,7 @@ export function measure_move(
 						.eq("cohortId", cohortId)
 						.eq("userId", owner.userId)
 						.eq("target.kind", "saved")
-						.eq("target.id", owner.nodeId)
+						.eq("target.id", owner.nodeId),
 				)
 				.unique();
 			if (work?.fieldCursor) {

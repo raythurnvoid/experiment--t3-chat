@@ -61,7 +61,9 @@ function observe_move_phases() {
 }
 
 function expect_move_phases(phases: ReturnType<typeof observe_move_phases>, runId: Id<"files_transfer_runs">) {
-	const records = [...phases.values()].filter((cohort) => cohort.origin.kind === "transfer" && cohort.origin.runId === runId);
+	const records = [...phases.values()].filter(
+		(cohort) => cohort.origin.kind === "transfer" && cohort.origin.runId === runId,
+	);
 	expect(new Set(records.map((cohort) => cohort._id)).size, "phase reads belong to one exact Move cohort").toBe(1);
 	const observed = records.map((cohort) => cohort.workPhase);
 	expect(observed, "the real Move reaches closure, sides and publication").toEqual(
@@ -147,7 +149,14 @@ describe("initial Move publication", () => {
 		);
 		console.info(
 			"inline empty Move acceptance",
-			JSON.stringify({ sourcePath, step: cohort?.step, phase: cohort?.workPhase, actorReads, readerMembershipReads, costs }),
+			JSON.stringify({
+				sourcePath,
+				step: cohort?.step,
+				phase: cohort?.workPhase,
+				actorReads,
+				readerMembershipReads,
+				costs,
+			}),
 		);
 		expect(cohort, "an empty folder is published before acceptance returns").toMatchObject({
 			phase: "published",
@@ -264,14 +273,23 @@ describe("initial Move publication", () => {
 			runs.push(runId);
 			const cost = costs.at(-1)!;
 			console.info("unchanged-content Empty Move acceptance", JSON.stringify({ direction: target.direction, cost }));
-			const cohort = await t.run((ctx) => ctx.db.query("files_move_cohorts")
-				.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId)).unique());
+			const cohort = await t.run((ctx) =>
+				ctx.db
+					.query("files_move_cohorts")
+					.withIndex("by_origin_run", (q) => q.eq("origin.kind", "transfer").eq("origin.runId", runId))
+					.unique(),
+			);
 			expect(cohort, "the public acceptance publishes before repair").toMatchObject({
-				phase: "published", visibleView: "after", workPhase: "finish_content", publishedAt: expect.any(Number),
+				phase: "published",
+				visibleView: "after",
+				workPhase: "finish_content",
+				publishedAt: expect.any(Number),
 			});
 			if (!cohort?.runJob) throw new Error("Expected the current repair owner");
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId)), "physical repair has not run").toMatchObject({
-				parentId: before.parentId, path: before.path, moveCohortId: cohort._id,
+				parentId: before.parentId,
+				path: before.path,
+				moveCohortId: cohort._id,
 			});
 			const selected = await asUser.query(api.files_tree.list_tree_children, {
 				membershipId: db.membershipId,
@@ -287,23 +305,33 @@ describe("initial Move publication", () => {
 			expect(new Set(selected.page.map((node) => node._id)).size).toBe(selected.page.length);
 			expect(Object.keys(cost)).toHaveLength(7);
 			for (const [key, metric] of Object.entries(cost))
-				expect(metric.used, `${target.direction}: ${key}; leaves 25% free`)
-					.toBeLessThan((metric.used + metric.remaining) * 0.75);
+				expect(metric.used, `${target.direction}: ${key}; leaves 25% free`).toBeLessThan(
+					(metric.used + metric.remaining) * 0.75,
+				);
 			await test_finish_transfer_run(asUser, runId);
 			expect(await t.run((ctx) => ctx.db.get("files_nodes", sourceId))).toMatchObject({
-				_id: sourceId, parentId: target.parentId, path: target.path, name: "new-folder",
+				_id: sourceId,
+				parentId: target.parentId,
+				path: target.path,
+				name: "new-folder",
 			});
 			expect((await t.run((ctx) => ctx.db.get("files_nodes", sourceId)))?.moveCohortId).toBeUndefined();
 			expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
-				status: "succeeded", progress: { completed: 1, failed: 0, canceled: 0 },
+				status: "succeeded",
+				progress: { completed: 1, failed: 0, canceled: 0 },
 			});
 		}
 		expect(costs).toHaveLength(2);
 		// Keep both direction metrics before the named workload assertion.
 		for (const runId of runs) expect_move_phases(phases, runId);
 		for (const [index, target] of targets.entries()) {
-			expect(costs[index]!.databaseQueries.used, `${target.direction}: fewer acceptance queries`).toBeLessThan(target.queries);
-			expect(costs[index]!.documentsWritten.used, `${target.direction}: no extra acceptance writes`).toBeLessThanOrEqual(target.writes);
+			expect(costs[index]!.databaseQueries.used, `${target.direction}: fewer acceptance queries`).toBeLessThan(
+				target.queries,
+			);
+			expect(
+				costs[index]!.documentsWritten.used,
+				`${target.direction}: no extra acceptance writes`,
+			).toBeLessThanOrEqual(target.writes);
 		}
 	});
 
@@ -641,7 +669,8 @@ describe("initial Move publication", () => {
 			name: "source",
 		});
 		expect(
-			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: found.runId }))?.activity,
+			(await asUser.query(api.files_transfer_status.get, { membershipId: db.membershipId, runId: found.runId }))
+				?.activity,
 		).toMatchObject({
 			status: "succeeded",
 			progress: { completed: 1, failed: 0, canceled: 0 },

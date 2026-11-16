@@ -1055,7 +1055,8 @@ async function db_stream_saved_place(
 	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>,
 	args: { nodeId: Id<"files_nodes">; userId: Id<"users"> },
 ) {
-	const selected = reader.fixedView ??
+	const selected =
+		reader.fixedView ??
 		(reader.view.cohortId ? { cohortId: reader.view.cohortId, view: reader.view.view! } : undefined);
 	// A place can move between the selected and normal ranges during repair.
 	for (const tag of selected ? [selected, undefined] : [undefined]) {

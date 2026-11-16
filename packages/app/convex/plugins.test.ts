@@ -830,7 +830,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined)
 						.gte("treePath", `/${first.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${first.pluginVersionId}/`)),
 				)
@@ -1943,7 +1944,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/meetings/meeting-1")
 						.eq("archiveOperationId", null),
 				)
@@ -2553,7 +2555,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/media/locked-note.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2600,7 +2603,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/locked-source-summary.md")
 						.eq("archiveOperationId", null),
 				)
@@ -2845,7 +2849,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
 						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("parentId", "root")
 						.eq("name", "plugin-live-image-20260702t011841z.png.description.md")
 						.eq("archiveOperationId", null),
@@ -3432,7 +3437,8 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", "/expired.png.md")
 						.eq("archiveOperationId", null),
 				)
@@ -7760,12 +7766,16 @@ describe("plugins manifest limits", () => {
 	});
 
 	test("accepts 1000000 declared bytes per file and rejects 1000001", () => {
-		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_000 })] }))).toMatchObject({
-			_yay: expect.any(Object),
-		});
-		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_001 })] }))).toMatchObject({
-			_nay: { message: expect.any(String) },
-		});
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_000 })] }))).toMatchObject(
+			{
+				_yay: expect.any(Object),
+			},
+		);
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 1_000_001 })] }))).toMatchObject(
+			{
+				_nay: { message: expect.any(String) },
+			},
+		);
 	});
 
 	test("accepts exactly 16 MiB of declared artifact bytes and rejects one more byte", () => {
@@ -7827,7 +7837,9 @@ describe("plugins metadata file doors", () => {
 			key,
 			url: `https://r2.test/object?key=${encodeURIComponent(key)}`,
 		}));
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
 		vi.mocked(fetch).mockImplementation(async (input, init) => {
 			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 			if (url.origin !== "https://r2.test") return new Response(null, { status: 200 });
@@ -7837,7 +7849,9 @@ describe("plugins metadata file doors", () => {
 				return new Response(null);
 			}
 			const body = objects.get(key);
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+			return body === undefined
+				? new Response(null, { status: 404 })
+				: new Response(body, { headers: { ETag: '"saved-file"' } });
 		});
 	});
 	const FILE_CAPABILITIES: plugins_Capability[] = [
@@ -8023,7 +8037,8 @@ describe("plugins metadata file doors", () => {
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
 						.eq("organizationId", fixture.membership.organizationId)
-						.eq("workspaceId", fixture.membership.workspaceId).eq("moveCohortId", undefined)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("moveCohortId", undefined)
 						.eq("path", path)
 						.eq("archiveOperationId", null),
 				)
@@ -8835,8 +8850,14 @@ describe("plugins metadata file doors", () => {
 		).toBe(200);
 
 		expect(
-			(await door_call({ t, path: "/api/v1/files/read-many", apiToken: run.apiToken, body: { paths: ["/probe/tail.md"] } }))
-				.status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/read-many",
+					apiToken: run.apiToken,
+					body: { paths: ["/probe/tail.md"] },
+				})
+			).status,
 		).toBe(404);
 	});
 
@@ -9037,8 +9058,14 @@ describe("plugins metadata file doors", () => {
 		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
 		const run = await start_file_invoke_run({ t, fixture });
 		expect(
-			(await door_call({ t, path: "/api/v1/files/plugin-folders/ensure", apiToken: run.apiToken, body: { path: "/probe" } }))
-				.status,
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
 		).toBe(200);
 		const membershipId = fixture.membership.membershipId;
 		const shared = await test_create_saved_text_file(t, { membershipId, path: "/shared/a.md", textContent: "a" });
@@ -9054,7 +9081,9 @@ describe("plugins metadata file doors", () => {
 		const write = (content: string) =>
 			door_call({ t, path: "/api/v1/files/write", apiToken: run.apiToken, body: { path: "/probe/doc.md", content } });
 		const read_doc = async () =>
-			(await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/doc.md" } })).text();
+			(
+				await door_call({ t, path: "/api/v1/files/read", apiToken: run.apiToken, body: { path: "/probe/doc.md" } })
+			).text();
 
 		const kept = `![a](bonobo-file://${shared})\n`;
 		expect((await write(kept)).status).toBe(200);
@@ -9094,7 +9123,10 @@ describe("plugins metadata file doors", () => {
 					t,
 					path: "/api/v1/files/write",
 					apiToken: run.apiToken,
-					body: { path: "/probe/code.md", content: `\`\`\`\`\n\`\`\`\n![b](bonobo-file://${locked})\n\`\`\`\n\`\`\`\`\n` },
+					body: {
+						path: "/probe/code.md",
+						content: `\`\`\`\`\n\`\`\`\n![b](bonobo-file://${locked})\n\`\`\`\n\`\`\`\`\n`,
+					},
 				})
 			).status,
 		).toBe(200);
@@ -10666,7 +10698,8 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("moveCohortId", undefined)
 							.gte("treePath", `/${version._id}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 					)
@@ -10693,7 +10726,8 @@ describe("plugins admin hard delete", () => {
 						.withIndex("by_organization_workspace_treePath", (q) =>
 							q
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.eq("moveCohortId", undefined)
 								.gte("treePath", `/${registered.pluginVersionId}/`)
 								.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 						)
@@ -10717,7 +10751,8 @@ describe("plugins admin hard delete", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
@@ -12154,7 +12189,8 @@ describe("plugins admin hard delete", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined),
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined),
 				)
 				.collect(),
 		);

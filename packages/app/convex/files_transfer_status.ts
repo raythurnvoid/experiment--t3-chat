@@ -513,7 +513,9 @@ export const list_items = query({
 		const page = [];
 		for (const item of items.page) {
 			const conflict =
-				reader && item.state === "conflict" && item.conflictTarget ? await reader.resolveTarget(item.conflictTarget) : null;
+				reader && item.state === "conflict" && item.conflictTarget
+					? await reader.resolveTarget(item.conflictTarget)
+					: null;
 			page.push({
 				itemId: item._id,
 				state: item.state,

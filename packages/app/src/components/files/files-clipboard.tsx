@@ -173,9 +173,7 @@ const FilesClipboardProvider = Object.assign(
 		const addCutRun = useFn((nextRunId: app_convex_Id<"files_transfer_runs">, revision: string | null) => {
 			if (!revision) return;
 			const cutRun = { runId: nextRunId, revision, finished: false };
-			setCutRuns((current) =>
-				current.some((item) => item.runId === cutRun.runId) ? current : [...current, cutRun],
-			);
+			setCutRuns((current) => (current.some((item) => item.runId === cutRun.runId) ? current : [...current, cutRun]));
 		});
 
 		const isIntakeStopped = useFn((nextRunId: app_convex_Id<"files_transfer_runs">) => {

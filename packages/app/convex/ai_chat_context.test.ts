@@ -496,9 +496,7 @@ describe("ai_chat_context_discover_sources", () => {
 		});
 
 		// The owner gets the skill. The guest has no workspace read, so it gets no plugins.
-		expect((await f.discover(f.scope))._yay?.pluginSkills).toEqual([
-			{ pluginName: "tracker", ...skill },
-		]);
+		expect((await f.discover(f.scope))._yay?.pluginSkills).toEqual([{ pluginName: "tracker", ...skill }]);
 		expect((await f.discover(guest))._yay?.pluginSkills).toEqual([]);
 	});
 

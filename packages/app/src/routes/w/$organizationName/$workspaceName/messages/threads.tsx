@@ -11,16 +11,18 @@ type RouteChannelsThreads_ClassNames = "RouteChannelsThreads";
 function RouteChannelsThreads() {
 	const navigate = Route.useNavigate();
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
-	const open = useFn((channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
-		navigate({
-			to: "/w/$organizationName/$workspaceName/messages/$channelId",
-			params: { organizationName, workspaceName, channelId },
-			search,
-			state: channels_navigation_state(mode),
-		}).catch((error: unknown) => {
-			console.error("[RouteChannelsThreads.open] Failed to open channel", { error });
-		});
-	});
+	const open = useFn(
+		(channelId: app_convex_Id<"channels">, search: ChannelsSearch = {}, mode: ChannelsNavigationMode = "open") => {
+			navigate({
+				to: "/w/$organizationName/$workspaceName/messages/$channelId",
+				params: { organizationName, workspaceName, channelId },
+				search,
+				state: channels_navigation_state(mode),
+			}).catch((error: unknown) => {
+				console.error("[RouteChannelsThreads.open] Failed to open channel", { error });
+			});
+		},
+	);
 	return (
 		<main className={"RouteChannelsThreads" satisfies RouteChannelsThreads_ClassNames}>
 			<Channels view="threads" search={{}} onNavigate={open} />

@@ -119,7 +119,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
 import { ai_chat_files_db_append_shell_transcript } from "./ai_chat_files.ts";
 import { ai_chat_files_db_get_invocation_membership } from "./ai_chat_files_db.ts";
-import { ai_chat_runs_db_begin, ai_chat_runs_db_insert_node, ai_chat_runs_db_stop, ai_chat_runs_LEASE_MS, ai_chat_runs_op_key } from "./ai_chat_runs.ts";
+import {
+	ai_chat_runs_db_begin,
+	ai_chat_runs_db_insert_node,
+	ai_chat_runs_db_stop,
+	ai_chat_runs_LEASE_MS,
+	ai_chat_runs_op_key,
+} from "./ai_chat_runs.ts";
 import { ai_chat_runs_db_is_current } from "./ai_chat_runs_db.ts";
 import { ai_chat_context_create, type ai_chat_context_Context } from "../server/ai-chat-context.ts";
 import { ai_chat_workspaces_db_resolve, ai_chat_workspaces_SELECTORS } from "./ai_chat_workspaces.ts";
@@ -4913,7 +4919,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(configuration.systemPrompt).toContain("mv only moves or renames files within one workspace");
 			expect(configuration.systemPrompt).toContain("Use cp for files or cp -R for folders between workspaces");
-			expect(configuration.systemPrompt).toContain("Do not work around a refused mv with cp followed by rm or Move to Trash");
+			expect(configuration.systemPrompt).toContain(
+				"Do not work around a refused mv with cp followed by rm or Move to Trash",
+			);
 			expect(configuration.systemPrompt).toContain(
 				"Source cleanup needs a separate user request and its own review and permission checks",
 			);

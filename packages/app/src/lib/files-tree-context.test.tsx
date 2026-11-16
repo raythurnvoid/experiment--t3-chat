@@ -111,8 +111,12 @@ function ancestors_key(nodeId: string) {
 function receive(key: string, result: unknown) {
 	act(() => {
 		const directory = JSON.parse(key).name === getFunctionName(app_convex_api.files_tree.list_tree_children);
-		results.set(key, directory && result !== null && typeof result === "object" && !(result instanceof Error)
-			? { directoryView: null, ...result } : result);
+		results.set(
+			key,
+			directory && result !== null && typeof result === "object" && !(result instanceof Error)
+				? { directoryView: null, ...result }
+				: result,
+		);
 		listeners.get(key)?.forEach((listener) => listener());
 	});
 }
@@ -177,9 +181,15 @@ beforeEach(() => {
 	results.clear();
 	listeners.clear();
 	subscriptions.length = 0;
-	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }), {
-		cohortId: null, view: null, generation: 0, searchGeneration: 0,
-	});
+	results.set(
+		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }),
+		{
+			cohortId: null,
+			view: null,
+			generation: 0,
+			searchGeneration: 0,
+		},
+	);
 	client = new ConvexReactClient("https://tree-test.convex.cloud");
 	// Keep the real pagination and subscription hooks. Only replace the server watches.
 	vi.spyOn(client, "watchQuery").mockImplementation((query, args?, _options?) => {
@@ -193,9 +203,15 @@ beforeEach(() => {
 				listeners.set(key, callbacks);
 				return () => callbacks.delete(callback);
 			},
-			localQueryResult: () => (results.has(key) ? results.get(key) :
-				(getFunctionName(query) === "files_tree:list_tree_children" && args?.stream === "cohort" && page?.cursor === null && page.endCursor == null
-					? IDLE_DIRECTORY_PAGE : undefined)) as never,
+			localQueryResult: () =>
+				(results.has(key)
+					? results.get(key)
+					: getFunctionName(query) === "files_tree:list_tree_children" &&
+						  args?.stream === "cohort" &&
+						  page?.cursor === null &&
+						  page.endCursor == null
+						? IDLE_DIRECTORY_PAGE
+						: undefined) as never,
 			localQueryLogs: () => undefined,
 			journal: () => undefined,
 		};
@@ -211,8 +227,14 @@ afterEach(async () => {
 
 describe("FilesTreeProvider.useFolders", () => {
 	test("starts directory pages before the workspace Move view answers", () => {
-		results.delete(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }));
-		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
+		results.delete(
+			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }),
+		);
+		render(
+			<TestWorkspace membershipId="membership_1">
+				<FoldersConsumer folderIds={[]} />
+			</TestWorkspace>,
+		);
 		const key = watch_key(getFunctionName(app_convex_api.files_tree.list_tree_children), {
 			membershipId: "membership_1",
 			parentId: "root",
@@ -225,11 +247,19 @@ describe("FilesTreeProvider.useFolders", () => {
 	});
 
 	test("finishes empty when directory access is refused", () => {
-		results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }), null);
+		results.set(
+			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: "membership_1" }),
+			null,
+		);
 		for (const kind of ["folder", "file"] as const) {
-			for (const restricted of [false, true]) results.set(children_key({ parentId: "root", kind, cursor: null, restricted }), IDLE_DIRECTORY_PAGE);
+			for (const restricted of [false, true])
+				results.set(children_key({ parentId: "root", kind, cursor: null, restricted }), IDLE_DIRECTORY_PAGE);
 		}
-		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
+		render(
+			<TestWorkspace membershipId="membership_1">
+				<FoldersConsumer folderIds={[]} />
+			</TestWorkspace>,
+		);
 		expect(screen.getByLabelText("Rows").textContent).toBe("");
 		expect(screen.getByLabelText("Status").textContent).toBe("root:done");
 		expect(screen.getByLabelText("Shared").textContent).toBe(":done");
@@ -240,22 +270,38 @@ describe("FilesTreeProvider.useFolders", () => {
 		const directoryView = { cohortId, view: "before" } as const;
 		for (const stream of ["normal", "cohort"] as const) {
 			for (const kind of ["folder", "file"] as const) {
-				for (const restricted of [false, true]) results.set(children_key({ parentId: "root", kind, cursor: null, restricted, stream }), { ...EMPTY_PAGE, directoryView });
+				for (const restricted of [false, true])
+					results.set(children_key({ parentId: "root", kind, cursor: null, restricted, stream }), {
+						...EMPTY_PAGE,
+						directoryView,
+					});
 			}
 		}
-		results.set(children_key({ parentId: "root", kind: "file", cursor: null }), { ...EMPTY_PAGE, directoryView, page: [row("b.md")] });
+		results.set(children_key({ parentId: "root", kind: "file", cursor: null }), {
+			...EMPTY_PAGE,
+			directoryView,
+			page: [row("b.md")],
+		});
 		const cohortKey = children_key({ parentId: "root", kind: "file", cursor: null, stream: "cohort" });
 		results.set(cohortKey, { ...EMPTY_PAGE, directoryView, page: [row("a.md")] });
-		render(<TestWorkspace membershipId="membership_1"><FoldersConsumer folderIds={[]} /></TestWorkspace>);
+		render(
+			<TestWorkspace membershipId="membership_1">
+				<FoldersConsumer folderIds={[]} />
+			</TestWorkspace>,
+		);
 		expect(screen.getByLabelText("Rows").textContent).toBe("a.md,b.md");
 		receive(cohortKey, { ...EMPTY_PAGE, directoryView: { cohortId, view: "after" }, page: [row("c.md")] });
-		expect(screen.getByLabelText("Rows").textContent, "different directory views never form one tree").toBe("a.md,b.md");
+		expect(screen.getByLabelText("Rows").textContent, "different directory views never form one tree").toBe(
+			"a.md,b.md",
+		);
 		for (const stream of ["normal", "cohort"] as const) {
 			for (const kind of ["folder", "file"] as const) {
 				for (const restricted of [false, true]) {
 					const page = restricted || kind === "folder" ? [] : [row(stream === "normal" ? "b.md" : "c.md")];
 					receive(children_key({ parentId: "root", kind, cursor: null, restricted, stream }), {
-						...EMPTY_PAGE, directoryView: { cohortId, view: "after" }, page,
+						...EMPTY_PAGE,
+						directoryView: { cohortId, view: "after" },
+						page,
 					});
 				}
 			}
@@ -271,7 +317,12 @@ describe("FilesTreeProvider.useFolders", () => {
 		for (const kind of ["folder", "file"] as const)
 			for (const restricted of [false, true])
 				results.set(children_key({ parentId: "root", kind, restricted, cursor: null }), IDLE_DIRECTORY_PAGE);
-		results.set(firstKey, { page: files.slice(0, 200), isDone: false, continueCursor: "normal-next", directoryView: null });
+		results.set(firstKey, {
+			page: files.slice(0, 200),
+			isDone: false,
+			continueCursor: "normal-next",
+			directoryView: null,
+		});
 		results.set(oldNextKey, { ...IDLE_DIRECTORY_PAGE, page: files.slice(200) });
 		render(
 			<TestWorkspace membershipId="membership_1">
@@ -279,7 +330,9 @@ describe("FilesTreeProvider.useFolders", () => {
 			</TestWorkspace>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "More root" }));
-		await waitFor(() => expect(screen.getByLabelText("Rows").textContent).toBe(files.map((file) => file.name).join(",")));
+		await waitFor(() =>
+			expect(screen.getByLabelText("Rows").textContent).toBe(files.map((file) => file.name).join(",")),
+		);
 
 		const directoryView: files_DirectoryView = {
 			cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">,
@@ -287,7 +340,11 @@ describe("FilesTreeProvider.useFolders", () => {
 		};
 		const cohortFirstKey = children_key({ parentId: "root", kind: "file", stream: "cohort", cursor: null });
 		const refillKey = children_key({
-			parentId: "root", kind: "file", stream: "cohort", cursor: "cohort-next", pageView: directoryView,
+			parentId: "root",
+			kind: "file",
+			stream: "cohort",
+			cursor: "cohort-next",
+			pageView: directoryView,
 		});
 		const subscriptionCount = subscriptions.length;
 		act(() => {
@@ -295,35 +352,49 @@ describe("FilesTreeProvider.useFolders", () => {
 				for (const kind of ["folder", "file"] as const)
 					for (const restricted of [false, true])
 						results.set(children_key({ parentId: "root", kind, restricted, stream, cursor: null }), {
-							...EMPTY_PAGE, directoryView,
+							...EMPTY_PAGE,
+							directoryView,
 						});
 			// The old normal continuation still pins the idle directory view.
-			results.set(oldNextKey, new ConvexError({
-				message: "InvalidCursor: The saved directory Move view changed.",
-				isConvexSystemError: true, paginationError: "InvalidCursor", reason: "saved_directory_view_changed",
-			}));
-			results.set(cohortFirstKey, { page: afterFiles.slice(0, 200), isDone: false, continueCursor: "cohort-next", directoryView });
+			results.set(
+				oldNextKey,
+				new ConvexError({
+					message: "InvalidCursor: The saved directory Move view changed.",
+					isConvexSystemError: true,
+					paginationError: "InvalidCursor",
+					reason: "saved_directory_view_changed",
+				}),
+			);
+			results.set(cohortFirstKey, {
+				page: afterFiles.slice(0, 200),
+				isDone: false,
+				continueCursor: "cohort-next",
+				directoryView,
+			});
 			for (const callbacks of listeners.values()) for (const notify of [...callbacks]) notify();
 		});
 		expect(
 			screen.getByLabelText("Rows").textContent,
 			"the tree keeps its displayed extent while rows move into the cohort stream",
 		).toBe(files.map((file) => file.name).join(","));
-		await waitFor(() => expect(
-			listeners.get(refillKey)?.size,
-			"the tree refills the stream that now holds its requested rows",
-		).toBe(1));
+		await waitFor(() =>
+			expect(listeners.get(refillKey)?.size, "the tree refills the stream that now holds its requested rows").toBe(1),
+		);
 		const nextPages = subscriptions.slice(subscriptionCount).flatMap(({ name, args: queryArgs }) => {
 			const args = queryArgs as FunctionArgs<typeof app_convex_api.files_tree.list_tree_children>;
-			return name === getFunctionName(app_convex_api.files_tree.list_tree_children) && args.paginationOpts.cursor !== null
-				? [watch_key(name, args)] : [];
+			return name === getFunctionName(app_convex_api.files_tree.list_tree_children) &&
+				args.paginationOpts.cursor !== null
+				? [watch_key(name, args)]
+				: [];
 		});
 		expect([...new Set(nextPages)], "only the blocking cohort stream asks for another tree page").toEqual([refillKey]);
 		receive(refillKey, { ...EMPTY_PAGE, page: afterFiles.slice(200), directoryView });
-		await waitFor(() => expect(
-			screen.getByLabelText("Rows").textContent,
-			"the matching refill shows every final name without losing the requested extent",
-		).toBe(afterFiles.map((file) => file.name).join(",")));
+		await waitFor(() =>
+			expect(
+				screen.getByLabelText("Rows").textContent,
+				"the matching refill shows every final name without losing the requested extent",
+			).toBe(afterFiles.map((file) => file.name).join(",")),
+		);
 	});
 
 	test("loads the root folders and files together", () => {

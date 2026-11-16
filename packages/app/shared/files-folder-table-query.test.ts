@@ -115,7 +115,9 @@ describe("files_folder_table_query_parse_token", () => {
 		const problems = (raw: string) => files_folder_table_query_parse_token(raw).problem;
 
 		expect(problems("report")).toBe("Type a filter like file.name:report*, or a sort like sort_by:file.updated:desc");
-		expect(problems("status:open")).toBe("Type a filter like file.name:report*, or a sort like sort_by:file.updated:desc");
+		expect(problems("status:open")).toBe(
+			"Type a filter like file.name:report*, or a sort like sort_by:file.updated:desc",
+		);
 		// The old operation words read as a value now, and the table says what it takes.
 		expect(problems("file.name:starts_with:x")).toBe("Filter names by their start, like file.name:report*");
 		expect(problems("file.size:at_least:1")).toBe("Enter a whole number of bytes, zero or more");

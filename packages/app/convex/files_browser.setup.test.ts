@@ -554,7 +554,8 @@ export async function saved_node_id_by_path(args: {
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
 					.eq("organizationId", fixture.organizationId)
-					.eq("workspaceId", fixture.workspaceId).eq("moveCohortId", undefined)
+					.eq("workspaceId", fixture.workspaceId)
+					.eq("moveCohortId", undefined)
 					.eq("path", path)
 					.eq("archiveOperationId", null),
 			)

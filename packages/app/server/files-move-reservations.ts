@@ -261,15 +261,27 @@ export async function files_move_reservations_db_check_node_write(
 }
 
 // A published Review keeps its placement while a later Save selects a complete source.
-export async function files_move_reservations_db_enter_save(ctx: MutationCtx, args: {
-	nodeId: Id<"files_nodes">; headId: Id<"files_saved_content_heads">;
-}) {
+export async function files_move_reservations_db_enter_save(
+	ctx: MutationCtx,
+	args: {
+		nodeId: Id<"files_nodes">;
+		headId: Id<"files_saved_content_heads">;
+	},
+) {
 	const blocker = await files_move_reservations_db_find_blocker(ctx.db, { source: { kind: "saved", id: args.nodeId } });
 	if (!blocker) return Result({ _yay: null });
 	const cohort = await ctx.db.get("files_move_cohorts", blocker);
 	const head = await ctx.db.get("files_saved_content_heads", args.headId);
-	if (!cohort || cohort.publishedAt === null || cohort.visibleView !== "after" ||
-		!head || !head.ready || head.retired || head.fileNodeId !== args.nodeId) return Result({ _nay: BUSY });
+	if (
+		!cohort ||
+		cohort.publishedAt === null ||
+		cohort.visibleView !== "after" ||
+		!head ||
+		!head.ready ||
+		head.retired ||
+		head.fileNodeId !== args.nodeId
+	)
+		return Result({ _nay: BUSY });
 	const state = (ctx.db as GuardedDb)[STATE];
 	if (!state) throw new Error("Save writes need the mutation wrapper.");
 	state.saveNodes.set(args.nodeId, args.headId);
@@ -663,18 +675,33 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 			const nodeId = table === "files_nodes" ? id : value.fileNodeId;
 			const savedHeadId = state.saveNodes.get(nodeId as Id<"files_nodes">);
 			if (savedHeadId && !membershipChanged) {
-				const fields = ["contentHeadId", "assetId", "statsId", "contentByteSize", "pendingContentVersion",
-					"contentTooLargeByteSize", "contentShapeMismatchAt", "contentYjsStateTooLargeByteSize",
-					"updatedAt", "updatedBy"];
-				if (table === "files_nodes" && patch?.contentHeadId === savedHeadId &&
-					Object.keys(patch).every((field) => fields.includes(field))) continue;
+				const fields = [
+					"contentHeadId",
+					"assetId",
+					"statsId",
+					"contentByteSize",
+					"pendingContentVersion",
+					"contentTooLargeByteSize",
+					"contentShapeMismatchAt",
+					"contentYjsStateTooLargeByteSize",
+					"updatedAt",
+					"updatedBy",
+				];
+				if (
+					table === "files_nodes" &&
+					patch?.contentHeadId === savedHeadId &&
+					Object.keys(patch).every((field) => fields.includes(field))
+				)
+					continue;
 			}
 			if (savedHeadId && table === "files_snapshots" && !old) continue;
 			const restore = check.source?.kind === "saved" ? state.restoreNodes.get(check.source.id) : undefined;
 			if (restore && scopes.every((doc) => (table === "files_nodes" ? id : doc.fileNodeId) === check.source?.id)) {
 				if (
 					table === "files_yjs_trusted_update_stages" &&
-					scopes.every((doc) => doc.kind === "snapshot_restore" && doc.userId === restore.userId && !doc.cohortContentId)
+					scopes.every(
+						(doc) => doc.kind === "snapshot_restore" && doc.userId === restore.userId && !doc.cohortContentId,
+					)
 				)
 					continue;
 				if (restore.mode === "publish") {
@@ -699,15 +726,23 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 					];
 					if (table === "files_nodes" && patch && Object.keys(patch).every((field) => fields.includes(field))) continue;
 					if (
-						["files_yjs_snapshots", "files_yjs_updates", "files_yjs_docs_last_sequences", "files_snapshots", "file_stats"].includes(table)
+						[
+							"files_yjs_snapshots",
+							"files_yjs_updates",
+							"files_yjs_docs_last_sequences",
+							"files_snapshots",
+							"file_stats",
+						].includes(table)
 					)
 						continue;
 					if (
 						["files_text_chunks", "files_plain_text_chunks", "files_metadata_docs"].includes(table) &&
-						scopes.every((doc) =>
-							doc.sourceKind === "committed" &&
-							(table !== "files_metadata_docs" ||
-								(typeof doc.fieldPath === "string" && doc.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX))),
+						scopes.every(
+							(doc) =>
+								doc.sourceKind === "committed" &&
+								(table !== "files_metadata_docs" ||
+									(typeof doc.fieldPath === "string" &&
+										doc.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX))),
 						)
 					)
 						continue;
@@ -875,8 +910,11 @@ export function files_move_reservations_db_wrap(ctx: MutationCtx) {
 						}
 					}
 					// Private source pages cannot alter a Move's source. Publication still takes the normal guard.
-					if ((SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) &&
-						!files_content_heads_db_is_staged_insert(raw, table, value)) await guard(table, null, null, value, null);
+					if (
+						(SOURCE_TABLES.has(table) || SIDE_TABLES.has(table)) &&
+						!files_content_heads_db_is_staged_insert(raw, table, value)
+					)
+						await guard(table, null, null, value, null);
 					return await target.insert(table, value as never);
 				};
 			if (property === "patch" || property === "replace" || property === "delete")

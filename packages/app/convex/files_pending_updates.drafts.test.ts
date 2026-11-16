@@ -219,10 +219,10 @@ describe.each(["saved", "private"] as const)("%s Copy action replies", (kind) =>
 				if (result._nay) throw new Error(result._nay.message);
 				returned = result._yay.pendingUpdate;
 			} else {
-				const writing = await asUser.mutation(
-					api.files_pending_updates.create_file_pending_update_operation_batch,
-					{ ...args, expectedPendingContentVersion: target.kind === "private" ? null : 1 },
-				);
+				const writing = await asUser.mutation(api.files_pending_updates.create_file_pending_update_operation_batch, {
+					...args,
+					expectedPendingContentVersion: target.kind === "private" ? null : 1,
+				});
 				if (writing._nay) throw new Error(writing._nay.message);
 				const operationBatchId = writing._yay.operationBatchId;
 				if (operation === "upsert" || operation === "upsert-refresh") {
@@ -701,9 +701,7 @@ describe("archived-parent draft recovery", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(
-			await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
-		).toBeNull();
+		expect(await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target })).toBeNull();
 		expect(
 			await f.asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
 				membershipId,
@@ -740,9 +738,7 @@ describe("archived-parent draft recovery", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(
-			await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
-		).toBeNull();
+		expect(await f.asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target })).toBeNull();
 	});
 });
 

@@ -566,9 +566,10 @@ export async function rate_limiter_limit_by_key(
 		key: string;
 		count?: number;
 	},
-): Promise<
-	{ readonly message: typeof rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE; readonly retryAfterMs: number } | null
-> {
+): Promise<{
+	readonly message: typeof rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE;
+	readonly retryAfterMs: number;
+} | null> {
 	if (args.name === "public_api_principal" && args.count !== undefined && args.count !== 1) {
 		const errorMessage = "Principal rate limit charge must be 1";
 		const errorData = { count: args.count };
@@ -579,9 +580,10 @@ export async function rate_limiter_limit_by_key(
 	let limit;
 	try {
 		if (args.name === "public_api_principal") {
-			limit = "db" in ctx
-				? await limit_principal_parts(ctx, args.key)
-				: await ctx.runMutation(internal.rate_limiter.limit_principal, { key: args.key });
+			limit =
+				"db" in ctx
+					? await limit_principal_parts(ctx, args.key)
+					: await ctx.runMutation(internal.rate_limiter.limit_principal, { key: args.key });
 		} else {
 			limit = await rate_limiter.limit(ctx, args.name, {
 				key: args.key,

@@ -362,9 +362,7 @@ export function snippet_executor_check_state_warnings(value: unknown) {
  * transport shape and the byte budget again here. The app owns Files path and MIME rules. The
  * workspace picks a file destination, not a browser session or access grant.
  */
-export function snippet_executor_check_files(
-	files: unknown,
-):
+export function snippet_executor_check_files(files: unknown):
 	| {
 			ok: true;
 			files: Array<{ workspace: "current" | "personal"; path: string; contentType?: string; dataBase64: string }>;

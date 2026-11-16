@@ -787,7 +787,10 @@ function get_named_item_refusal(
 	if (name === "needs_review") return { name, message: nay.message };
 	if (name === "read_only") {
 		if (inside?.lockedPath && inside.hasMore)
-			return { name, message: `"${inside.lockedPath}" and other items inside are read-only. Unlock them, then try again.` };
+			return {
+				name,
+				message: `"${inside.lockedPath}" and other items inside are read-only. Unlock them, then try again.`,
+			};
 		const lockedItem = !inside ? "This item" : inside.lockedPath ? `"${inside.lockedPath}"` : "An item inside it";
 		return { name, message: `${lockedItem} is read-only. Unlock it, then try again.` };
 	}
@@ -3305,7 +3308,10 @@ export async function files_archive_runs_db_check_fast(
 ) {
 	const { organizationId, workspaceId } = args.membership;
 	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
-	const blockers = new Map<Id<"files_nodes">, { place: "inside" | "parent"; nodeId: Id<"files_nodes">; hasMore: boolean }>();
+	const blockers = new Map<
+		Id<"files_nodes">,
+		{ place: "inside" | "parent"; nodeId: Id<"files_nodes">; hasMore: boolean }
+	>();
 	if (args.writeContext.force) return { refusals, blockers, isFast: false, indexPending: false };
 
 	// Check the item and the direct parent whose child list changes.

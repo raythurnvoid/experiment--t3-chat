@@ -2247,7 +2247,9 @@ const useThreadRuntimeController = () => {
 
 		for (const [parentId, children] of pendingMessagesLookup.childrenByParentId.entries()) {
 			// Saved SDK ancestors can already be listed among another branch's siblings.
-			result.set(parentId, [...new Set([...(result.get(parentId) ?? []), ...children.toReversed().map((child) => child.id)])]);
+			result.set(parentId, [
+				...new Set([...(result.get(parentId) ?? []), ...children.toReversed().map((child) => child.id)]),
+			]);
 		}
 
 		return result;

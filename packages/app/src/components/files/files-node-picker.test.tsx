@@ -161,12 +161,15 @@ function set_shared_roots(rows: Array<ReturnType<typeof tree_row>>) {
  * Answer the workspace view: no Move, or a Move with the given cohort.
  */
 function set_move_view(cohortId: string | null) {
-	results.set(watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }), {
-		generation: 1,
-		searchGeneration: 1,
-		cohortId,
-		view: cohortId === null ? null : "after",
-	});
+	results.set(
+		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+		{
+			generation: 1,
+			searchGeneration: 1,
+			cohortId,
+			view: cohortId === null ? null : "after",
+		},
+	);
 }
 
 function set_folder_path(path: string, nodeId: string) {
@@ -374,98 +377,112 @@ describe("FilesNodePicker", () => {
 			});
 		const row = (path: string) => ({ kind: "file", nodeId: path, path, contentType: "text/markdown" });
 		results.set(search_key(NORMAL_STREAM), { ...EMPTY_PAGE, page: [row("/notes.md")] });
-		results.set(search_key({ kind: "cohort", cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">, view: "after", generation: 1 }), {
-			...EMPTY_PAGE,
-			page: [row("/notes.md"), row("/moved/notes-2.md")],
-		});
+		results.set(
+			search_key({
+				kind: "cohort",
+				cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">,
+				view: "after",
+				generation: 1,
+			}),
+			{
+				...EMPTY_PAGE,
+				page: [row("/notes.md"), row("/moved/notes-2.md")],
+			},
+		);
 		render(<PickerHarness initialQuery="notes" />);
 
 		await waitFor(() => expect(option_names()).toEqual(["notes.md/", "notes-2.md/moved/"]));
 	});
 
-	test.each(["before", "after"] as const)("searches both saved Move streams in the %s view and pages each one", async (view) => {
-		const folderPath = view === "before" ? "/source" : "/destination";
-		results.set(
-			watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
-			{ cohortId: "cohort_1", view, generation: 7, searchGeneration: 11 },
-		);
-		const searchArgs = {
-			membershipId: MEMBERSHIP_ID,
-			clause: { kind: "name", text: "note" },
-			folderPath,
-			searchGeneration: 11,
-		};
-		const normal = { kind: "normal", generation: 7 };
-		const cohort = { kind: "cohort", cohortId: "cohort_1", view, generation: 7 };
-		const normalRow = {
-			kind: "file",
-			nodeId: "normal",
-			path: `${folderPath}/note-normal.md`,
-			contentType: "text/markdown",
-		};
-		for (const [savedStream, rows, cursor, nextRow] of [
-			[
-				normal,
-				[normalRow],
-				"normal-next",
-				{ ...normalRow, nodeId: "normal-next", path: `${folderPath}/note-normal-next.md` },
-			],
-			[
-				cohort,
-				[normalRow, { ...normalRow, nodeId: "moving", path: `${folderPath}/note-moving.md` }],
-				"cohort-next",
-				{ ...normalRow, nodeId: "moving-next", path: `${folderPath}/note-moving-next.md` },
-			],
-		] as const) {
+	test.each(["before", "after"] as const)(
+		"searches both saved Move streams in the %s view and pages each one",
+		async (view) => {
+			const folderPath = view === "before" ? "/source" : "/destination";
 			results.set(
-				watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
-					...searchArgs,
-					savedStream,
-					paginationOpts: { cursor: null },
-				}),
-				{ page: rows, isDone: false, continueCursor: cursor },
+				watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
+				{ cohortId: "cohort_1", view, generation: 7, searchGeneration: 11 },
 			);
-			results.set(
-				watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
-					...searchArgs,
-					savedStream,
-					paginationOpts: { cursor },
-				}),
-				{ ...EMPTY_PAGE, page: [nextRow] },
-			);
-		}
-		render(<PickerHarness initialQuery={`${folderPath}/note`} />);
+			const searchArgs = {
+				membershipId: MEMBERSHIP_ID,
+				clause: { kind: "name", text: "note" },
+				folderPath,
+				searchGeneration: 11,
+			};
+			const normal = { kind: "normal", generation: 7 };
+			const cohort = { kind: "cohort", cohortId: "cohort_1", view, generation: 7 };
+			const normalRow = {
+				kind: "file",
+				nodeId: "normal",
+				path: `${folderPath}/note-normal.md`,
+				contentType: "text/markdown",
+			};
+			for (const [savedStream, rows, cursor, nextRow] of [
+				[
+					normal,
+					[normalRow],
+					"normal-next",
+					{ ...normalRow, nodeId: "normal-next", path: `${folderPath}/note-normal-next.md` },
+				],
+				[
+					cohort,
+					[normalRow, { ...normalRow, nodeId: "moving", path: `${folderPath}/note-moving.md` }],
+					"cohort-next",
+					{ ...normalRow, nodeId: "moving-next", path: `${folderPath}/note-moving-next.md` },
+				],
+			] as const) {
+				results.set(
+					watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
+						...searchArgs,
+						savedStream,
+						paginationOpts: { cursor: null },
+					}),
+					{ page: rows, isDone: false, continueCursor: cursor },
+				);
+				results.set(
+					watch_key(getFunctionName(app_convex_api.files_nodes.search_saved), {
+						...searchArgs,
+						savedStream,
+						paginationOpts: { cursor },
+					}),
+					{ ...EMPTY_PAGE, page: [nextRow] },
+				);
+			}
+			render(<PickerHarness initialQuery={`${folderPath}/note`} />);
 
-		await waitFor(() =>
-			expect(option_names(), "the selected Move row appears once in the current view").toEqual([
-				`note-normal.md${folderPath}/`,
-				`note-moving.md${folderPath}/`,
-				"Show more",
-			]),
-		);
-		fireEvent.click(screen.getByRole("option", { name: "Show more" }));
-		await waitFor(() =>
-			expect(option_names(), "Show more loads the next page of both saved streams").toEqual([
-				`note-normal.md${folderPath}/`,
-				`note-normal-next.md${folderPath}/`,
-				`note-moving.md${folderPath}/`,
-				`note-moving-next.md${folderPath}/`,
-			]),
-		);
-		const searches = vi.mocked(client).watchQuery.mock.calls
-			.filter(([query]) => getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved))
-			.map(([, args]) => args);
-		for (const [savedStream, cursor] of [
-			[normal, "normal-next"],
-			[cohort, "cohort-next"],
-		] as const) {
-			expect(searches, "each pager uses the current Move and search generations").toContainEqual({
-				...searchArgs,
-				savedStream,
-				paginationOpts: expect.objectContaining({ cursor, numItems: 50 }),
-			});
-		}
-	});
+			await waitFor(() =>
+				expect(option_names(), "the selected Move row appears once in the current view").toEqual([
+					`note-normal.md${folderPath}/`,
+					`note-moving.md${folderPath}/`,
+					"Show more",
+				]),
+			);
+			fireEvent.click(screen.getByRole("option", { name: "Show more" }));
+			await waitFor(() =>
+				expect(option_names(), "Show more loads the next page of both saved streams").toEqual([
+					`note-normal.md${folderPath}/`,
+					`note-normal-next.md${folderPath}/`,
+					`note-moving.md${folderPath}/`,
+					`note-moving-next.md${folderPath}/`,
+				]),
+			);
+			const searches = vi
+				.mocked(client)
+				.watchQuery.mock.calls.filter(
+					([query]) => getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved),
+				)
+				.map(([, args]) => args);
+			for (const [savedStream, cursor] of [
+				[normal, "normal-next"],
+				[cohort, "cohort-next"],
+			] as const) {
+				expect(searches, "each pager uses the current Move and search generations").toContainEqual({
+					...searchArgs,
+					savedStream,
+					paginationOpts: expect.objectContaining({ cursor, numItems: 50 }),
+				});
+			}
+		},
+	);
 
 	test("waits for the Move view before starting a saved search", () => {
 		results.delete(
@@ -475,9 +492,11 @@ describe("FilesNodePicker", () => {
 
 		expect(screen.getByText("Loading…")).toBeTruthy();
 		expect(
-			vi.mocked(client).watchQuery.mock.calls.some(([query]) =>
-				getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved),
-			),
+			vi
+				.mocked(client)
+				.watchQuery.mock.calls.some(
+					([query]) => getFunctionName(query) === getFunctionName(app_convex_api.files_nodes.search_saved),
+				),
 			"both saved search pagers wait for their source",
 		).toBe(false);
 	});
@@ -709,42 +728,54 @@ describe("FilesNodePicker", () => {
 		const cohortArgs = { ...normalArgs, stream: "cohort" };
 		const oldNextKey = watch_key(children, { ...normalArgs, pageView: null, paginationOpts: { cursor: "next" } });
 		const refillKey = watch_key(children, {
-			...cohortArgs, pageView: directoryView, paginationOpts: { cursor: "cohort-next" },
+			...cohortArgs,
+			pageView: directoryView,
+			paginationOpts: { cursor: "cohort-next" },
 		});
 		const subscriptionCount = subscriptions.length;
 		act(() => {
 			set_folder({ parentId: "root", directoryView });
 			// The old normal continuation still pins the idle directory view.
-			results.set(oldNextKey, new ConvexError({
-				message: "InvalidCursor: The saved directory Move view changed.",
-				isConvexSystemError: true, paginationError: "InvalidCursor", reason: "saved_directory_view_changed",
-			}));
+			results.set(
+				oldNextKey,
+				new ConvexError({
+					message: "InvalidCursor: The saved directory Move view changed.",
+					isConvexSystemError: true,
+					paginationError: "InvalidCursor",
+					reason: "saved_directory_view_changed",
+				}),
+			);
 			results.set(watch_key(children, { ...cohortArgs, paginationOpts: { cursor: null } }), {
-				page: afterFiles.slice(0, 50), isDone: false, continueCursor: "cohort-next", directoryView,
+				page: afterFiles.slice(0, 50),
+				isDone: false,
+				continueCursor: "cohort-next",
+				directoryView,
 			});
 			for (const callbacks of listeners.values()) for (const notify of [...callbacks]) notify();
 		});
-		expect(
-			option_names(),
-			"the picker keeps its displayed extent while rows move into the cohort stream",
-		).toEqual(files.map((file) => file.name));
-		await waitFor(() => expect(
-			listeners.get(refillKey)?.size,
-			"the picker refills the stream that now holds its requested rows",
-		).toBe(1));
+		expect(option_names(), "the picker keeps its displayed extent while rows move into the cohort stream").toEqual(
+			files.map((file) => file.name),
+		);
+		await waitFor(() =>
+			expect(listeners.get(refillKey)?.size, "the picker refills the stream that now holds its requested rows").toBe(1),
+		);
 		const nextPages = subscriptions.slice(subscriptionCount).flatMap(({ name, args: queryArgs }) => {
 			const args = queryArgs as FunctionArgs<typeof app_convex_api.files_tree.list_tree_children>;
 			return name === children && args.paginationOpts.cursor !== null ? [watch_key(children, args)] : [];
 		});
-		expect([...new Set(nextPages)], "only the blocking cohort stream asks for another picker page").toEqual([refillKey]);
+		expect([...new Set(nextPages)], "only the blocking cohort stream asks for another picker page").toEqual([
+			refillKey,
+		]);
 		act(() => {
 			results.set(refillKey, { ...EMPTY_PAGE, page: afterFiles.slice(50), directoryView });
 			listeners.get(refillKey)?.forEach((notify) => notify());
 		});
-		await waitFor(() => expect(
-			option_names(),
-			"the matching refill shows every final picker name without losing the requested extent",
-		).toEqual(afterFiles.map((file) => file.name)));
+		await waitFor(() =>
+			expect(
+				option_names(),
+				"the matching refill shows every final picker name without losing the requested extent",
+			).toEqual(afterFiles.map((file) => file.name)),
+		);
 	});
 
 	test("Show more loads the next page of the folder", async () => {

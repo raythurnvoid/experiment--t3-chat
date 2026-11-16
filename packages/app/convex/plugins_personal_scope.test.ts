@@ -34,7 +34,9 @@ beforeEach(() => {
 				return new Response(null);
 			}
 			const body = r2Objects.get(key);
-			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { headers: { ETag: '"saved-file"' } });
+			return body === undefined
+				? new Response(null, { status: 404 })
+				: new Response(body, { headers: { ETag: '"saved-file"' } });
 		}),
 	);
 });

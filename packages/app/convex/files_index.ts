@@ -7,7 +7,11 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalAction, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
 import app_convex_schema, { files_metadata_entries_validator } from "./schema.ts";
-import { files_index_db_release_ticket, files_index_db_ticket, files_index_RECOVER_MS as RECOVER_MS } from "../server/files-index.ts";
+import {
+	files_index_db_release_ticket,
+	files_index_db_ticket,
+	files_index_RECOVER_MS as RECOVER_MS,
+} from "../server/files-index.ts";
 import { files_content_heads_db_for_head, files_content_heads_db_flush } from "../server/files-content-heads.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import {
@@ -550,7 +554,7 @@ async function cleanup(ctx: MutationCtx, run: Run) {
 	await slot_for(ctx, run);
 	const table = run.phase === "cleanup_text" ? "files_plain_text_chunks" : "files_metadata_docs";
 	// A canceled upload has no selected side left to restore.
-	const kept = await ctx.db.get("files_nodes", run.fileNodeId) ? (run.published ? "after" : "before") : null;
+	const kept = (await ctx.db.get("files_nodes", run.fileNodeId)) ? (run.published ? "after" : "before") : null;
 	const page = await ctx.db
 		.query(table)
 		.withIndex("by_move_view", (q) => q.eq("moveView.cohortId", run._id))
@@ -600,12 +604,16 @@ async function finish(ctx: MutationCtx, run: Run) {
 	await ctx.db.delete("files_index_runs", run._id);
 	const node = await ctx.db.get("files_nodes", run.fileNodeId);
 	if (node && run.slotGeneration !== null)
-		await files_pending_overlay_db_schedule_saved_places(ctx, {
-			organizationId: run.organizationId,
-			workspaceId: run.workspaceId,
-			_id: run.fileNodeId,
-		}, { fieldsChanged: true });
-	if (node && await files_pending_overlay_db_has_saved_scope_job(ctx, run.fileNodeId))
+		await files_pending_overlay_db_schedule_saved_places(
+			ctx,
+			{
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				_id: run.fileNodeId,
+			},
+			{ fieldsChanged: true },
+		);
+	if (node && (await files_pending_overlay_db_has_saved_scope_job(ctx, run.fileNodeId)))
 		await files_pending_overlay_db_schedule_saved_scope(ctx, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
@@ -623,7 +631,8 @@ async function finish(ctx: MutationCtx, run: Run) {
 			return null;
 		}
 		await ctx.db.patch("files_index_states", state._id, {
-			activeRunId: null, needsRun: state.requestedRevision > state.publishedRevision,
+			activeRunId: null,
+			needsRun: state.requestedRevision > state.publishedRevision,
 			nextAttemptAt: Date.now() + RECOVER_MS,
 		});
 		if (state.requestedRevision > state.publishedRevision)
@@ -638,10 +647,10 @@ export const advance = internalMutation({
 	handler: async (ctx, args) => {
 		const run = await current(ctx, args);
 		if (!run) return null;
-		if (!run.aborting && (
-			!await ctx.db.get("files_nodes", run.fileNodeId) ||
-			(!run.published && !await workspace_live(ctx, run))
-		)) {
+		if (
+			!run.aborting &&
+			(!(await ctx.db.get("files_nodes", run.fileNodeId)) || (!run.published && !(await workspace_live(ctx, run))))
+		) {
 			if (run.slotGeneration !== null) {
 				const slot = await slot_for(ctx, run);
 				await ctx.db.patch("files_move_workspace_slots", slot._id, {
@@ -769,14 +778,16 @@ export const recover_requests = internalMutation({
 	args: { cutoff: v.number(), cursor: v.union(v.string(), v.null()) },
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const page = await ctx.db.query("files_index_states")
+		const page = await ctx.db
+			.query("files_index_states")
 			.withIndex("by_needsRun_nextAttemptAt", (q) => q.eq("needsRun", true).lte("nextAttemptAt", args.cutoff))
 			.paginate({ cursor: args.cursor, numItems: 8 });
 		for (const state of page.page) {
 			await ctx.scheduler.runAfter(0, internal.files_index.start, { nodeId: state.fileNodeId });
 			await ctx.db.patch("files_index_states", state._id, { nextAttemptAt: Date.now() + RECOVER_MS });
 		}
-		if (!page.isDone) await ctx.scheduler.runAfter(0, internal.files_index.recover_requests, { ...args, cursor: page.continueCursor });
+		if (!page.isDone)
+			await ctx.scheduler.runAfter(0, internal.files_index.recover_requests, { ...args, cursor: page.continueCursor });
 		return null;
 	},
 });

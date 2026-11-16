@@ -4630,7 +4630,9 @@ describe("ingest_events", () => {
 			for (let job = jobs.shift(); job; job = jobs.shift()) {
 				const before = enqueueActionSpy.mock.calls.length;
 				await t.action(internal.billing.ingest_events, { events: job });
-				jobs.push(...enqueueActionSpy.mock.calls.slice(before).map((call) => (call[2] as { events: typeof events }).events));
+				jobs.push(
+					...enqueueActionSpy.mock.calls.slice(before).map((call) => (call[2] as { events: typeof events }).events),
+				);
 			}
 			// Any other error throws, so the pool retries the batch.
 			eventsIngestMock.mockResolvedValueOnce({ ok: false, error: new UnexpectedClientError("offline") } as never);
@@ -4644,7 +4646,9 @@ describe("ingest_events", () => {
 		}
 
 		const ids = (calls: Array<Array<unknown>>, index: number) =>
-			calls.map((call) => (call[index] as { events: Array<{ externalId?: string }> }).events.map((event) => event.externalId));
+			calls.map((call) =>
+				(call[index] as { events: Array<{ externalId?: string }> }).events.map((event) => event.externalId),
+			);
 		expect(ids(eventsIngestMock.mock.calls, 1)).toEqual([
 			["manual_credit::a", "manual_credit::b", "manual_credit::bad", "manual_credit::c"],
 			["manual_credit::a", "manual_credit::b"],
@@ -4660,10 +4664,13 @@ describe("ingest_events", () => {
 			["manual_credit::c"],
 		]);
 		expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
-		expect(consoleErrorSpy).toHaveBeenCalledWith("Polar refused a usage event; it waits in billing_usage_event_rejected", {
-			event: expect.objectContaining({ externalId: "manual_credit::bad" }),
-			detail: [],
-		});
+		expect(consoleErrorSpy).toHaveBeenCalledWith(
+			"Polar refused a usage event; it waits in billing_usage_event_rejected",
+			{
+				event: expect.objectContaining({ externalId: "manual_credit::bad" }),
+				detail: [],
+			},
+		);
 		// The refused event is kept, not dropped.
 		const rejected = await t.run((ctx) => ctx.db.query("billing_usage_event_rejected").collect());
 		expect(

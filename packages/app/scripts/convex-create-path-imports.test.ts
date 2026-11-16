@@ -27,7 +27,11 @@ describe("creation imports", () => {
 			const inputs = Object.keys(result.metafile.inputs).map((path) => path.replaceAll("\\", "/"));
 			expect(inputs.length).toBeGreaterThan(100);
 			expect(
-				inputs.filter((path) => /(?:^|\/)convex\/(?:files_nodes_content|files_nodes|files_metadata|files_pending_updates|files_transfer)\.ts$/.test(path)),
+				inputs.filter((path) =>
+					/(?:^|\/)convex\/(?:files_nodes_content|files_nodes|files_metadata|files_pending_updates|files_transfer)\.ts$/.test(
+						path,
+					),
+				),
 				"no broad content handler import",
 			).toEqual([]);
 			expect(
@@ -36,7 +40,11 @@ describe("creation imports", () => {
 			).toEqual([]);
 			// Only the final file transaction needs Markdown chunking. Folders share the DB helper.
 			if (name !== "files_nodes_create") {
-				expect(inputs.filter((path) => /\/(?:@tiptap|@mastra)\/|vendor\/(?:tiptap|mastra)\/|files-markdown-chunking-mastra\.ts$/.test(path))).toEqual([]);
+				expect(
+					inputs.filter((path) =>
+						/\/(?:@tiptap|@mastra)\/|vendor\/(?:tiptap|mastra)\/|files-markdown-chunking-mastra\.ts$/.test(path),
+					),
+				).toEqual([]);
 			}
 		},
 	);

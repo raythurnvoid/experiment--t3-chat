@@ -198,7 +198,10 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 		const currentAssetId = await save_as_member({ t, seeded, text: args.current });
 		expect(await read_seeded_pending_row(t, seeded)).toEqual(original);
 		expect(
-			files_pending_update_content_is_stale(original, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+			files_pending_update_content_is_stale(
+				original,
+				(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+			),
 		).toBe(true);
 		const prepareArgs = {
 			membershipId: seeded.membershipId,
@@ -233,7 +236,10 @@ describe("prepare_file_pending_update_for_review after a member save", () => {
 			expect(prepared.content?.base).toEqual({ kind: "asset", assetId: currentAssetId, pendingContentVersion: 1 });
 			expect(prepared.content?.baseStateId).not.toBe(original.content?.baseStateId);
 			expect(
-				files_pending_update_content_is_stale(prepared, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+				files_pending_update_content_is_stale(
+					prepared,
+					(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+				),
 			).toBe(false);
 			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: prepared, rootKind }))).toEqual(
 				{
@@ -612,7 +618,10 @@ describe("prepare_file_pending_update_for_review", () => {
 			if (!pendingUpdate) throw new Error("Expected the prepared proposal");
 			expect(pendingUpdate.content?.base).toMatchObject({ kind: "yjs", sequence: 0 });
 			expect(
-				files_pending_update_content_is_stale(pendingUpdate, (await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!),
+				files_pending_update_content_is_stale(
+					pendingUpdate,
+					(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
+				),
 			).toBe(false);
 			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate, rootKind }))).toEqual({
 				baseMarkdown: base,
@@ -1020,7 +1029,11 @@ describe("prepare_file_pending_update_for_review", () => {
 					(await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId)))!,
 				),
 			).toBe(false);
-			expect(prepared._yay?.pendingUpdate?.content?.base).toEqual({ kind: "asset", assetId: expect.any(String), pendingContentVersion: 2 });
+			expect(prepared._yay?.pendingUpdate?.content?.base).toEqual({
+				kind: "asset",
+				assetId: expect.any(String),
+				pendingContentVersion: 2,
+			});
 
 			expect(
 				(

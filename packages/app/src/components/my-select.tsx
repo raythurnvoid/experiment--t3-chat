@@ -337,7 +337,11 @@ export const MySelectTrigger = memo(function MySelectTrigger(props: MySelectTrig
 	const { className, children, ...rest } = props;
 
 	return (
-		<Select className={cn("MySelectTrigger" satisfies MySelectTrigger_ClassNames, className)} render={children} {...rest} />
+		<Select
+			className={cn("MySelectTrigger" satisfies MySelectTrigger_ClassNames, className)}
+			render={children}
+			{...rest}
+		/>
 	);
 });
 // #endregion trigger

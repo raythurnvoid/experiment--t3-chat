@@ -2,11 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api.js";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
-import {
-	create_bash_runner,
-	test_db_files_mount,
-	test_r2_objects,
-} from "../server/bash.setup.test.ts";
+import { create_bash_runner, test_db_files_mount, test_r2_objects } from "../server/bash.setup.test.ts";
 
 describe("saved-only public reads", () => {
 	test.each(["content", "create", "move", "delete", "replacement"] as const)(
@@ -58,19 +54,10 @@ describe("saved-only public reads", () => {
 			const mount = test_db_files_mount;
 			const commands = {
 				content: [`printf 'private text' > ${mount}/saved.txt`],
-				create: [
-					`printf 'private text' > ${mount}/draft.txt`,
-					`cp ${mount}/source.png ${mount}/draft.png`,
-				],
-				move: [
-					`mv ${mount}/saved.txt ${mount}/moved.txt`,
-					`mv ${mount}/saved.bin ${mount}/moved.bin`,
-				],
+				create: [`printf 'private text' > ${mount}/draft.txt`, `cp ${mount}/source.png ${mount}/draft.png`],
+				move: [`mv ${mount}/saved.txt ${mount}/moved.txt`, `mv ${mount}/saved.bin ${mount}/moved.bin`],
 				delete: [`rm ${mount}/saved.txt ${mount}/saved.bin`],
-				replacement: [
-					`cp ${mount}/source.json ${mount}/saved.txt`,
-					`cp ${mount}/source.png ${mount}/saved.bin`,
-				],
+				replacement: [`cp ${mount}/source.json ${mount}/saved.txt`, `cp ${mount}/source.png ${mount}/saved.bin`],
 			};
 			for (const command of commands[change]) {
 				const proposed = await runner.run({ command });

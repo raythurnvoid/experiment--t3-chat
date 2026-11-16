@@ -663,7 +663,11 @@ async function db_settle_canonicalized_target(
 			putMayArriveUntil: (args.asset.uploadUrlExpiresAt ?? args.now + UPLOAD_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		await ctx.db.patch("files_r2_assets", args.asset._id, { uploadRetiredAt: args.now, updatedAt: args.now });
-		const released = await db_release_expired_target(ctx, { target: args.target, now: args.now, releaseReason: "oversized" });
+		const released = await db_release_expired_target(ctx, {
+			target: args.target,
+			now: args.now,
+			releaseReason: "oversized",
+		});
 		if (released._nay) return released;
 		return Result({ _nay: { name: REFUSAL_OVERSIZED_UPLOAD, message: settled._nay.message } });
 	}
@@ -1774,7 +1778,9 @@ export const archive_destination = internalMutation({
 				destination.archiveOperationId !== null ||
 				(record && (record.currentEpoch !== throughEpoch || record.closedEpoch >= throughEpoch))
 			) {
-				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "The destination changed after the delete started" } });
+				return Result({
+					_nay: { name: REFUSAL_CONFLICT, message: "The destination changed after the delete started" },
+				});
 			}
 		} else if (!record || record.closedEpoch < record.currentEpoch) {
 			const target = await ctx.db

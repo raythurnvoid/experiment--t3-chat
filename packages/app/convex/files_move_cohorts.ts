@@ -6,7 +6,11 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { internalMutation } from "./functions.ts";
-import { files_metadata_maps_db_delete, files_metadata_maps_db_read, files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
+import {
+	files_metadata_maps_db_delete,
+	files_metadata_maps_db_read,
+	files_metadata_maps_db_write,
+} from "../server/files-metadata-maps.ts";
 import app_convex_schema from "./schema.ts";
 import {
 	files_nodes_db_get_content_version,
@@ -29,7 +33,10 @@ import {
 	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_db_wake_job,
 } from "../server/files-pending-overlay.ts";
-import { files_move_reservations_db_check, files_move_reservations_db_get_source } from "../server/files-move-reservations.ts";
+import {
+	files_move_reservations_db_check,
+	files_move_reservations_db_get_source,
+} from "../server/files-move-reservations.ts";
 import {
 	files_saved_placement_db_bump_search_generation,
 	files_saved_placement_db_get_node,
@@ -113,7 +120,12 @@ import {
 	files_pending_update_db_release_replacement_asset,
 } from "./files_pending_updates_db.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_index_db_finish_move, files_index_db_prepare_move, files_index_db_release_ticket, files_index_db_ticket } from "../server/files-index.ts";
+import {
+	files_index_db_finish_move,
+	files_index_db_prepare_move,
+	files_index_db_release_ticket,
+	files_index_db_ticket,
+} from "../server/files-index.ts";
 import { files_access_version_messages_route } from "../server/files-access-version.ts";
 import {
 	channels_notifications_db_advance_authority,
@@ -262,12 +274,14 @@ async function db_begin(
 	if (args.origin.kind === "review" && (await files_subtree_ops_db_find_repair(ctx, args)))
 		return Result({ _nay: { name: "repair_busy", message: "Files are still being updated. This review will wait." } });
 	const ticket = await files_index_db_ticket(ctx, {
-		organizationId: args.organizationId, workspaceId: args.workspaceId,
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
 		owner: { ...args.origin, fence: args.fence, attemptFence: args.attemptFence },
 	});
 	if (!ticket.first || slot?.cohortId || (slot && "indexRunId" in slot)) {
 		await ctx.scheduler.runAfter(0, internal.files_index.wake, {
-			organizationId: args.organizationId, workspaceId: args.workspaceId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
 		});
 		return Result({ _nay: { name: "move_busy", message: "Another file update is finishing. This Move will wait." } });
 	}
@@ -611,7 +625,11 @@ export async function files_move_cohorts_db_schedule(
 	if (!cohort || cohort.phase === "complete") return;
 	// Start ready steps before scheduling the first job. Stop at a parent page or publication.
 	if (!args.handoff && !cohort.runJob && cohort.step === 0 && (await files_pending_overlay_db_can_join_step(ctx, 4))) {
-		await files_move_cohorts_db_advance(ctx, { cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true }, 4);
+		await files_move_cohorts_db_advance(
+			ctx,
+			{ cohortId: cohort._id, step: cohort.step, runGeneration: null, join: true },
+			4,
+		);
 		cohort = (await ctx.db.get("files_move_cohorts", args.cohortId))!;
 		if (cohort.phase === "complete") return;
 	}
@@ -652,10 +670,7 @@ export async function files_move_cohorts_db_request_stop(
 /**
  * Keep restored content and its search location before an active Move or Review publishes.
  */
-export async function files_move_cohorts_db_follow_restore(
-	ctx: MutationCtx,
-	args: { nodeId: Id<"files_nodes"> },
-) {
+export async function files_move_cohorts_db_follow_restore(ctx: MutationCtx, args: { nodeId: Id<"files_nodes"> }) {
 	const reservation = await files_move_reservations_db_get_source(ctx.db, { kind: "saved", id: args.nodeId });
 	const cohort = reservation ? await ctx.db.get("files_move_cohorts", reservation.cohortId) : null;
 	if (!cohort || cohort.publishedAt !== null) return;
@@ -751,20 +766,17 @@ export async function files_move_cohorts_db_begin_transfer_item(
 	const activity = await activities_db_require_by_source_id(ctx, run._id);
 	if (!activities_is_active(activity.status) || activity.deadlineAt <= Date.now())
 		return Result({ _nay: { name: "stopped", message: "This Move has stopped." } });
-	return await db_begin(
-		ctx,
-		{
-			organizationId: run.organizationId,
-			workspaceId: run.workspaceId,
-			userId: run.userId,
-			membershipId: run.sourceScope.membershipId,
-			membershipLifetime: run.sourceScope.membershipLifetime,
-			origin: { kind: "transfer", runId: run._id, itemId: item._id },
-			fence: args.fence,
-			attemptFence: args.attemptFence,
-			itemCount: 1,
-		},
-	);
+	return await db_begin(ctx, {
+		organizationId: run.organizationId,
+		workspaceId: run.workspaceId,
+		userId: run.userId,
+		membershipId: run.sourceScope.membershipId,
+		membershipLifetime: run.sourceScope.membershipLifetime,
+		origin: { kind: "transfer", runId: run._id, itemId: item._id },
+		fence: args.fence,
+		attemptFence: args.attemptFence,
+		itemCount: 1,
+	});
 }
 
 async function db_parent_id(
@@ -889,7 +901,12 @@ async function db_allocate_private(
 		validatedEpoch: null,
 		sourceReservationId: held._yay,
 	});
-	await db_reserve_source(ctx, cohort, { kind: "saved", id: nodeId }, node.kind === "folder" ? "children" : "placement");
+	await db_reserve_source(
+		ctx,
+		cohort,
+		{ kind: "saved", id: nodeId },
+		node.kind === "folder" ? "children" : "placement",
+	);
 	await ctx.db.patch("files_move_cohorts", cohort._id, { affectedNodeCount: latest.affectedNodeCount + 1 });
 	await ctx.db.insert("files_pending_node_publish_receipts", {
 		organizationId: cohort.organizationId,
@@ -1043,11 +1060,7 @@ async function db_items(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 	return Result({ _yay: { done: order + 1 === cohort.itemCount, paged: parentPage, parentPage } });
 }
 
-async function db_rename_parents(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-) {
+async function db_rename_parents(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor) {
 	if (cohort.origin.kind !== "transfer") return Result({ _yay: { done: true } });
 	const run = (await ctx.db.get("files_transfer_runs", cohort.origin.runId))!;
 	if (!run.rename) return Result({ _yay: { done: true } });
@@ -1243,11 +1256,7 @@ async function db_add_subtree(
 	return true;
 }
 
-async function db_descendants(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-) {
+async function db_descendants(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor) {
 	// Item, child and replacement producers queue their physical child ranges.
 	let range = await ctx.db
 		.query("files_move_work_ranges")
@@ -1360,11 +1369,7 @@ async function db_descendants(
 	return Result({ _yay: { done: false, paged, parentPage: false } });
 }
 
-async function db_headers(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-) {
+async function db_headers(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor) {
 	const record = cohort.planningCursor
 		? await ctx.db.get("files_move_cohort_nodes", cohort.planningCursor as Id<"files_move_cohort_nodes">)
 		: await ctx.db
@@ -1856,7 +1861,9 @@ async function db_authorize_record(
 	// The review shows this text on the deleted folder, so do not say "This item". Leave the path out:
 	// the text is saved and shown later without a new access check.
 	if (archiveDescendant && access._nay?.name === "read_only")
-		return Result({ _nay: { name: "read_only", message: "An item inside it is read-only. Unlock it, then try again." } });
+		return Result({
+			_nay: { name: "read_only", message: "An item inside it is read-only. Unlock it, then try again." },
+		});
 	// A replacement record is the item the Move replaces or an item inside it. The text shows on the
 	// moved item, so name neither one.
 	if (record.role === "replacement" && access._nay?.name === "read_only")
@@ -1866,12 +1873,7 @@ async function db_authorize_record(
 	return access;
 }
 
-async function db_sides(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-	limitFactor: 4 | 16,
-) {
+async function db_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor, limitFactor: 4 | 16) {
 	const cursor = cohort.stagingCursor
 		? (JSON.parse(cohort.stagingCursor) as { order: number; part: number; page: string | null })
 		: { order: -1, part: 0, page: null };
@@ -1890,8 +1892,11 @@ async function db_sides(
 		const content = await ctx.db.get("files_move_cohort_content", item.contentId);
 		if (!content?.sealed) throw should_never_happen("Move indexes have no sealed content", { itemId: item._id });
 		await files_index_db_prepare_move(ctx, {
-			organizationId: cohort.organizationId, workspaceId: cohort.workspaceId,
-			nodeId: record.nodeId, cohortId: cohort._id, headId: content.afterHeadId ?? null,
+			organizationId: cohort.organizationId,
+			workspaceId: cohort.workspaceId,
+			nodeId: record.nodeId,
+			cohortId: cohort._id,
+			headId: content.afterHeadId ?? null,
 			contentChanged: content.prepared !== null && files_move_content_changes_saved_content(content.prepared),
 		});
 	}
@@ -2010,7 +2015,11 @@ async function db_sides(
 		joined = true;
 	}
 	// Part 3 reads no page either, so it joins part 2 when the budget allows.
-	if (!paginated && cursor.part === 3 && (!joined || (await files_pending_overlay_db_can_join_step(ctx, limitFactor)))) {
+	if (
+		!paginated &&
+		cursor.part === 3 &&
+		(!joined || (await files_pending_overlay_db_can_join_step(ctx, limitFactor)))
+	) {
 		let reparented = before?.parentId !== after.parentId;
 		if (record.role === "descendant" && item) {
 			const root = (await ctx.db.get("files_move_cohort_nodes", item.nodeRecordId))!;
@@ -2117,11 +2126,7 @@ async function db_validate_done(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	return true;
 }
 
-async function db_validate(
-	ctx: MutationCtx,
-	cohort: Doc<"files_move_cohorts">,
-	actor: MoveActor,
-) {
+async function db_validate(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, actor: MoveActor) {
 	const item = await ctx.db
 		.query("files_move_cohort_items")
 		.withIndex("by_cohort_status_order", (q) => q.eq("cohortId", cohort._id).eq("status", "staged"))
@@ -2169,7 +2174,8 @@ async function db_validate(
 		const access = await db_authorize_record(ctx, cohort, actor, record);
 		if (access._nay) return access;
 		// A plain Move changes location only. Replacing an occupant still checks its content.
-		const movesSource = cohort.origin.kind === "transfer" && (record.role === "selected" || record.role === "descendant");
+		const movesSource =
+			cohort.origin.kind === "transfer" && (record.role === "selected" || record.role === "descendant");
 		if (record.beforePlaceId && record.role !== "anchor" && !movesSource) {
 			const before = await files_saved_placement_db_get_node(ctx.db, record.nodeId, {
 				cohortId: cohort._id,
@@ -2384,7 +2390,8 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	}
 	const item = record.itemId ? await ctx.db.get("files_move_cohort_items", record.itemId) : null;
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
-	if (ownsContent) await files_index_db_finish_move(ctx, { nodeId: record.nodeId, cohortId: cohort._id, published: finish });
+	if (ownsContent)
+		await files_index_db_finish_move(ctx, { nodeId: record.nodeId, cohortId: cohort._id, published: finish });
 	if (finish && place?.kind === "file" && record.beforePlaceId && !ownsContent) {
 		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
 		if (before && before.archiveOperationId === place.archiveOperationId && before.path !== place.path) {
@@ -2578,7 +2585,8 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}
 	await files_index_db_release_ticket(ctx, {
-		organizationId: cohort.organizationId, workspaceId: cohort.workspaceId,
+		organizationId: cohort.organizationId,
+		workspaceId: cohort.workspaceId,
 		owner: { ...cohort.origin, fence: cohort.fence, attemptFence: cohort.attemptFence },
 	});
 	await ctx.db.patch("files_move_cohorts", cohort._id, {
@@ -3141,7 +3149,8 @@ export async function files_move_cohorts_db_advance(
 			await files_move_cohorts_db_schedule(ctx, { cohortId: args.cohortId, handoff: true });
 			return { kind: "next" as const, step };
 		}
-		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx, limitFactor))) return { kind: "next" as const, step };
+		if (result.yield || !(await files_pending_overlay_db_can_join_step(ctx, limitFactor)))
+			return { kind: "next" as const, step };
 	}
 }
 
@@ -3409,7 +3418,8 @@ export const cleanup = internalMutation({
 							q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 						)
 						.unique();
-					if (slot?.cohortId === null && !("indexRunId" in slot)) await ctx.db.delete("files_move_workspace_slots", slot._id);
+					if (slot?.cohortId === null && !("indexRunId" in slot))
+						await ctx.db.delete("files_move_workspace_slots", slot._id);
 					const search = await ctx.db
 						.query("files_move_search_generations")
 						.withIndex("by_workspace", (q) =>
@@ -3417,7 +3427,8 @@ export const cleanup = internalMutation({
 						)
 						.unique();
 					// A Move that still holds the slot needs the number. Its own cleanup removes this doc later.
-					if (search && !slot?.cohortId && !(slot && "indexRunId" in slot)) await ctx.db.delete("files_move_search_generations", search._id);
+					if (search && !slot?.cohortId && !(slot && "indexRunId" in slot))
+						await ctx.db.delete("files_move_search_generations", search._id);
 				}
 				await ctx.db.delete("files_move_cohorts", cohort._id);
 				return null;

@@ -1367,8 +1367,7 @@ export const remove_user_from_organization = mutation({
 				.collect(),
 		]);
 		const isPendingSelfRemoval =
-			userAuth.id === args.userIdToRemove &&
-			memberships.some((membership) => membership.pendingOrganizationRemoval);
+			userAuth.id === args.userIdToRemove && memberships.some((membership) => membership.pendingOrganizationRemoval);
 		if (!currentHomeMembership && !isPendingSelfRemoval) {
 			return Result({ _nay: { message: "Not found" } });
 		}

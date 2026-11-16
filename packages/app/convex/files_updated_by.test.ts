@@ -5,7 +5,14 @@ import type { Id } from "./_generated/dataModel.js";
 import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
-import { test_convex, test_rename_node, test_move_nodes, test_create_saved_text_file, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import {
+	test_convex,
+	test_rename_node,
+	test_move_nodes,
+	test_create_saved_text_file,
+	test_mocks,
+	test_mocks_fill_db_with,
+} from "./setup.test.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -242,10 +249,10 @@ describe("files_updated_by_docs sync", () => {
 		});
 
 		const moved = await test_move_nodes(t, asOwner, {
-				membershipId: db.membershipId,
-				itemIds: [newId],
-				targetParentId: files_ROOT_ID,
-			});
+			membershipId: db.membershipId,
+			itemIds: [newId],
+			targetParentId: files_ROOT_ID,
+		});
 		expect(moved._nay).toBeUndefined();
 		expect(await read_doc(newId), "moved folder").toMatchObject({ parentId: files_ROOT_ID, name: "new" });
 		expect(await read_doc(leafId)).toMatchObject({ parentId: deepId, name: "zeta" });

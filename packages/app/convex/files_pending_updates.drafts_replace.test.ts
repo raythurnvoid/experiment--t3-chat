@@ -99,14 +99,33 @@ describe("files_pending_updates_action_prepare_content", () => {
 			expect(await draft.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 			await draft.t.mutation(internal.files_pending_updates.retire_prepared_content, { prepared: prepared._yay });
 			const queued = await draft.asUser.mutation(api.files_pending_update_runs.start, {
-				membershipId: draft.membershipId, requestId: crypto.randomUUID(), kind: "accept", expectedItemCount: 1,
-				items: [{ pendingUpdateId: draft.pendingUpdateId, reviewedRevision: draft.proposal.revision, selectedContentStateId: draft.proposal.content!.unstagedStateId }],
+				membershipId: draft.membershipId,
+				requestId: crypto.randomUUID(),
+				kind: "accept",
+				expectedItemCount: 1,
+				items: [
+					{
+						pendingUpdateId: draft.pendingUpdateId,
+						reviewedRevision: draft.proposal.revision,
+						selectedContentStateId: draft.proposal.content!.unstagedStateId,
+					},
+				],
 			});
 			if (queued._nay) throw new Error(queued._nay.message);
-			expect(await draft.asUser.mutation(api.files_pending_update_runs.seal, { membershipId: draft.membershipId, runId: queued._yay.runId })).toEqual({ _yay: null });
+			expect(
+				await draft.asUser.mutation(api.files_pending_update_runs.seal, {
+					membershipId: draft.membershipId,
+					runId: queued._yay.runId,
+				}),
+			).toEqual({ _yay: null });
 			await test_finish_pending_update_run(draft.asUser, queued._yay.runId);
-			expect((await draft.t.run(ctx => ctx.db.get("activities", queued._yay.activityId)))?.status).toBe("succeeded");
-			const receipt = await draft.t.run(ctx => ctx.db.query("files_pending_node_publish_receipts").withIndex("by_privateNode", q => q.eq("privateNodeId", draft.target.id)).unique());
+			expect((await draft.t.run((ctx) => ctx.db.get("activities", queued._yay.activityId)))?.status).toBe("succeeded");
+			const receipt = await draft.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_node_publish_receipts")
+					.withIndex("by_privateNode", (q) => q.eq("privateNodeId", draft.target.id))
+					.unique(),
+			);
 			if (!receipt) throw new Error("Expected a saved private file");
 			const nodeId = receipt.savedNodeId;
 			expect(await draft.t.run((ctx) => read_committed_text({ ctx, ...draft, nodeId }))).toBe("all lines\n");
@@ -171,11 +190,16 @@ describe("files_pending_updates_action_prepare_content", () => {
 
 	test("keeps the payer chosen during preparation when organization billing changes", async () => {
 		const t = test_convex();
-		const seeded = await t.run(ctx => seed_non_collaborative_file({ ctx, path: "/payer.txt", text: "base\n" }));
-		const edited = await upsert_file_pending_update_internal_for_test({ t, ...seeded, stagedMarkdown: "saved\n", unstagedMarkdown: "saved\n" });
+		const seeded = await t.run((ctx) => seed_non_collaborative_file({ ctx, path: "/payer.txt", text: "base\n" }));
+		const edited = await upsert_file_pending_update_internal_for_test({
+			t,
+			...seeded,
+			stagedMarkdown: "saved\n",
+			unstagedMarkdown: "saved\n",
+		});
 		if (edited._nay) throw new Error(edited._nay.message);
 		const target = { kind: "saved" as const, id: seeded.nodeId };
-		const proposal = await t.run(ctx => files_db_get_pending_update(ctx, { ...seeded, target }));
+		const proposal = await t.run((ctx) => files_db_get_pending_update(ctx, { ...seeded, target }));
 		if (!proposal?.content) throw new Error("Expected pending saved content");
 		const prepared = await t.action((ctx) =>
 			files_pending_updates_action_prepare_content(ctx, {
@@ -241,8 +265,10 @@ describe("files_pending_updates_action_prepare_content", () => {
 			);
 			expect(refused._nay?.message).toContain("parent");
 			const queued = await draft.asUser.action(api.files_pending_updates.save_file_pending_update, {
-				membershipId: draft.membershipId, target: draft.target,
-				pendingUpdateId: draft.pendingUpdateId, reviewedRevision: draft.proposal.revision,
+				membershipId: draft.membershipId,
+				target: draft.target,
+				pendingUpdateId: draft.pendingUpdateId,
+				reviewedRevision: draft.proposal.revision,
 			});
 			if (queued._nay || !("kind" in queued._yay)) throw new Error("Expected queued parent and child Save");
 			const { runId, activityId } = queued._yay;
@@ -251,7 +277,7 @@ describe("files_pending_updates_action_prepare_content", () => {
 					ctx.db.patch("files_pending_updates", draft.pendingUpdateId, { revision: draft.proposal.revision + 1 }),
 				);
 			await test_finish_pending_update_run(draft.asUser, runId);
-			const activity = await draft.t.run(ctx => ctx.db.get("activities", activityId));
+			const activity = await draft.t.run((ctx) => ctx.db.get("activities", activityId));
 			if (staleChild) {
 				expect(activity?.status).not.toBe("succeeded");
 				expect(await draft.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
@@ -316,9 +342,7 @@ describe("private pending text", () => {
 					}),
 				).toMatchObject({ _yay: { outcome: "cancelled_added_file", fromPath: "/moved.txt" } });
 			}
-			expect(
-				await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target }),
-			).toBeNull();
+			expect(await asUser.query(api.files_pending_target.get_file_pending_target, { membershipId, target })).toBeNull();
 			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual([]);
 			expect(await t.run((ctx) => ctx.db.query("files_pending_nodes").collect())).toMatchObject([
 				{ _id: target.id, state: "discarded" },
@@ -584,8 +608,7 @@ describe("private pending text", () => {
 			expect(pushed._nay).toBeUndefined();
 		} else if (change === "new occupant") {
 			expect(
-				(await test_rename_node(t, asUser, { membershipId, nodeId: occupantId, path: "old.txt" }))
-					._nay,
+				(await test_rename_node(t, asUser, { membershipId, nodeId: occupantId, path: "old.txt" }))._nay,
 			).toBeUndefined();
 			const created = await asUser.action(api.files_nodes_content.create_text_node, {
 				membershipId,

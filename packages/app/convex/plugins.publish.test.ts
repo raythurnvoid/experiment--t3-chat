@@ -4039,7 +4039,8 @@ describe("plugins publish artifact cleanup", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
@@ -4229,7 +4230,8 @@ describe("plugins publish artifact cleanup", () => {
 				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("moveCohortId", undefined)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
 						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
@@ -4634,7 +4636,8 @@ describe("plugins list_bash_source_mounts", () => {
 					.withIndex("by_organization_workspace_treePath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID).eq("moveCohortId", undefined)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.eq("moveCohortId", undefined)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
 							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
