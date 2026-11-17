@@ -817,9 +817,6 @@ describe("FilesClipboardProvider", () => {
 		expect(intakeState.sourceIds).toEqual([SOURCE_ID, SECOND_ID]);
 		expect(intakeDeleteMock).not.toHaveBeenCalled();
 		if (newer) fireEvent.click(screen.getByRole("button", { name: "Copy another source" }));
-		expect(
-			screen.getByText("Accepted moves may continue. This removes only the saved selection in this browser."),
-		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Forget saved selection" }));
 		await waitFor(() => expect(intakeState.request).toBeNull());
 		expect(intakeState.sourceIds).toEqual([]);
@@ -1491,9 +1488,6 @@ describe("FilesTransferRunModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		expect(await screen.findByText(lockedPath ?? "Unavailable item")).toBeTruthy();
 		expect(screen.getByText(lockedPath ? "Skipped: Permission denied" : "Skipped")).toBeTruthy();
-		expect(
-			screen.getByText("Paths were recorded during this operation and may differ from current locations."),
-		).toBeTruthy();
 		expect(screen.queryByRole("link", { name: lockedPath ?? "Unavailable item" })).toBeNull();
 		if (!lockedPath) expect(screen.queryByText("/folder/secret-name")).toBeNull();
 	});
@@ -1506,10 +1500,8 @@ describe("FilesTransferRunModal", () => {
 			render(<TestClipboard />);
 			fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 			expect(screen.getByText(step === "uploading" ? "Loading selection…" : "Checking files…")).toBeTruthy();
-			expect(screen.getByText("File counts appear after the selection is checked.")).toBeTruthy();
 			expect(screen.queryByText(/0 copied/)).toBeNull();
 			expect(screen.queryByText("No items on this page.")).toBeNull();
-			if (step === "uploading") expect(screen.getByText(/If you reload, stop this request in Activity/)).toBeTruthy();
 			fireEvent.click(screen.getByRole("button", { name: "Stop" }));
 			await waitFor(() => expect(mutationMock).toHaveBeenCalledOnce());
 			expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("activities:request_stop");
@@ -1717,7 +1709,7 @@ describe("FilesTransferRunModal", () => {
 		render(<TestClipboard />);
 		fireEvent.click(screen.getByRole("button", { name: "Review operation" }));
 		const conflict = await screen.findByRole("group", { name: "/b/report.md" });
-		expect(within(conflict).getByText(/Another item in this paste already uses this name/)).toBeTruthy();
+		expect(within(conflict).getByText(/Another item in this paste has the same name/)).toBeTruthy();
 		expect(within(conflict).queryByRole("radio", { name: "Replace" })).toBeNull();
 		expect(screen.getByRole("button", { name: "Continue" }).matches(":disabled")).toBe(true);
 		fireEvent.click(within(conflict).getByRole("radio", { name: "Keep both" }));

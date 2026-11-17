@@ -1,0 +1,12 @@
+@layer components {
+	.FilesNameHeading {
+		/* Take the full header width, so the measured width does not follow the shortened label. */
+		align-self: stretch;
+		min-width: 0;
+
+		/* Pretext keeps the text on one line. Clip it if a name is too long even at two characters. */
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+}

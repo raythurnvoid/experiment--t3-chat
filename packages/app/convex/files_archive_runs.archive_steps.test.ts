@@ -77,9 +77,16 @@ describe("archive_nodes", () => {
 		expect(await f.t.run((ctx) => ctx.db.query("files_subtree_ops").collect())).toEqual([]);
 
 		// One index read finds an active read-only file, so even a tree too big to check inside the
-		// request is refused there, and the refusal names the file.
+		// request is refused there, and the refusal names the file. `data` names it apart from the message,
+		// so the dialog can show its path in a path block.
 		expect(await archive(f, [tree.topId])).toEqual({
-			_nay: { name: "read_only", message: '"/checked/d5/f019.md" is read-only. Unlock it, then try again.' },
+			_nay: {
+				name: "read_only",
+				message: '"/checked/d5/f019.md" is Read-only. Turn off Read-only in its Properties, then try again.',
+				data: {
+					blockedItems: [{ nodeId: tree.topId, place: "inside", path: "/checked/d5/f019.md", hasMore: false }],
+				},
+			},
 		});
 		expect(await f.t.run((ctx) => ctx.db.query("files_archive_runs").collect())).toEqual([]);
 
@@ -108,7 +115,7 @@ describe("archive_nodes", () => {
 
 		expect(ended.activity).toMatchObject({
 			status: "failed",
-			errorMessage: '"/listed/d5/f019.md" is read-only. Unlock it, then try again.',
+			errorMessage: '"/listed/d5/f019.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 		});
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
@@ -151,7 +158,7 @@ describe("archive_nodes", () => {
 					{
 						nodeId: refused.topId,
 						name: "read_only",
-						message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.',
+						message: '"/refused/d0/f001.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 					},
 				],
 				waitingNodeIds: [],
@@ -177,7 +184,7 @@ describe("archive_nodes", () => {
 			{
 				nodeId: refused.topId,
 				path: "/refused",
-				message: '"/refused/d0/f001.md" is read-only. Unlock it, then try again.',
+				message: '"/refused/d0/f001.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 			},
 		]);
 		// The job dialog lists the named items that were archived. The file inside the refused folder is not one.
@@ -247,7 +254,7 @@ describe("archive_nodes", () => {
 			{
 				nodeId: big.topId,
 				path: "/big-alone",
-				message: '"/big-alone/d5/f019.md" is read-only. Unlock it, then try again.',
+				message: '"/big-alone/d5/f019.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 			},
 		]);
 	});
@@ -716,7 +723,7 @@ describe("upsert_file_pending_archive_in_db", () => {
 		expect(await propose(tree.topId)).toEqual({
 			_nay: {
 				name: "read_only",
-				message: '"/big/d20/f099.md" is read-only. Unlock it, then try again.',
+				message: '"/big/d20/f099.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 				data: { place: "inside", path: "/big/d20/f099.md", hasMore: false },
 			},
 		});

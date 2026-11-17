@@ -119,6 +119,7 @@ import {
 	files_download_blob,
 	files_editable_text_content_type_of,
 	files_format_size,
+	files_get_archive_disabled_reason,
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
 	files_get_signed_download_serving,
@@ -4151,6 +4152,12 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		writeBlockedReason: child.writeBlockedReason,
 		readOnly: child.readOnly,
 	});
+	const archiveDisabledReason = files_get_archive_disabled_reason({
+		canWrite: child.canWrite,
+		writeBlockedReason: child.writeBlockedReason,
+		readOnly: child.readOnly,
+		hasVisibleProtectedDescendant,
+	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
 	useLayoutEffect(() => {
@@ -4378,6 +4385,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 									<MyMenuItem
 										variant="destructive"
 										disabled={!capabilities.canArchiveOrRestore}
+										tooltip={archiveDisabledReason ?? undefined}
 										hideOnClick
 										onClick={handleArchiveClick}
 									>

@@ -254,6 +254,27 @@ export function files_get_read_only_capabilities(args: {
 	};
 }
 
+/**
+ * Say why one item cannot move to Trash, for the tooltip on the disabled menu item. Return null
+ * when it can. It follows `canArchiveOrRestore` above.
+ */
+export function files_get_archive_disabled_reason(args: {
+	canWrite: boolean;
+	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
+	readOnly: boolean;
+	hasVisibleProtectedDescendant: boolean;
+}) {
+	const readOnlyLabels = files_get_read_only_row_labels(args);
+	if (!args.canWrite && readOnlyLabels) {
+		return readOnlyLabels.tooltip;
+	}
+	if (args.hasVisibleProtectedDescendant) {
+		return "This folder contains items you cannot change.";
+	}
+
+	return null;
+}
+
 export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "plain_text",

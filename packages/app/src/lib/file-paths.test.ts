@@ -28,7 +28,11 @@ vi.mock("@chenglou/pretext", () => ({
 	prepareWithSegments: prepareWithSegmentsMock,
 }));
 
-import { files_truncate_path_for_width, files_truncate_path_segments } from "./file-paths.ts";
+import {
+	files_truncate_name_middle,
+	files_truncate_path_for_width,
+	files_truncate_path_segments,
+} from "./file-paths.ts";
 
 const TEST_FONT = "500 16px system-ui";
 
@@ -262,5 +266,13 @@ describe("files_truncate_path_segments", () => {
 				fits: (labels) => cost(labels) <= 16,
 			}),
 		).toEqual(["s", "abcde", "de", "…", "t"]);
+	});
+});
+
+describe("files_truncate_name_middle", () => {
+	test("cuts the middle of a long name and keeps its extension", () => {
+		expect(
+			files_truncate_name_middle({ name: "meeting-notes-2026-11-17.md", fits: (label) => label.length <= 15 }),
+		).toBe("meeting…1-17.md");
 	});
 });

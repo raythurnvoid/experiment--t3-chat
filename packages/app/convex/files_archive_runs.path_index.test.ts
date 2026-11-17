@@ -262,7 +262,7 @@ describe("archive_nodes while path records are pending", () => {
 			errorMessage:
 				changed === "membership"
 					? "You can no longer change these files."
-					: '"/selected/d5/f019.md" is read-only. Unlock it, then try again.',
+					: '"/selected/d5/f019.md" is Read-only. Turn off Read-only in its Properties, then try again.',
 		});
 		expect((await read_state(f)).nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});

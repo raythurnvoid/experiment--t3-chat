@@ -14,6 +14,7 @@ import {
 	MyContextMenuTrigger,
 } from "@/components/my-context-menu.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	MyMenuItem,
 	MyMenuItemContent,
@@ -261,6 +262,49 @@ const FilesSidebarArchiveRow = memo(function FilesSidebarArchiveRow(props: Files
 });
 // #endregion row
 
+// #region skeleton
+/**
+ * Enough skeleton rows to fill a tall panel. The skeleton clips the rows that do not fit.
+ */
+const FilesSidebarArchiveSkeleton_ROW_COUNT = 16;
+
+type FilesSidebarArchiveSkeleton_ClassNames =
+	| "FilesSidebarArchiveSkeleton"
+	| "FilesSidebarArchiveSkeleton-row"
+	| "FilesSidebarArchiveSkeleton-icon"
+	| "FilesSidebarArchiveSkeleton-text"
+	| "FilesSidebarArchiveSkeleton-name"
+	| "FilesSidebarArchiveSkeleton-details"
+	| "FilesSidebarArchiveSkeleton-action";
+
+/**
+ * Skeleton rows with the parts and size of real Trash rows: the icon, the name and details lines,
+ * and the More actions icon. So the real rows replace them without moving, like the tree skeleton.
+ */
+const FilesSidebarArchiveSkeleton = memo(function FilesSidebarArchiveSkeleton() {
+	return (
+		<div className={"FilesSidebarArchiveSkeleton" satisfies FilesSidebarArchiveSkeleton_ClassNames} aria-hidden="true">
+			{Array.from({ length: FilesSidebarArchiveSkeleton_ROW_COUNT }, (_, index) => (
+				<div key={index} className={"FilesSidebarArchiveSkeleton-row" satisfies FilesSidebarArchiveSkeleton_ClassNames}>
+					<MySkeleton className={"FilesSidebarArchiveSkeleton-icon" satisfies FilesSidebarArchiveSkeleton_ClassNames} />
+					<div className={"FilesSidebarArchiveSkeleton-text" satisfies FilesSidebarArchiveSkeleton_ClassNames}>
+						<MySkeleton
+							className={"FilesSidebarArchiveSkeleton-name" satisfies FilesSidebarArchiveSkeleton_ClassNames}
+						/>
+						<MySkeleton
+							className={"FilesSidebarArchiveSkeleton-details" satisfies FilesSidebarArchiveSkeleton_ClassNames}
+						/>
+					</div>
+					<MySkeleton
+						className={"FilesSidebarArchiveSkeleton-action" satisfies FilesSidebarArchiveSkeleton_ClassNames}
+					/>
+				</div>
+			))}
+		</div>
+	);
+});
+// #endregion skeleton
+
 // #region root
 type FilesSidebarArchive_ClassNames =
 	| "FilesSidebarArchive"
@@ -471,12 +515,7 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 		focusAfterPurgeRef.current = null;
 	}, [purgeRequest]);
 
-	const statusText =
-		entryStatus === "loading"
-			? "Loading Trash…"
-			: entryRows.length === 0 && entryStatus === "done"
-				? "Trash is empty."
-				: null;
+	const statusText = entryRows.length === 0 && entryStatus === "done" ? "Trash is empty." : null;
 
 	return (
 		<section
@@ -567,8 +606,12 @@ export const FilesSidebarArchive = memo(function FilesSidebarArchive(props: File
 					"FilesSidebarArchive-content" satisfies FilesSidebarArchive_ClassNames,
 					"app-scrollable" satisfies AppClassName,
 				)}
+				aria-busy={entryStatus === "loading" || undefined}
 			>
-				{statusText !== null ? (
+				{/* aria-busy tells that the rows load, like the tree. */}
+				{entryStatus === "loading" ? (
+					<FilesSidebarArchiveSkeleton />
+				) : statusText !== null ? (
 					<p role="status" className={"FilesSidebarArchive-state" satisfies FilesSidebarArchive_ClassNames}>
 						{statusText}
 					</p>

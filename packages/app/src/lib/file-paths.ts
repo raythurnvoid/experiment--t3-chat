@@ -270,6 +270,30 @@ export function files_truncate_path_segments(args: {
 	});
 }
 
+/**
+ * Shorten one name by cutting its middle, for example `meeting-no…-2026.md`. The end stays, so a
+ * file keeps its extension.
+ *
+ * `fits` owns all measurement. When even two graphemes do not fit, the two-grapheme shape is
+ * returned without being measured, so the result is not guaranteed to fit.
+ */
+export function files_truncate_name_middle(args: { name: string; fits: (label: string) => boolean }) {
+	if (args.fits(args.name)) return args.name;
+
+	const graphemes = segment_graphemes(args.name);
+	const buildLabel = (visibleCount: number) =>
+		`${graphemes.slice(0, Math.ceil(visibleCount / 2)).join("")}${ELLIPSIS}${graphemes.slice(graphemes.length - Math.floor(visibleCount / 2)).join("")}`;
+
+	return (
+		find_max_fitting({
+			min: 2,
+			max: Math.max(2, graphemes.length - 1),
+			buildCandidate: buildLabel,
+			fits: args.fits,
+		}) ?? buildLabel(2)
+	);
+}
+
 export function files_truncate_path_for_width(args: {
 	path: string;
 	width: number;

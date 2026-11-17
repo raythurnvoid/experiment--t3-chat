@@ -569,7 +569,7 @@ const FilesClipboardProvider = Object.assign(
 						) : null}
 						{startError.canForgetSelection ? (
 							<>
-								<p>Accepted moves may continue. This removes only the saved selection in this browser.</p>
+								<p>Moves that already started keep going.</p>
 								<MyButton disabled={isStarting || isRecovering} onClick={forgetSavedSelection}>
 									Forget saved selection
 								</MyButton>
@@ -1009,17 +1009,11 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 					{run?.step === "uploading" && !isTerminal ? (
 						<p>
 							{run.kind === "move"
-								? "Move starts after the full selection arrives. Return to this workspace after a reload to resume loading."
-								: "Copy starts after the full selection arrives. Keep this tab open. If you reload, stop this request in Activity and paste again."}
+								? "If you reload, open this workspace again to continue."
+								: "Keep this tab open until the copy starts."}
 						</p>
 					) : null}
-					{progress && isSelecting ? (
-						<p role="status">
-							{isTerminal
-								? "Selection ended before finding files."
-								: "File counts appear after the selection is checked."}
-						</p>
-					) : null}
+					{progress && isSelecting && isTerminal ? <p role="status">Stopped before any files were found.</p> : null}
 					{progress && !isSelecting && !isRename ? (
 						<p role="status">
 							{progress.completed} {completedLabel}, {progress.skipped} skipped, {progress.failed} failed,{" "}
@@ -1030,9 +1024,6 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 						</p>
 					) : null}
 					{run && !isSelecting && itemPage === undefined ? <p role="status">Loading items…</p> : null}
-					{itemPage && !isSelecting && !isRename ? (
-						<p>Paths were recorded during this operation and may differ from current locations.</p>
-					) : null}
 					{itemPage === null ? <p>These items are no longer available.</p> : null}
 					{itemPage && !isSelecting ? (
 						<div className={"FilesTransferRunModal-items" satisfies FilesTransferRunModal_ClassNames}>
@@ -1055,24 +1046,17 @@ const FilesTransferRunModal = memo(function FilesTransferRunModal(props: {
 													{!canChoose
 														? "This item changed location or is no longer available. Skip it or stop."
 														: item.conflict
-															? "This name already exists. Keep both adds a unique counter. Skipping a folder skips its contents."
-															: "Another item in this paste already uses this name. Keep both adds a unique counter. Skipping a folder skips its contents."}
+															? "An item with this name is already there. Keep both adds a number to the name."
+															: "Another item in this paste has the same name. Keep both adds a number to the name."}
 												</p>
 												{canChoose ? (
 													<>
 														{/* Only Replace acts on a destination doc, so it needs one to exist. A copied folder
 														   has no Replace: a copy never merges into a folder. */}
 														{item.conflict && (item.kind === "file" || run?.kind === "move") ? (
-															<>
-																<p className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
-																	Destination: {item.conflict.path}
-																</p>
-																<p>
-																	{item.kind === "file"
-																		? "Replace overwrites the destination file."
-																		: "Replace empty folder removes the empty destination folder."}
-																</p>
-															</>
+															<p className={"FilesTransferRunModal-path" satisfies FilesTransferRunModal_ClassNames}>
+																Destination: {item.conflict.path}
+															</p>
 														) : null}
 														<label
 															className={"FilesTransferRunModal-choice" satisfies FilesTransferRunModal_ClassNames}

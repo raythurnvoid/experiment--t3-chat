@@ -774,7 +774,12 @@ describe("FilesSidebar", () => {
 				activityId: "activity",
 				isDone: true,
 				notArchivedNodeIds: ["alpha"],
-				refusedItems: [{ nodeId: "alpha", message: '"/alpha/locked.md" is read-only. Unlock it, then try again.' }],
+				refusedItems: [
+					{
+						nodeId: "alpha",
+						message: '"/alpha/locked.md" is Read-only. Turn off Read-only in its Properties, then try again.',
+					},
+				],
 				waitingNodeIds: [],
 				isChecking: false,
 			},

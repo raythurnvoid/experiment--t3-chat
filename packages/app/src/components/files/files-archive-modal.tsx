@@ -1,10 +1,11 @@
 import "./files-archive-modal.css";
 
-import { memo, useId, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useConvex, usePaginatedQuery, useQuery } from "convex/react";
 import { toast } from "sonner";
 
 import { ActivityStatusIcon } from "@/components/activity-status-icon.tsx";
+import { FilesNameHeading } from "@/components/files/files-name-heading.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyProgressBar } from "@/components/my-progress-bar.tsx";
@@ -34,12 +35,23 @@ type FilesArchiveModal_ClassNames =
 	| "FilesArchiveModal"
 	| "FilesArchiveModal-content"
 	| "FilesArchiveModal-list-toggle"
-	| "FilesArchiveModal-error";
+	| "FilesArchiveModal-refusal"
+	| "FilesArchiveModal-error"
+	| "FilesArchiveModal-hint";
 
 /**
  * What the dialog needs to name a row. Hosts already hold these on the tree node they act on.
  */
 export type FilesArchiveModal_Node = Pick<files_VisibleTreeNode, "_id" | "name" | "path" | "kind">;
+
+/**
+ * Why the server refused the archive. `blockedItems` names the Read-only items behind the refusal,
+ * when the request found them: an item inside a named folder, or the folder that holds a named item.
+ */
+type FilesArchiveModal_Refusal = {
+	message: string;
+	blockedItems: Array<{ place: "inside" | "parent"; path: string; hasMore: boolean }>;
+};
 
 export type FilesArchiveModal_Props = {
 	/** The nodes to archive. `null` keeps the dialog closed. */
@@ -68,16 +80,18 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 	const { openArchiveRun } = AppActivitiesProvider.useContext();
 
 	const [pending, setPending] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<FilesArchiveModal_Refusal | null>(null);
 	const cancelRef = useRef<HTMLButtonElement>(null);
+	const okRef = useRef<HTMLButtonElement>(null);
+	// A Read-only refusal fails again until the person turns Read-only off, so the footer offers only OK.
+	// Other refusals, such as a rate limit or a network error, can pass on a second try.
+	const isReadOnlyRefusal = error !== null && error.blockedItems.length > 0;
 	// Tie Show more to the nodes it was clicked for, so the next dialog opens small again.
 	const [expandedNodes, setExpandedNodes] = useState<FilesArchiveModal_Node[] | null>(null);
 	const isListExpanded = nodes !== null && expandedNodes === nodes;
 
-	const hasFolder = nodes?.some((node) => node.kind === "folder") ?? false;
-	// One item is named in the heading, so it gets no list.
-	const hasList = nodes !== null && nodes.length > 1;
-	const heading = hasList ? `Move ${nodes.length} items to Trash?` : `Move “${nodes?.[0]?.name ?? ""}” to Trash?`;
+	// The heading names one item or counts many. The body always lists the full paths.
+	const isMany = nodes !== null && nodes.length > 1;
 
 	const handleClose = useFn(() => {
 		// Clear the refusal here and in `handleConfirm`, so a second open does not start with old text.
@@ -103,12 +117,14 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FilesArchiveModal.handleConfirm] Failed to archive nodes", { result, nodeIds });
-					// Same words as the sidebar's other permission refusals.
-					setError(
-						result._nay.message === "Permission denied"
-							? "You don't have permission to edit files in this workspace."
-							: result._nay.message,
-					);
+					setError({
+						// Same words as the sidebar's other permission refusals.
+						message:
+							result._nay.message === "Permission denied"
+								? "You don't have permission to edit files in this workspace."
+								: result._nay.message,
+						blockedItems: result._nay.data && "blockedItems" in result._nay.data ? result._nay.data.blockedItems : [],
+					});
 					return;
 				}
 				if (!result._yay) {
@@ -162,10 +178,18 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 			})
 			.catch((error: unknown) => {
 				console.error("[FilesArchiveModal.handleConfirm] Unexpected async error", { error, nodeIds });
-				setError("Failed to move to Trash. Try again.");
+				setError({ message: "Failed to move to Trash. Try again.", blockedItems: [] });
 			})
 			.finally(() => setPending(false));
 	});
+
+	useEffect(() => {
+		// The clicked Move to Trash button goes away, so move focus to OK. `autoFocus` does not do it here:
+		// in the browser React never called `focus()` on this button.
+		if (isReadOnlyRefusal) {
+			okRef.current?.focus();
+		}
+	}, [isReadOnlyRefusal]);
 
 	return (
 		<MyModal open={nodes !== null} setOpen={handleOpenChange}>
@@ -176,27 +200,26 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 				unmountOnHide
 			>
 				<MyModalHeader>
-					<MyModalHeading>{heading}</MyModalHeading>
-					<MyModalDescription>
-						Items in Trash are hidden. You can restore them later.
-						{hasFolder ? " Folders move to Trash with everything inside." : null}
-					</MyModalDescription>
+					{isMany ? (
+						<MyModalHeading>{`Move ${nodes.length} items to Trash?`}</MyModalHeading>
+					) : (
+						<FilesNameHeading before="Move “" name={nodes?.[0]?.name ?? ""} after="” to Trash?" />
+					)}
+					<MyModalDescription>You can restore {isMany ? "them" : "it"} from Trash later.</MyModalDescription>
 				</MyModalHeader>
-				{/* Leave out the empty body when there is no list and no refusal to show. */}
-				{hasList || error ? (
+				{nodes ? (
 					<MyModalScrollableArea>
 						<div className={"FilesArchiveModal-content" satisfies FilesArchiveModal_ClassNames}>
 							{/* One path per line in a read-only text block, so Ctrl+A selects only the paths to copy
-							    them. It grows only from Show more: growing on click would move the text under a
-							    selection the person is making. */}
-							{hasList ? (
-								<TextMonospaceBlock
-									aria-label="Items to move to Trash"
-									text={nodes.map((node) => node.path).join("\n")}
-									maxHeight={isListExpanded ? "16lh" : "6lh"}
-								/>
-							) : null}
-							{nodes && nodes.length > 6 ? (
+							    them. One item gets its path too, because the heading may cut its name. It grows only
+							    from Show more: growing on click would move the text under a selection the person is
+							    making. */}
+							<TextMonospaceBlock
+								aria-label="Items to move to Trash"
+								text={nodes.map((node) => node.path).join("\n")}
+								maxHeight={isListExpanded ? "16lh" : "6lh"}
+							/>
+							{nodes.length > 6 ? (
 								<MyButton
 									className={"FilesArchiveModal-list-toggle" satisfies FilesArchiveModal_ClassNames}
 									variant="ghost"
@@ -206,21 +229,59 @@ export const FilesArchiveModal = memo(function FilesArchiveModal(props: FilesArc
 									{isListExpanded ? "Show less" : "Show more"}
 								</MyButton>
 							) : null}
+							{/* A Read-only refusal shows its reason, the blocking paths in the same path block as above,
+							    and how to fix it. Other refusals show the server's message. */}
 							{error ? (
-								<p role="alert" className={"FilesArchiveModal-error" satisfies FilesArchiveModal_ClassNames}>
-									{error}
-								</p>
+								<div role="alert" className={"FilesArchiveModal-refusal" satisfies FilesArchiveModal_ClassNames}>
+									{error.blockedItems.length > 0 ? (
+										<>
+											<p className={"FilesArchiveModal-error" satisfies FilesArchiveModal_ClassNames}>
+												Can't move to Trash.{" "}
+												{/* The server reads only the first blocking item of each folder, plus one row to know if
+												    there are more. So it has no count: "for example" says the list is not complete. */}
+												{error.blockedItems.some((item) => item.hasMore)
+													? "Items inside are Read-only, for example:"
+													: error.blockedItems.length > 1
+														? "These items are Read-only:"
+														: error.blockedItems[0]!.place === "parent"
+															? "Its folder is Read-only:"
+															: "An item inside is Read-only:"}
+											</p>
+											<TextMonospaceBlock
+												aria-label="Read-only items"
+												text={error.blockedItems.map((item) => item.path).join("\n")}
+												maxHeight="6lh"
+											/>
+											<p className={"FilesArchiveModal-hint" satisfies FilesArchiveModal_ClassNames}>
+												{/* Point at the items in the block, so the person changes only those. */}
+												{error.blockedItems.length === 1
+													? "Turn off Read-only in its Properties, then try again."
+													: "Turn off Read-only in their Properties, then try again."}
+											</p>
+										</>
+									) : (
+										<p className={"FilesArchiveModal-error" satisfies FilesArchiveModal_ClassNames}>{error.message}</p>
+									)}
+								</div>
 							) : null}
 						</div>
 					</MyModalScrollableArea>
 				) : null}
 				<MyModalFooter>
-					<MyButton ref={cancelRef} variant="ghost" disabled={pending} onClick={handleClose}>
-						Cancel
-					</MyButton>
-					<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>
-						Move to Trash
-					</MyButton>
+					{isReadOnlyRefusal ? (
+						<MyButton ref={okRef} onClick={handleClose}>
+							OK
+						</MyButton>
+					) : (
+						<>
+							<MyButton ref={cancelRef} variant="ghost" disabled={pending} onClick={handleClose}>
+								Cancel
+							</MyButton>
+							<MyButton variant="destructive" disabled={pending} aria-busy={pending} onClick={handleConfirm}>
+								Move to Trash
+							</MyButton>
+						</>
+					)}
 				</MyModalFooter>
 				<MyModalCloseTrigger disabled={pending} />
 			</MyModalPopover>
@@ -517,10 +578,7 @@ export const FilesArchiveRunModal = memo(function FilesArchiveRunModal(props: Fi
 								<legend className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
 									{conflict.path ?? conflict.name ?? "An item you cannot open"}
 								</legend>
-								<p>
-									This name already exists. Keep both adds a unique counter. Skipping a folder keeps it and its contents
-									in Trash.
-								</p>
+								<p>An item with this name is already there. Keep both adds a number to the name.</p>
 								{conflict.occupantPath ? (
 									<p className={"FilesArchiveRunModal-path" satisfies FilesArchiveRunModal_ClassNames}>
 										In the way: {conflict.occupantPath}

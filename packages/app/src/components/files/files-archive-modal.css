@@ -12,10 +12,21 @@
 		justify-self: start;
 	}
 
+	.FilesArchiveModal-refusal {
+		display: grid;
+		gap: 8px;
+	}
+
 	.FilesArchiveModal-error {
 		margin: 0;
 
 		color: var(--color-red-11);
+	}
+
+	.FilesArchiveModal-hint {
+		margin: 0;
+
+		color: var(--color-fg-09);
 	}
 
 	.FilesArchiveRunModal {

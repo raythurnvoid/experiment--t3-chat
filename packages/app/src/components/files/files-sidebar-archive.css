@@ -53,6 +53,81 @@
 	}
 	/* #endregion row */
 
+	/* #region skeleton */
+	/* Fill the content area and clip the rows below it, so the skeleton never adds a scrollbar. */
+	.FilesSidebarArchiveSkeleton {
+		height: 100%;
+		overflow: hidden;
+	}
+
+	/* Keep the parts of a skeleton row where a real row draws them: the row's 4px 8px padding, the
+	   16px icon with an 8px gap, and the action icon in the middle of the 36px More actions button. */
+	.FilesSidebarArchiveSkeleton-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		padding: 4px 10px 4px 8px;
+	}
+
+	.FilesSidebarArchiveSkeleton-icon {
+		width: 16px;
+		height: 16px;
+		flex: 0 0 auto;
+
+		border-radius: 4px;
+	}
+
+	/* Keep these rows equal to the line heights of the real name and details text. */
+	.FilesSidebarArchiveSkeleton-text {
+		flex: 1;
+		min-width: 0;
+
+		display: grid;
+		grid-template-rows: 21px 22.5px;
+		align-items: center;
+	}
+
+	.FilesSidebarArchiveSkeleton-name {
+		width: 45%;
+		height: 12px;
+
+		border-radius: 4px;
+
+		/* Vary the widths a little, so the rows look like names and not like one block. */
+		.FilesSidebarArchiveSkeleton-row:nth-child(3n + 2) & {
+			width: 30%;
+		}
+
+		.FilesSidebarArchiveSkeleton-row:nth-child(3n) & {
+			width: 60%;
+		}
+	}
+
+	.FilesSidebarArchiveSkeleton-details {
+		width: 85%;
+		height: 10px;
+
+		border-radius: 4px;
+
+		.FilesSidebarArchiveSkeleton-row:nth-child(3n + 2) & {
+			width: 70%;
+		}
+	}
+
+	/* The More actions icon is a thin line drawing, so its skeleton is 12px inside its 16px box. The
+	   8px row gap plus the 14px left margin is the real space before it: the row button's 8px end
+	   padding, the 2px gap, the 10px More actions padding, and the 2px inset of the 12px skeleton. */
+	.FilesSidebarArchiveSkeleton-action {
+		width: 12px;
+		height: 12px;
+		flex: 0 0 auto;
+		margin: 2px 2px 2px 14px;
+
+		border-radius: 3px;
+	}
+	/* #endregion skeleton */
+
 	/* #region root */
 	.FilesSidebarArchive {
 		flex: 1;

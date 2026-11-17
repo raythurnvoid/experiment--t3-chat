@@ -633,8 +633,8 @@ async function db_check_archive_parent(
 		return Result({
 			_nay: {
 				name: "read_only",
-				message: `The folder "${parent.path}" is read-only. Unlock it before moving items inside it to Trash.`,
-				data: { parentId: parent._id },
+				message: `The folder "${parent.path}" is Read-only. Turn off Read-only in its Properties, then try again.`,
+				data: { parentId: parent._id, parentPath: parent.path },
 			},
 		});
 	return writable;
@@ -786,13 +786,14 @@ function get_named_item_refusal(
 	// A review refusal of an agent's delete asks for a new review. That message fits an item inside too.
 	if (name === "needs_review") return { name, message: nay.message };
 	if (name === "read_only") {
-		if (inside?.lockedPath && inside.hasMore)
+		// Several Read-only items inside, or one the person cannot see, are fixed in one step on the folder.
+		if (inside && (!inside.lockedPath || inside.hasMore))
 			return {
 				name,
-				message: `"${inside.lockedPath}" and other items inside are read-only. Unlock them, then try again.`,
+				message: `${inside.lockedPath ? `"${inside.lockedPath}" and other items inside are` : "An item inside is"} Read-only. Use Clear Read-only from contents in the folder's Properties, then try again.`,
 			};
-		const lockedItem = !inside ? "This item" : inside.lockedPath ? `"${inside.lockedPath}"` : "An item inside it";
-		return { name, message: `${lockedItem} is read-only. Unlock it, then try again.` };
+		const lockedItem = inside ? `"${inside.lockedPath}"` : "This item";
+		return { name, message: `${lockedItem} is Read-only. Turn off Read-only in its Properties, then try again.` };
 	}
 	return { name, message: inside ? "You cannot change an item inside it." : nay.message };
 }
@@ -3288,9 +3289,9 @@ async function db_settle_step(
  * check, so one job keeps one set of rules. Each file check reads at most two matching docs. Op
  * overlaps use a balanced path tree, so unrelated jobs and deep folder paths need no scan.
  *
- * `blockers` holds the Read-only item behind a refusal: an item inside the named item, or its parent
- * folder. A caller with its own words, like `rm`, can name it. It is set only for an item the person may
- * read.
+ * `blockers` holds the Read-only item behind a refusal, with its saved path: an item inside the named
+ * item, or its parent folder. A caller with its own words, like `rm`, can name it. It is set only for
+ * an item the person may read.
  *
  * `opCheck: "any"` stops at the first op of any kind, so the op read is one row. Then the caller leaves
  * more cases to a later check. `"overlapping"` checks covered paths. `indexPending` asks the caller
@@ -3310,7 +3311,7 @@ export async function files_archive_runs_db_check_fast(
 	const refusals = new Map<Id<"files_nodes">, RunFields["refusedItems"][number]["refusal"]>();
 	const blockers = new Map<
 		Id<"files_nodes">,
-		{ place: "inside" | "parent"; nodeId: Id<"files_nodes">; hasMore: boolean }
+		{ place: "inside" | "parent"; nodeId: Id<"files_nodes">; path: string; hasMore: boolean }
 	>();
 	if (args.writeContext.force) return { refusals, blockers, isFast: false, indexPending: false };
 
@@ -3322,7 +3323,12 @@ export async function files_archive_runs_db_check_fast(
 			refusals.set(node._id, { name: parentCheck._nay.name ?? null, message: parentCheck._nay.message });
 			// The parent check passed write access on the parent before it read the flag, so the person may read it.
 			if (parentCheck._nay.data)
-				blockers.set(node._id, { place: "parent", nodeId: parentCheck._nay.data.parentId, hasMore: false });
+				blockers.set(node._id, {
+					place: "parent",
+					nodeId: parentCheck._nay.data.parentId,
+					path: parentCheck._nay.data.parentPath,
+					hasMore: false,
+				});
 			continue;
 		}
 		const writable = await files_nodes_db_require_writable(ctx, {
@@ -3433,7 +3439,7 @@ export async function files_archive_runs_db_check_fast(
 					node._id,
 					get_named_item_refusal({ name: "read_only", message: "" }, { lockedPath: readOnly.path, hasMore }),
 				);
-				blockers.set(node._id, { place: "inside", nodeId: readOnly._id, hasMore });
+				blockers.set(node._id, { place: "inside", nodeId: readOnly._id, path: readOnly.path, hasMore });
 			} else {
 				isFast = false;
 			}

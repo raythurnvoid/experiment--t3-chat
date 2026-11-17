@@ -82,6 +82,30 @@ a product rule, decided by the user.
 - Status text that is not a button label (a `role="status"` line, a "Load more" row that shows
   "Loading…") is not covered by this rule.
 
+## Disabled menu items say why
+
+When a menu item is disabled for a reason the user can act on, hovering it shows that reason. This
+is a product rule, decided by the user.
+
+- Pass the reason as `tooltip` to `MyMenuItem`. A disabled item with a tooltip keeps the hover, and
+  it still ignores clicks.
+- Name the item or the cause in plain words, for example "This folder contains items you cannot
+  change." Leave out the tooltip when the reason is obvious, such as Paste with an empty clipboard.
+- The Move to Trash item in the Files row menus is the reference (`files_get_archive_disabled_reason`
+  in `shared/files.ts`).
+
+## Dialog titles name the item, the body shows the path
+
+A dialog about one file or folder names it in the title, on one line. The body shows its full path.
+This is a product rule, decided by the user.
+
+- Use `FilesNameHeading` (`components/files/files-name-heading.tsx`). A long name is cut in the
+  middle with Pretext, so the extension stays visible, and the heading keeps the full text as the
+  dialog's accessible name.
+- Show the path in a read-only `TextMonospaceBlock`, one path per line, also for one item. A dialog
+  for several items counts them in the title ("Move 3 items to Trash?") and lists every path.
+- References: Move to Trash, Delete permanently and Share.
+
 ## Loading skeletons are all or nothing
 
 A popover, menu or suggestion list opens at once, with skeleton rows, and keeps its size when the

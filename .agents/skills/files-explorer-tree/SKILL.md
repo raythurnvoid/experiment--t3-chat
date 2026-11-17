@@ -1130,6 +1130,9 @@ Trash or Recycle Bin model. Do not promise automatic deletion after a time limit
 - The Trash view (`files-sidebar-archive.tsx`) replaces the tree. Open it from "Open Trash" in
   the top More menu. It is sidebar state, not a route or search param.
   An active search wins over it. Back to files and Escape (inside the view) close it.
+  While the first page of an area loads, the list shows skeleton rows with `aria-busy="true"`,
+  like the tree. Each part sits where a real Trash row draws it (icon, name line, details line,
+  More actions), so the real rows replace them without moving.
 - It shows one area at a time, like Google Drive (one Trash per shared drive) and SharePoint (one bin
   per site). An area is the open part of the workspace (`Workspace`) or one restricted folder the
   person can open. A restricted file holds no other items, so it is no area. One rule for

@@ -5429,8 +5429,16 @@ describe("locked and missing paths", () => {
 				refused: [
 					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
 					// Not the general "None of these items can be archived…" message.
-					{ path: "/ro-a.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
-					{ path: "/ro-b.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
+					{
+						path: "/ro-a.md",
+						message: "This item is Read-only. Turn off Read-only in its Properties, then try again.",
+						errorCode: "read_only",
+					},
+					{
+						path: "/ro-b.md",
+						message: "This item is Read-only. Turn off Read-only in its Properties, then try again.",
+						errorCode: "read_only",
+					},
 				],
 			},
 		});
@@ -5495,7 +5503,11 @@ describe("locked and missing paths", () => {
 					{ path: "/secret/h01.md", message: "Permission denied", errorCode: "permission_denied" },
 					{ path: "/secret/nope.md", message: "Permission denied", errorCode: "permission_denied" },
 					{ path: "/missing.md", message: "Not found", errorCode: "not_found" },
-					{ path: "/ro.md", message: "This item is read-only. Unlock it, then try again.", errorCode: "read_only" },
+					{
+						path: "/ro.md",
+						message: "This item is Read-only. Turn off Read-only in its Properties, then try again.",
+						errorCode: "read_only",
+					},
 				],
 			},
 		});

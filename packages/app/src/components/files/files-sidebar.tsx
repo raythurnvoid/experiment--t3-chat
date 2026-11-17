@@ -149,6 +149,7 @@ import {
 	files_can_move_node_between_restricted_scopes,
 	files_clear_node_path_cached_validation_messages,
 	files_collect_protected_descendant_ids,
+	files_get_archive_disabled_reason,
 	files_get_default_node_name,
 	files_get_read_only_capabilities,
 	files_guess_content_type_from_name,
@@ -1361,7 +1362,10 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	canCreate: boolean;
 	canRename: boolean;
 	canShare: boolean;
-	canArchive: boolean;
+	/**
+	 * Why Move to Trash is off, shown as its tooltip. Null when the user can move the node to Trash.
+	 */
+	archiveDisabledReason: string | null;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -1390,7 +1394,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		canCreate,
 		canRename,
 		canShare,
-		canArchive,
+		archiveDisabledReason,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -1577,7 +1581,13 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 					</MyMenuItem>
 				</MyMenuItemsGroup>
 				<MyMenuItemsGroup separator>
-					<MyMenuItem variant="destructive" disabled={!canArchive} hideOnClick onClick={onArchive}>
+					<MyMenuItem
+						variant="destructive"
+						disabled={archiveDisabledReason !== null}
+						tooltip={archiveDisabledReason ?? undefined}
+						hideOnClick
+						onClick={onArchive}
+					>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Archive />
@@ -2523,6 +2533,20 @@ const FilesSidebarTreeRow = memo(
 		const canArchiveItems = sourceItems.some(
 			(selected) => is_open_node(selected) && selected.canWrite && !protectedDescendantIds.has(selected._id),
 		);
+		// With one row, name its own reason. With a selection, no single reason fits every row. Use the
+		// same inputs as `canArchiveItems`, so a disabled item always gets a reason.
+		const archiveDisabledReason = canArchiveItems
+			? null
+			: sourceItems.length > 1
+				? "You cannot change any of the selected items."
+				: ((is_open_node(itemData)
+						? files_get_archive_disabled_reason({
+								canWrite: itemData.canWrite,
+								writeBlockedReason: itemData.writeBlockedReason,
+								readOnly: itemData.readOnly,
+								hasVisibleProtectedDescendant: protectedDescendantIds.has(itemData._id),
+							})
+						: null) ?? "You cannot move this item to Trash.");
 
 		useEffect(() => {
 			if (isRenaming && !canRename) {
@@ -2818,7 +2842,7 @@ const FilesSidebarTreeRow = memo(
 						canCreate={capabilities.canReceiveChildren}
 						canRename={canRename}
 						canShare={canShare}
-						canArchive={canArchiveItems}
+						archiveDisabledReason={archiveDisabledReason}
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -4518,7 +4542,12 @@ const FilesSidebarSharedGroupRow = memo(function FilesSidebarSharedGroupRow(prop
 					canRename={false}
 					canShare
 					// The parent is hidden, so the server checks the rest.
-					canArchive={row.canWrite}
+					archiveDisabledReason={files_get_archive_disabled_reason({
+						canWrite: row.canWrite,
+						writeBlockedReason: row.writeBlockedReason,
+						readOnly: row.readOnly,
+						hasVisibleProtectedDescendant: false,
+					})}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}
@@ -4793,7 +4822,8 @@ const FilesSidebarSearchResultsRow = memo(function FilesSidebarSearchResultsRow(
 					canCreate={false}
 					canRename={false}
 					canShare
-					canArchive={canWrite}
+					// `canWrite` is the workspace permission here. The server checks Read-only.
+					archiveDisabledReason={canWrite ? null : "You need Can edit permission to change this item."}
 					canExpandSubtree={false}
 					canCollapseSubtree={false}
 					expandedFolderActionsVisible={false}

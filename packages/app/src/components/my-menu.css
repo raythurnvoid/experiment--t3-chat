@@ -66,6 +66,22 @@
 		&[aria-disabled="true"] {
 			pointer-events: none;
 			color: var(--color-fg-06);
+
+			/* An accessible disabled menu item says why it is off, in a second line or a tooltip, so give
+			   it the hover back. The menu item still ignores clicks. */
+			&[data-accessible-when-disabled] {
+				cursor: default;
+				pointer-events: auto;
+			}
+
+			/* Keep it dim, plain, and unpressed while it is the active item, so it never looks enabled.
+			   A destructive item does not turn red either. */
+			&[data-active-item],
+			&[data-active-item]:active {
+				background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-09));
+				color: var(--color-fg-06);
+				box-shadow: none;
+			}
 		}
 
 		&[aria-selected="true"] {

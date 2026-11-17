@@ -3,6 +3,7 @@ import "./files-purge-modal.css";
 import { memo, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
+import { FilesNameHeading } from "@/components/files/files-name-heading.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -74,20 +75,12 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 	const isListExpanded = request !== null && expandedRequest === request;
 
 	const nodes = request?.kind === "items" ? request.nodes : [];
-	// One item is named in the heading, so it gets no list.
-	const hasList = nodes.length > 1;
-	const heading =
-		request?.kind === "empty_archive"
-			? "Empty Trash?"
-			: hasList
-				? `Delete ${nodes.length} items permanently?`
-				: `Delete “${nodes[0]?.name ?? ""}” permanently?`;
+	// The heading names one item or counts many. The body always lists the full paths.
+	const hasList = nodes.length > 0;
 	const description =
 		request?.kind === "empty_archive"
-			? `Every item moved to Trash in ${request.areaLabel} before now will be deleted forever, with everything inside it. You can't undo this.`
-			: nodes.some((node) => node.kind === "folder")
-				? "Deleted items are gone forever, with everything inside them. You can't undo this."
-				: "Deleted items are gone forever. You can't undo this.";
+			? `Everything in the Trash of ${request.areaLabel} is deleted forever. You can't undo this.`
+			: "You can't undo this.";
 
 	const handleClose = useFn(() => {
 		// Clear the refusal here and in `handleConfirm`, so a second open does not start with old text.
@@ -162,14 +155,21 @@ export const FilesPurgeModal = memo(function FilesPurgeModal(props: FilesPurgeMo
 				unmountOnHide
 			>
 				<MyModalHeader>
-					<MyModalHeading>{heading}</MyModalHeading>
+					{nodes.length === 1 ? (
+						<FilesNameHeading before="Delete “" name={nodes[0]!.name} after="” permanently?" />
+					) : (
+						<MyModalHeading>
+							{request?.kind === "empty_archive" ? "Empty Trash?" : `Delete ${nodes.length} items permanently?`}
+						</MyModalHeading>
+					)}
 					<MyModalDescription>{description}</MyModalDescription>
 				</MyModalHeader>
 				{/* Leave out the empty body when there is no list and no refusal to show. */}
 				{hasList || error ? (
 					<MyModalScrollableArea>
 						<div className={"FilesPurgeModal-content" satisfies FilesPurgeModal_ClassNames}>
-							{/* One path per line in a read-only text block, so Ctrl+A selects only the paths. */}
+							{/* One path per line in a read-only text block, so Ctrl+A selects only the paths. One item
+							    gets its path too, because the heading may cut its name. */}
 							{hasList ? (
 								<TextMonospaceBlock
 									aria-label="Items to delete"

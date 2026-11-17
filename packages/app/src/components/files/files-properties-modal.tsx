@@ -412,7 +412,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 			: state === null
 				? "This setting is not available for this item."
 				: "You need Can edit permission to change this.",
-		"Plugins and API keys with the Manage Read-only permission can still make changes. Changes already in progress may still finish.",
+		"Plugins and API keys with the Manage Read-only permission can still make changes.",
 	]
 		.filter((sentence) => sentence !== null)
 		.join(" ");
@@ -479,15 +479,17 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 							{bulkTarget ? "Make contents Read-only?" : "Clear Read-only from contents?"}
 						</MyModalHeading>
 						<MyModalDescription>
-							This changes the current contents you can edit. It does not change this folder's own setting.
+							{bulkTarget
+								? "Every file and folder inside this folder becomes Read-only."
+								: "Every file and folder inside this folder becomes editable again, also the ones made Read-only one by one."}{" "}
+							This folder keeps its own setting.
 						</MyModalDescription>
 					</MyModalHeader>
 					<MyModalScrollableArea>
 						<p>
-							This checks the contents as it runs. It may miss items added or moved during the run. Changes already made
-							stay if you stop. There is no Undo.
+							Items you cannot edit are skipped. Items added later are not changed. You can follow the progress in
+							Activity. There is no Undo.
 						</p>
-						{bulkTarget === false ? <p>This also clears Read-only settings set by hand.</p> : null}
 						{error ? <p role="alert">{error}</p> : null}
 					</MyModalScrollableArea>
 					<MyModalFooter>
@@ -1073,7 +1075,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 					Metadata
 				</h3>
 				<p className={"FilesPropertiesModalMetadata-description" satisfies FilesPropertiesModalMetadata_ClassNames}>
-					Add your own fields to this item. Select the help button to see how.
+					Add your own fields to this item.
 				</p>
 				<div className={"FilesPropertiesModalMetadata-help" satisfies FilesPropertiesModalMetadata_ClassNames}>
 					<FilesPropertiesModalMetadataHelp />

@@ -124,7 +124,7 @@ describe("FilesArchiveModal", () => {
 	});
 
 	test("names the item the archive refused, leaves it out of the archived ids and links the job", async () => {
-		const reason = '"/Reports/plan.md" is read-only. Unlock it, then try again.';
+		const reason = '"/Reports/plan.md" is Read-only. Turn off Read-only in its Properties, then try again.';
 		mutationMock.mockResolvedValue({
 			_yay: {
 				runId: "run_1",
@@ -189,6 +189,26 @@ describe("FilesArchiveModal", () => {
 		);
 		expect(onArchived).not.toHaveBeenCalled();
 		expect(archiveButton).toHaveProperty("disabled", false);
+	});
+
+	test("offers only OK after a Read-only refusal", async () => {
+		mutationMock.mockResolvedValue({
+			_nay: {
+				name: "nay",
+				message: "Read-only",
+				data: { blockedItems: [{ nodeId: "node_1", place: "inside", path: "/Reports/plan.md", hasMore: false }] },
+			},
+		});
+		const { onClose } = renderModal([REPORTS]);
+		const dialog = await screen.findByRole("dialog");
+		fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
+
+		const ok = await within(dialog).findByRole("button", { name: "OK" });
+		expect(within(dialog).getByRole("textbox", { name: "Read-only items" }).textContent).toBe("/Reports/plan.md");
+		expect(within(dialog).queryByRole("button", { name: "Move to Trash" })).toBeNull();
+		await waitFor(() => expect(document.activeElement).toBe(ok));
+		fireEvent.click(ok);
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
 	test("cannot be closed while the write runs", async () => {
@@ -344,9 +364,17 @@ describe("FilesArchiveRunModal", () => {
 				{ nodeId: "node_5", path: "/Plans" },
 			],
 			notArchived: [
-				{ nodeId: "node_2", path: "/Reports", message: "This item is read-only. Unlock it, then try again." },
+				{
+					nodeId: "node_2",
+					path: "/Reports",
+					message: "This item is Read-only. Turn off Read-only in its Properties, then try again.",
+				},
 				{ nodeId: "node_3", path: null, message: "Permission denied" },
-				{ nodeId: "node_6", path: "/Drafts", message: "This item is read-only. Unlock it, then try again." },
+				{
+					nodeId: "node_6",
+					path: "/Drafts",
+					message: "This item is Read-only. Turn off Read-only in its Properties, then try again.",
+				},
 			],
 		});
 		renderRunModal();
@@ -362,8 +390,9 @@ describe("FilesArchiveRunModal", () => {
 		const list = within(dialog).getByRole("region", { name: "Not moved (3)" });
 		// One reason is written once, above all the paths it refused.
 		expect(
-			within(list).getByRole("textbox", { name: "Not moved: This item is read-only. Unlock it, then try again." })
-				.textContent,
+			within(list).getByRole("textbox", {
+				name: "Not moved: This item is Read-only. Turn off Read-only in its Properties, then try again.",
+			}).textContent,
 		).toBe("/Reports\n/Drafts");
 		expect(within(list).getByText("1 item you cannot open")).toBeTruthy();
 	});

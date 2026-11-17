@@ -26,6 +26,7 @@ import { Check, ChevronRight } from "lucide-react";
 import type { MyButton_ClassNames } from "@/components/my-button.tsx";
 import type { MyCheckboxButton_ClassNames } from "@/components/my-checkbox-button.tsx";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "./my-tooltip.tsx";
 
 // #region items group text
 export type MyMenuItemsGroupText_ClassNames = "MyMenuItemsGroupText";
@@ -184,22 +185,42 @@ export type MyMenuItem_ClassNames = "MyMenuItem" | "MyMenuItem-variant-destructi
 
 export type MyMenuItem_Props = MenuItemProps & {
 	variant?: "default" | "destructive";
+	/**
+	 * Shown on hover, also while the item is disabled. Use it to say why a disabled item is off.
+	 */
+	tooltip?: string;
 };
 
 export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
-	const { className, variant = "default", children, ...rest } = props;
-
-	return (
+	const { className, variant = "default", tooltip, disabled, accessibleWhenDisabled, children, ...rest } = props;
+	const itemElement = (
 		<MenuItem
 			className={cn(
 				"MyMenuItem" satisfies MyMenuItem_ClassNames,
 				variant === "destructive" && ("MyMenuItem-variant-destructive" satisfies MyMenuItem_ClassNames),
 				className,
 			)}
+			disabled={disabled}
+			// A disabled item ignores the pointer unless it is accessible (see my-menu.css). An item with a
+			// tooltip must get the hover, so the tooltip can show.
+			accessibleWhenDisabled={accessibleWhenDisabled ?? tooltip !== undefined}
 			{...rest}
 		>
 			{children}
 		</MenuItem>
+	);
+
+	if (tooltip === undefined) {
+		return itemElement;
+	}
+
+	return (
+		<MyTooltip placement="right">
+			<MyTooltipTrigger>{itemElement}</MyTooltipTrigger>
+			<MyTooltipContent unmountOnHide>
+				<>{tooltip}</>
+			</MyTooltipContent>
+		</MyTooltip>
 	);
 });
 // #endregion item

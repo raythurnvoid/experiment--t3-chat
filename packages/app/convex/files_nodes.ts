@@ -3432,9 +3432,20 @@ export async function files_nodes_db_archive_named_nodes(
 	// The message is general when several items are refused. `data` keeps each item's own reason for the
 	// API, which answers per path.
 	if (jobFileNodes.length === 0) {
-		return refusedItems.length > 0
-			? Result({ _nay: { ...files_archive_runs_get_all_refused_nay(refusedItems), data: { refusedItems } } })
-			: Result({ _yay: null });
+		if (refusedItems.length === 0) return Result({ _yay: null });
+
+		// Name the Read-only item behind each refusal apart from its message, so the dialog can show its
+		// path in a path box. The fast check already read it, and sets a blocker only for an item the
+		// person may read. Same shape as the `rm` refusal in `files_pending_updates.ts`.
+		const blockedItems = [...fastCheck.blockers].map(([nodeId, blocker]) => ({
+			nodeId,
+			place: blocker.place,
+			path: blocker.path,
+			hasMore: blocker.hasMore,
+		}));
+		return Result({
+			_nay: { ...files_archive_runs_get_all_refused_nay(refusedItems), data: { refusedItems, blockedItems } },
+		});
 	}
 
 	const liveLimit = await files_subtree_ops_db_check_live_limit(ctx, {
@@ -3566,10 +3577,12 @@ export const archive_nodes = mutation({
 			nodeIds,
 			credentialId: null,
 		});
-		// The app shows the one message. Only the API reads each item's reason from `data`.
+		// The app shows the one message and the paths of the Read-only items behind it. Only the API reads
+		// each item's reason from `refusedItems`.
 		if (archived._nay) {
-			const { data: _data, ...nay } = archived._nay;
-			return Result({ _nay: nay });
+			const { data, ...nay } = archived._nay;
+			const blockedItems = data && "blockedItems" in data ? data.blockedItems : [];
+			return Result({ _nay: { ...nay, data: { blockedItems } } });
 		}
 		return archived;
 	},

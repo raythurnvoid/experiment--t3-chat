@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { CopyPathIcon } from "@/components/copy-path-icon.tsx";
+import { FilesNameHeading } from "@/components/files/files-name-heading.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
@@ -1546,7 +1547,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 				unmountOnHide
 			>
 				<MyModalHeader>
-					<MyModalHeading>{shareState ? `Share ${shareState.nodeName}` : "Share"}</MyModalHeading>
+					{shareState ? (
+						<FilesNameHeading before="Share “" name={shareState.nodeName} after="”" />
+					) : (
+						<MyModalHeading>Share</MyModalHeading>
+					)}
 					<MyModalDescription>{`Choose who can open this ${nodeKindText}.`}</MyModalDescription>
 				</MyModalHeader>
 

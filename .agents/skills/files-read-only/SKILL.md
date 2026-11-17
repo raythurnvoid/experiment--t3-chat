@@ -206,6 +206,17 @@ a rename, move, or loss of file access. This is not a bug and needs no live refr
 Current item paths and new actions still check current access.
 See the [Activity history rule](../activities/SKILL.md#historical-messages-and-live-data).
 
+When the request refuses every named item, `archive_nodes` also returns `_nay.data.blockedItems`:
+for each refused item, the Read-only item behind it (`place` is `inside` or `parent`), its path, and
+`hasMore`. It is the same shape as the `rm` refusal. The Move to Trash dialog shows these paths in a
+read-only path block under a short reason, instead of putting the path in the sentence. When more
+items are blocked (`hasMore`), the reason says "for example", because the check reads no count. The
+hint below points only at the shown items: "Turn off Read-only in its Properties". A second try
+would fail the same way, so the footer then offers only OK. Other refusals keep Cancel and Move to
+Trash, because a rate limit or a network error can pass on a second try. A refusal found later by
+the background check has no `blockedItems`, so the dialog shows the message. The messages say "Turn off Read-only in its Properties" or "Use Clear Read-only
+from contents in the folder's Properties", because the app has no Unlock action.
+
 An ordinary move to Trash checks each named item's current direct parent for Can edit and Read-only in
 both its fast and background checks. It then keeps the existing check-then-stamp behavior. Its fast path queries active
 Read-only nodes with `by_org_ws_archive_readOnly_treePath`; trashed and false nodes are outside
