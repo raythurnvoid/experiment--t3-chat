@@ -11,6 +11,7 @@ import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avata
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -599,7 +600,10 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 // #endregion link
 
 // #region copy
-type FilesShareModalCopy_ClassNames = "FilesShareModalCopy" | "FilesShareModalCopy-preview";
+type FilesShareModalCopy_ClassNames =
+	| "FilesShareModalCopy"
+	| "FilesShareModalCopy-field"
+	| "FilesShareModalCopy-control";
 
 type FilesShareModalCopy_Props = {
 	nodeKindText: "file" | "folder";
@@ -607,9 +611,36 @@ type FilesShareModalCopy_Props = {
 	link: string;
 };
 
+const render_copy_field = (label: string, value: string) => (
+	<MyInput className={"FilesShareModalCopy-field" satisfies FilesShareModalCopy_ClassNames}>
+		<MyInputBackground />
+		<MyInputArea>
+			{/* Select all on focus, so one click and Ctrl+C copies the whole text, like Google Drive. A mouse
+			    press puts the caret where it clicks after the focus event, which would undo the selection. So
+			    the first press focuses the field by hand, and later presses place the caret as usual. */}
+			<MyInputControl
+				type="text"
+				readOnly
+				value={value}
+				aria-label={label}
+				className={"FilesShareModalCopy-control" satisfies FilesShareModalCopy_ClassNames}
+				onFocus={(event) => event.currentTarget.select()}
+				onMouseDown={(event) => {
+					if (document.activeElement !== event.currentTarget) {
+						event.preventDefault();
+						event.currentTarget.focus();
+					}
+				}}
+			/>
+		</MyInputArea>
+		<MyInputBox />
+	</MyInput>
+);
+
 /**
- * The item's path and its app link. Each row shows the exact text that its button copies. The app link
- * opens only for people with access. The public link above is the one for everybody else.
+ * The item's path and its app link. Each row shows the exact text that its button copies, in a
+ * read-only field, so the user can also scroll it and select part of it. The app link opens only for
+ * people with access. The public link above is the one for everybody else.
  */
 const FilesShareModalCopy = memo(function FilesShareModalCopy(props: FilesShareModalCopy_Props) {
 	const { nodeKindText, path, link } = props;
@@ -635,7 +666,7 @@ const FilesShareModalCopy = memo(function FilesShareModalCopy(props: FilesShareM
 					</div>
 					<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
 						<span className={"FilesShareModalEntry-name" satisfies FilesShareModalEntry_ClassNames}>Path</span>
-						<span className={"FilesShareModalCopy-preview" satisfies FilesShareModalCopy_ClassNames}>{path}</span>
+						{render_copy_field("Path", path)}
 					</div>
 					<div className={"FilesShareModalEntry-actions" satisfies FilesShareModalEntry_ClassNames}>
 						<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy path" text={path} />
@@ -647,7 +678,7 @@ const FilesShareModalCopy = memo(function FilesShareModalCopy(props: FilesShareM
 					</div>
 					<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
 						<span className={"FilesShareModalEntry-name" satisfies FilesShareModalEntry_ClassNames}>Link</span>
-						<span className={"FilesShareModalCopy-preview" satisfies FilesShareModalCopy_ClassNames}>{link}</span>
+						{render_copy_field("Link", link)}
 					</div>
 					<div className={"FilesShareModalEntry-actions" satisfies FilesShareModalEntry_ClassNames}>
 						<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy link" text={link} />
@@ -670,7 +701,8 @@ type FilesShareModalSkeleton_ClassNames =
 	| "FilesShareModalSkeleton-meta"
 	| "FilesShareModalSkeleton-text"
 	| "FilesShareModalSkeleton-general-level"
-	| "FilesShareModalSkeleton-link-level";
+	| "FilesShareModalSkeleton-link-level"
+	| "FilesShareModalSkeleton-copy-field";
 
 /**
  * Stands in for the dialog while it loads, in its most common shape: a file shared with nobody, so
@@ -744,7 +776,9 @@ const FilesShareModalSkeleton = memo(function FilesShareModalSkeleton() {
 							<MySkeleton className={"FilesShareModalSkeleton-icon" satisfies FilesShareModalSkeleton_ClassNames} />
 							<div className={"FilesShareModalEntry-main" satisfies FilesShareModalEntry_ClassNames}>
 								<MySkeleton className={"FilesShareModalSkeleton-name" satisfies FilesShareModalSkeleton_ClassNames} />
-								<MySkeleton className={"FilesShareModalSkeleton-meta" satisfies FilesShareModalSkeleton_ClassNames} />
+								<MySkeleton
+									className={"FilesShareModalSkeleton-copy-field" satisfies FilesShareModalSkeleton_ClassNames}
+								/>
 							</div>
 						</div>
 					))}

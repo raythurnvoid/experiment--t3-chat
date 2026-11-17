@@ -318,15 +318,22 @@
 	/* #endregion link */
 
 	/* #region copy */
-	/* The exact text the row's button copies. A path or a link can be one long word, so it may break
-	   anywhere. It keeps the size of a row's meta line, so the skeleton row has the same height. */
-	.FilesShareModalCopy-preview {
+	/* The field is read-only, so it shows the dim focus ring on any focus. Use the same ring as the
+	   other read-only text blocks, not the bright ring of an editable input. */
+	.FilesShareModalCopy-field:focus-within .MyInputBox {
+		outline-color: var(--app-readonly-focus-ring);
+	}
+
+	.FilesShareModalCopy-control {
 		font-family: var(--app-font-monospace);
 		font-size: 15px;
-		line-height: 1.4;
-		color: var(--color-fg-08);
+		color: var(--color-fg-10);
+	}
 
-		overflow-wrap: anywhere;
+	/* The field is the last line of the row, and Copy is as tall as the field (36px). So bottom-aligning
+	   Copy puts it next to the field, not next to the label. */
+	.FilesShareModalCopy .FilesShareModalEntry-actions {
+		align-self: end;
 	}
 	/* #endregion copy */
 
@@ -338,7 +345,8 @@
 	.FilesShareModalSkeleton-add-level,
 	.FilesShareModalSkeleton-add-button,
 	.FilesShareModalSkeleton-general-level,
-	.FilesShareModalSkeleton-link-level {
+	.FilesShareModalSkeleton-link-level,
+	.FilesShareModalSkeleton-copy-field {
 		flex: none;
 
 		height: 36px;
@@ -439,19 +447,13 @@
 		}
 	}
 
+	/* No hover box: the row itself is not clickable, only the controls inside it. */
 	.FilesShareModalEntry {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 
 		padding: 8px 10px;
-		border: 1px solid transparent;
-		border-radius: 10px;
-	}
-
-	.FilesShareModalEntry:hover {
-		border-color: var(--color-base-1-07);
-		background: var(--color-base-1-03);
 	}
 
 	/* One box for both kinds of row, so an avatar and a role icon sit on the same grid. */
