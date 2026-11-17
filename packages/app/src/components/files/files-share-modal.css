@@ -290,6 +290,18 @@
 		overflow-wrap: anywhere;
 	}
 
+	/* The field takes the free width. Copy keeps its size and lines up with the field, not the section. */
+	.FilesShareModalLink-url {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+
+		> .FilesShareModalCopy-field {
+			flex: 1;
+			min-width: 0;
+		}
+	}
+
 	.FilesShareModalLink-level-trigger {
 		justify-content: space-between;
 
@@ -345,7 +357,6 @@
 	.FilesShareModalSkeleton-add-level,
 	.FilesShareModalSkeleton-add-button,
 	.FilesShareModalSkeleton-general-level,
-	.FilesShareModalSkeleton-link-level,
 	.FilesShareModalSkeleton-copy-field {
 		flex: none;
 
@@ -358,9 +369,19 @@
 		min-width: 0;
 	}
 
-	.FilesShareModalSkeleton-add-level,
-	.FilesShareModalSkeleton-link-level {
+	.FilesShareModalSkeleton-add-level {
 		width: 130px;
+	}
+
+	/* The switch track is 24px tall, but `MySwitch` takes 36px with its click area. The margin keeps
+	   that 36px box. */
+	.FilesShareModalSkeleton-link-switch {
+		flex: none;
+
+		width: 36px;
+		height: 24px;
+		margin-block: 6px;
+		border-radius: 999px;
 	}
 
 	.FilesShareModalSkeleton-add-button {

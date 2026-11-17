@@ -849,7 +849,7 @@ describe("FilesShareModal", () => {
 		mockShareState({ ...IMAGE_SHARE, canManage: false });
 		renderModal();
 		expect(linkSection()?.dataset.shareLink).toBe("hidden");
-		expect(screen.queryByRole("combobox", { name: "Anyone with the link" })).toBeNull();
+		expect(screen.queryByRole("switch", { name: "Public link" })).toBeNull();
 		expect(screen.getByRole("combobox", { name: "Inside public documents" })).toBeTruthy();
 	});
 
@@ -857,8 +857,7 @@ describe("FilesShareModal", () => {
 		mockShareState(FILE_SHARE);
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone with the link" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Can view" }));
+		fireEvent.click(screen.getByRole("switch", { name: "Public link" }));
 
 		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Public link created"));
 		expect(mutationMock).toHaveBeenCalledWith("set_link", {
@@ -874,8 +873,7 @@ describe("FilesShareModal", () => {
 		mockShareState(FILE_SHARE);
 		renderModal();
 		await waitForDialogFocus();
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone with the link" }));
-		fireEvent.click(await screen.findByRole("option", { name: "Can view" }));
+		fireEvent.click(screen.getByRole("switch", { name: "Public link" }));
 
 		const alert = await within(linkSection()!).findByRole("alert");
 		expect(alert.textContent).toBe("One workspace can have at most 500 public links.");
@@ -896,8 +894,7 @@ describe("FilesShareModal", () => {
 		fireEvent.click(within(linkSection()!).getByRole("button", { name: "Copy public link" }));
 		await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/share/token_1`));
 
-		fireEvent.click(screen.getByRole("combobox", { name: "Anyone with the link" }));
-		fireEvent.click(await screen.findByRole("option", { name: "No access" }));
+		fireEvent.click(screen.getByRole("switch", { name: "Public link" }));
 
 		await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Public link turned off"));
 		expect(mutationMock).toHaveBeenCalledWith("set_link", {

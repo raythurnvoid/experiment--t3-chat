@@ -42,32 +42,32 @@
 			outline-color: var(--color-fg-12);
 		}
 
-		&:has(+ .MySwitchControl:not(:disabled):hover) {
+		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):hover) {
 			background: var(--color-base-1-07);
 			border-color: var(--color-fg-07);
 		}
 
-		&:has(+ .MySwitchControl:not(:disabled):active) {
+		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):active) {
 			background: var(--color-base-1-08);
 			border-color: var(--color-fg-08);
 		}
 
-		&:has(+ .MySwitchControl:not(:disabled):checked) {
+		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):checked) {
 			background: var(--color-accent-03);
 			border-color: var(--color-accent-05);
 		}
 
-		&:has(+ .MySwitchControl:not(:disabled):checked:hover) {
+		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):checked:hover) {
 			background: var(--color-accent-04);
 			border-color: var(--color-accent-06);
 		}
 
-		&:has(+ .MySwitchControl:not(:disabled):checked:active) {
+		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):checked:active) {
 			background: var(--color-accent-05);
 			border-color: var(--color-accent-07);
 		}
 
-		&:has(+ .MySwitchControl:disabled) {
+		&:has(+ .MySwitchControl:is(:disabled, [aria-disabled="true"])) {
 			background: var(--color-base-1-03);
 			border-color: var(--color-fg-02);
 		}
@@ -93,7 +93,7 @@
 			background-color 0.1s ease,
 			border-color 0.1s ease;
 
-		.MySwitchTrack:has(+ .MySwitchControl:not(:disabled):hover) & {
+		.MySwitchTrack:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):hover) & {
 			background: var(--color-fg-12);
 			border-color: var(--color-fg-04);
 		}
@@ -103,13 +103,15 @@
 			background: var(--color-fg-11);
 		}
 
-		.MySwitchTrack:has(+ .MySwitchControl:disabled) & {
+		.MySwitchTrack:has(+ .MySwitchControl:is(:disabled, [aria-disabled="true"])) & {
 			background: var(--color-fg-06);
 		}
 	}
 	/* #endregion thumb */
 
 	/* #region control */
+	/* `aria-disabled` looks like `disabled` but keeps keyboard focus. Callers use it while the switch's own
+	   save runs. The caller must ignore changes then, because the input still fires them. */
 	.MySwitchControl {
 		grid-row: 1;
 		grid-column: 1;
@@ -126,7 +128,7 @@
 		outline: 2px solid transparent;
 		outline-offset: -2px;
 
-		&:disabled {
+		&:is(:disabled, [aria-disabled="true"]) {
 			cursor: default;
 		}
 	}

@@ -32,6 +32,7 @@ import {
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
+import { MySwitch } from "@/components/my-switch.tsx";
 import { PrincipalPicker, type PrincipalPicker_Principal } from "@/components/principal-picker.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
@@ -409,7 +410,8 @@ type FilesShareModalLink_ClassNames =
 	| "FilesShareModalLink-error"
 	| "FilesShareModalLink-level-trigger"
 	| "FilesShareModalLink-public"
-	| "FilesShareModalLink-public-text";
+	| "FilesShareModalLink-public-text"
+	| "FilesShareModalLink-url";
 
 type FilesShareModalLink_CustomAttributes = {
 	"data-share-link": "on" | "off" | "hidden";
@@ -443,7 +445,7 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 	const { link, publicFlag, pending, publicPending, busy, error, publicError, onEnabledChange, onPublicChange } = props;
 
 	const linkOn = link !== null && link !== "hidden";
-	const levelLabel = linkOn ? access_control_FILE_SHARE_LEVELS.read.label : "No access";
+	const publicLinkUrl = linkOn ? url_share_link({ token: link.token }) : null;
 
 	return (
 		<section
@@ -456,7 +458,7 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 				"data-share-link": link === "hidden" ? "hidden" : linkOn ? "on" : "off",
 			} satisfies Partial<FilesShareModalLink_CustomAttributes>)}
 		>
-			{/* The level picker and Copy sit beside the text, as the help button does in the Properties modal. */}
+			{/* The switch sits beside the text, as the help button does in the Properties modal. */}
 			<div className={"FilesShareModal-section-header" satisfies FilesShareModal_ClassNames}>
 				<div className={"FilesShareModal-section-main" satisfies FilesShareModal_ClassNames}>
 					<h3 className={"FilesShareModal-section-heading" satisfies FilesShareModal_ClassNames}>Public link</h3>
@@ -471,53 +473,27 @@ const FilesShareModalLink = memo(function FilesShareModalLink(props: FilesShareM
 
 				{link === "hidden" ? null : (
 					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-						<MySelect
-							value={linkOn ? "on" : "off"}
-							setValue={(value) => {
-								const enabled = value === "on";
-								// Choosing the level it already has changes nothing, so it sends nothing.
-								if (enabled !== linkOn) {
-									onEnabledChange(enabled);
-								}
-							}}
-						>
-							{/* Uses `aria-disabled` while its own write runs, same reason as a row's level trigger. */}
-							<MySelectTrigger disabled={busy && !pending}>
-								<MyButton
-									type="button"
-									variant="outline"
-									className={cn(
-										"FilesShareModalLink-level-trigger" satisfies FilesShareModalLink_ClassNames,
-										pending && ("MyButton-state-disabled" satisfies MyButton_ClassNames),
-									)}
-									aria-label="Anyone with the link"
-									aria-disabled={pending || undefined}
-									aria-busy={pending || undefined}
-								>
-									<span>{levelLabel}</span>
-									<MySelectOpenIndicator />
-								</MyButton>
-							</MySelectTrigger>
-							<MySelectPopover unmountOnHide>
-								<MySelectPopoverContent>
-									<MySelectItem value="off">
-										No access
-										{!linkOn ? <MySelectItemIndicator /> : null}
-									</MySelectItem>
-									<MySelectItem value="on">
-										{access_control_FILE_SHARE_LEVELS.read.label}
-										{linkOn ? <MySelectItemIndicator /> : null}
-									</MySelectItem>
-								</MySelectPopoverContent>
-							</MySelectPopover>
-						</MySelect>
-
-						{linkOn ? (
-							<CopyIconButton text={url_share_link({ token: link.token })} tooltipCopy="Copy public link" />
-						) : null}
+						{/* The switch shows the saved value, so it moves when the write lands. It uses
+						    `aria-disabled` while its own write runs, same reason as a row's level trigger. */}
+						<MySwitch
+							checked={linkOn}
+							disabled={busy && !pending}
+							aria-label="Public link"
+							aria-disabled={pending || undefined}
+							aria-busy={pending || undefined}
+							onCheckedChange={onEnabledChange}
+						/>
 					</div>
 				)}
 			</div>
+
+			{/* The link sits in the same read-only field as the path and app link below, with Copy beside it. */}
+			{publicLinkUrl ? (
+				<div className={"FilesShareModalLink-url" satisfies FilesShareModalLink_ClassNames}>
+					{render_copy_field("Public link address", publicLinkUrl)}
+					<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy public link" text={publicLinkUrl} />
+				</div>
+			) : null}
 
 			{linkOn ? (
 				<p className={"FilesShareModalLink-created" satisfies FilesShareModalLink_ClassNames}>
@@ -701,7 +677,7 @@ type FilesShareModalSkeleton_ClassNames =
 	| "FilesShareModalSkeleton-meta"
 	| "FilesShareModalSkeleton-text"
 	| "FilesShareModalSkeleton-general-level"
-	| "FilesShareModalSkeleton-link-level"
+	| "FilesShareModalSkeleton-link-switch"
 	| "FilesShareModalSkeleton-copy-field";
 
 /**
@@ -762,7 +738,9 @@ const FilesShareModalSkeleton = memo(function FilesShareModalSkeleton() {
 						<MySkeleton className={"FilesShareModalSkeleton-text" satisfies FilesShareModalSkeleton_ClassNames} />
 					</div>
 					<div className={"FilesShareModal-section-actions" satisfies FilesShareModal_ClassNames}>
-						<MySkeleton className={"FilesShareModalSkeleton-link-level" satisfies FilesShareModalSkeleton_ClassNames} />
+						<MySkeleton
+							className={"FilesShareModalSkeleton-link-switch" satisfies FilesShareModalSkeleton_ClassNames}
+						/>
 					</div>
 				</div>
 			</section>
