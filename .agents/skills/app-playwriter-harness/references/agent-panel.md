@@ -238,16 +238,14 @@ Typing `@` in any AI chat composer (thread, message edit, file-editor agent side
 - Escape closes only the popup. The mention renderer calls `stopPropagation()` on that Escape, so it never reaches the form's close handler or the chat-level Escape branch — a message edit stays open. The next Escape (popup closed) closes the edit/queue surface as usual.
 - `fill()` bypasses the suggestion plugin (it replaces content without typing). Use `keyboard.type("@doc")` to open the popup.
 
-## Screen info chip
+## Screen info
 
-Every chat composer except the `/chat` page shows what the user has open, and the next message sends it to the agent. Verified 2026-10-30:
+Every chat except the `/chat` page sends what the user has open with the next message. The chat shows no chip and no line for it (removed 2026-11-17), so check it through the request or the reply:
 
-- The chip row is `.AiChatUiContext` (`aria-label="Screen info sent to the agent"`) right above the composer. Its text is the label: `/documents/notes.md · Rich text` for a file, `/documents` for a folder, `Mail (gmail)` for a plugin page, `/drafts/new.md (draft) · Rich text` for the user's own private draft, `Example Domain (example.com)` on the Browser page. A selection in the open file's editor adds `· 2 lines selected` (`(first 4 KB)` when cut). The rich text editor clears its highlight when focus moves to the chat input, but the chip keeps the selection. Run `auditAccessibility` on `.AiChatUiContext`, not on the whole `section[aria-label="Agent"]`: the whole panel takes more than the 5 s timeout. Switching the view changes the label right away.
-- A plugin page or file view with `agent.view-context` adds `· shares its view` to the label (`Mail (gmail) · shares its view`). Its view text goes in the `/api/chat` body field `pluginContext`, for one turn only. The check is in "View sharing check" in `plugin-marketplace.md`.
-- `/chat` has no open file, so it has no chip (`.AiChatUiContext` count 0). Use that as the negative control.
-- Remove is the chip's button named "Don't send screen info". It hides the chip and moves focus to the composer. The chip comes back when the screen changes (another file, view, or plugin page).
-- A sent message shows `.AiChatMessagePartUiContext` above its text. The stored part is `data-ui-context` in `ai_chat_runs.branch_page`; its `path` and `kind` come from the database, not from the browser.
-- One cheap proof: in Ask mode, ask "Which file and view do I have open? Answer in one short sentence." With the chip the reply names the path and view. Remove the chip and ask again: the reply has no path, and the message has no context line.
+- The `/api/chat` request body holds the message's first part `data-ui-context`, with the open file or folder, view, selection, plugin, channel or Browser page. A plugin page or file view with `agent.view-context` also sends `pluginContext`, for one turn only. The check is in "View sharing check" in `plugin-marketplace.md`.
+- The stored part is `data-ui-context` in `ai_chat_runs.branch_page`; its `path` and `kind` come from the database, not from the browser.
+- `/chat` has no open file, so it sends no screen info. Use that as the negative control.
+- One cheap proof: in Ask mode, ask "Which file and view do I have open? Answer in one short sentence." The reply names the path and view. Ask the same on `/chat`: the reply has no path.
 
 ## Message ids flip when a stream finishes
 

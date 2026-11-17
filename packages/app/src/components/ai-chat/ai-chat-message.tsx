@@ -21,7 +21,6 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	Copy,
-	Eye,
 	GitBranch,
 	Info,
 	Pencil,
@@ -51,8 +50,6 @@ import {
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { FileQuote } from "@/components/file-quotes/file-quote.tsx";
-import { ai_chat_ui_context_get_label } from "@/lib/ai-chat-ui-context.ts";
-import type { ai_chat_UiContext } from "../../../shared/ai-chat-ui-context.ts";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import {
@@ -1478,31 +1475,6 @@ const AiChatMessagePartTextUser = memo(function AiChatMessagePartTextUser(props:
 });
 // #endregion text user
 
-// #region part ui context
-type AiChatMessagePartUiContext_ClassNames = "AiChatMessagePartUiContext" | "AiChatMessagePartUiContext-icon";
-
-type AiChatMessagePartUiContext_Props = {
-	uiContext: ai_chat_UiContext;
-};
-
-/**
- * The screen info the user sent with this message.
- */
-const AiChatMessagePartUiContext = memo(function AiChatMessagePartUiContext(props: AiChatMessagePartUiContext_Props) {
-	const { uiContext } = props;
-
-	return (
-		<div className={"AiChatMessagePartUiContext" satisfies AiChatMessagePartUiContext_ClassNames}>
-			<Eye
-				className={"AiChatMessagePartUiContext-icon" satisfies AiChatMessagePartUiContext_ClassNames}
-				aria-label="Screen info sent to the agent"
-			/>
-			{ai_chat_ui_context_get_label(uiContext)}
-		</div>
-	);
-});
-// #endregion part ui context
-
 // #region part thinking
 type AiChatMessagePartThinking_ClassNames =
 	| "AiChatMessagePartThinking"
@@ -1874,8 +1846,9 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		return <AiChatMessagePartTextUser text={part.data.text} />;
 	}
 	if (part.type === "data-file-quote") return <FileQuote quote={part.data} />;
-	if (part.type === "data-ui-context") return <AiChatMessagePartUiContext uiContext={part.data} />;
 
+	// Hide the other data parts. This includes screen info (`data-ui-context`): the agent sees what the
+	// user sees, so the message does not say it.
 	if (isDataUIPart(part)) {
 		return null;
 	}

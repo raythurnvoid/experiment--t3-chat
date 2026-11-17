@@ -156,8 +156,8 @@ Use the Clerk fixture recipe when the signed-in account has no organization quot
   region, not the whole browser window. To change it, set the viewport and read the layout in a later
   call (see "Backgrounded Tabs" in `known-hazards.md`).
 - The agent chat in the Agent tab works like the Files sidebar agent; scope composer and messages to
-  `.ChannelsContent-panel-tabs-panel:not([hidden])`. Its screen info chip reads `#name (kind)`, plus
-  ` · Thread` while a thread is open. A thread pane `Reply in thread` button also sits hidden inside
+  `.ChannelsContent-panel-tabs-panel:not([hidden])`. Its screen info carries the channel, and the
+  thread while one is open; the chat shows no chip for it. A thread pane `Reply in thread` button also sits hidden inside
   the panel, so pick main-stream buttons with `[data-message-id="<id>"] button[aria-label="Reply in thread"]`.
 - Channel rows have `data-channel-id`, `data-channel-kind`, `data-unread`, and `data-mention-count`.
   The active link has `aria-current="page"`. Articles have `data-message-id` and reply root ids.

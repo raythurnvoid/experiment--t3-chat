@@ -1158,6 +1158,13 @@ hung until the CLI timeout. Read the token from Clerk instead:
 the HTTP call from the sandbox with `Authorization: Bearer <token>`. Verified 2026-09-30 against
 `/api/files/contextual-prompt`.
 
+A bare `await import("/src/lib/<module>.ts")` can also give an empty copy of a store after the file
+was edited, even on a fresh page load: Vite then writes `?t=<stamp>` into every import of that file.
+On 2026-11-17 `ai_chat_ui_context_get_shown()` read `null` from the bare path while the app's copy
+held the open file. Take the exact URL from an importer's served source instead:
+`(await (await fetch("/src/hooks/ai-chat-controller.tsx")).text()).match(/["'](\/src\/lib\/ai-chat-ui-context\.ts[^"']*)["']/)[1]`,
+then `import()` that URL.
+
 ## A long-lived dev server can serve ONE file's old transform, and the app crashes on code you already fixed
 
 Observed 2026-09-04. The editor route rendered `Editor failed to load.` with `ReferenceError: disabledReason is not defined` pointing at `file-editor-rich-text-tools-comment.tsx`. That name had been renamed to `commentCommit` hours earlier, the type check passed, and the whole test suite passed. A page reload did not help.

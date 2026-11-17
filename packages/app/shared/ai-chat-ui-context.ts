@@ -42,7 +42,7 @@ export const ai_chat_ui_context_schema = z
 			.strict()
 			.nullable(),
 		/**
-		 * The open Messages channel. `name` is what the chip shows: `#name`, the other people of a direct
+		 * The open Messages channel. `name` is the channel name: `#name`, the other people of a direct
 		 * message, or the file name of a file's comments.
 		 */
 		channel: z

@@ -685,8 +685,8 @@ after the run: each call doc deletes itself 120 seconds after it is created. Tha
 
 ### View sharing check (Gmail 0.5.0, verified 2026-11-15)
 
-1. Open the Mail page, open one email from page context, and read the chip: `.AiChatUiContext` reads
-   `Mail (gmail) · shares its view`. Without the capability it reads only `Mail (gmail)`.
+1. Open the Mail page and open one email from page context. The chat shows no chip for this (removed
+   2026-11-17), so the request body in step 3 is the only proof.
 2. Start a new chat in the page's right panel (the panel opens the last chat, which may be the
    user's), then pick `Ask` in the `Chat mode:` combobox.
 3. Add `state.page.on("request", ...)` for `POST` requests to `/api/chat` and keep `postData()`.
@@ -695,10 +695,7 @@ after the run: each call doc deletes itself 120 seconds after it is created. Tha
    which folder is Mail showing, and can it write drafts?". The reply names them with no tool card.
    A question about the sender can still make the model `cat` the path it read from the view; that
    path in the Bash card is also proof that the view arrived.
-5. Press `Don't send screen info` and ask again: `pluginContext` is `null`. The chip stays hidden while
-   you stay on the same page, even when you open another email. Leaving the page and coming back
-   brings it back. The Gmail page has no chat panel, so it shows no chip.
-6. Read back what was stored: export `ai_chat_threads_messages_aisdk_5`, `ai_chat_run_steps` and
+5. Read back what was stored: export `ai_chat_threads_messages_aisdk_5`, `ai_chat_run_steps` and
    `ai_chat_threads` with `convex data ... --limit 60` into the task folder, and count strings that only
    the view text has (`Start of the email`, `Gmail account:`). Expect 0. The email body itself may be
    in a Bash card's output when the agent read the file, so do not search for body text.

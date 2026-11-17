@@ -142,12 +142,6 @@
 	}
 	/* #endregion header */
 
-	/* #region ui context */
-	.AiChatUiContext {
-		margin-bottom: 6px;
-	}
-	/* #endregion ui context */
-
 	/* #region thread */
 	.AiChatThread {
 		container-type: size;
