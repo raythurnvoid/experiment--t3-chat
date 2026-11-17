@@ -338,6 +338,9 @@ export function useFilesPaginatedQuery<Query extends PaginatedQueryReference>(
 			isLoading: false as const,
 			loadMore: (numItems: number) => {
 				if (loadingMore) return;
+				// Block a second call before the next render, like Convex's usePaginatedQuery.
+				// Each new status object gets a fresh flag, so this reassignment is safe.
+				// oxlint-disable-next-line react/immutability
 				loadingMore = true;
 				setState((previous) => {
 					// New args can reuse the same ID, so check the args too.

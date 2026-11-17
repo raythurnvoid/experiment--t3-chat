@@ -374,10 +374,10 @@ export function files_metadata_extract_frontmatter(markdown: string) {
 	}
 
 	// The parser reads one nesting level by calling itself again, and it sets no depth limit. Deep
-	// enough frontmatter fills the stack and throws. The depth that does it depends on the runtime:
-	// Node gives up around 1000 levels, the Convex runtime reads 1000 and throws by 5000 (both
-	// measured 2026-08-18). Flow style needs no indentation, so 5000 levels of `a: {b: {b: ...` fit
-	// in 25 KB. The byte caps do not stop it, because the file is small and only its depth is big.
+	// enough frontmatter fills the stack (see the RESOURCE_EXHAUSTION check below). The depth that
+	// does it depends on the runtime: Node gives up around 1000 levels, the Convex runtime reads 1000
+	// and fails by 5000 (both measured 2026-08-18). Flow style needs no indentation, so 5000 levels
+	// of `a: {b: {b: ...` fit in 25 KB. The byte caps do not stop it, because the file is small and only its depth is big.
 	// Every caller below is a file save, so an escaping throw would fail the save itself and the
 	// user could not store their own text.
 	//
@@ -398,6 +398,13 @@ export function files_metadata_extract_frontmatter(markdown: string) {
 		});
 	} catch (error) {
 		return Result({ _nay: { message: "Failed to parse frontmatter", cause: error } });
+	}
+
+	// Since yaml 2.9 the parser catches its own stack overflow and reports it as this error instead
+	// of throwing. It is the same "could not read" case as the catch above, not broken YAML.
+	const resourceError = doc.errors.find((error) => error.code === "RESOURCE_EXHAUSTION");
+	if (resourceError) {
+		return Result({ _nay: { message: "Failed to parse frontmatter", cause: resourceError } });
 	}
 
 	if (doc.errors.length > 0) {
