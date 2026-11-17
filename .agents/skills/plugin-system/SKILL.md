@@ -1468,6 +1468,15 @@ waiting dispatch would then make every later request keep it, and only the hourl
 slices. Now a waiting dispatch still pending 5 minutes after its time is replaced by one that runs now,
 the same rule stuck slice jobs already had. 513 tests.
 
+Gmail 0.5.1 was published and installed in `personal/home` on 2026-11-17 (plugin commit
+`90d31f7a5bd5f70de5bf02ec39f4599f26c3ac81`, version doc `hn7hn2tmab873ynfwvn5mk9mhh8jdfx5`). The Gmail
+and Mail pages remembered each repaired account connection for as long as they stayed open, and repair
+keeps the connection generation. So a page left open across two plugin updates never renewed the grant
+after the second refusal, and one account stayed blocked for a day. Now a page forgets the connection
+once its grant works again. Live check: after the update, opening the Gmail page renewed the blocked
+account's grant within 30 seconds. 516 tests. The QA Edge profile was signed out, so the publish and the
+update ran through the CLI recipe in the harness `snippets.md`.
+
 The Mail plugin was uninstalled from `personal/home` and its submodule was removed on 2026-10-19,
 after Gmail 0.3.0 took over its page. Its registry entry and the `<owner>/bonobo-plugin-mail`
 repo stay. The Mail entries below are history.
