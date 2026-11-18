@@ -26,6 +26,7 @@ export async function files_search_db_create_reader(
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
+		savedOnly?: boolean;
 		/** Who the access checks act as. `userId` only picks drafts. */
 		subject: access_control_Subject;
 	},
@@ -45,6 +46,7 @@ export async function files_search_db_create_reader(
 		}
 	}
 	const ownerReader =
+		!args.savedOnly &&
 		access_control_subject_reads_drafts(args.subject) &&
 		!organizations_is_global_organization_id(args.organizationId) &&
 		scope.kind === "workspace"
@@ -110,6 +112,18 @@ export async function files_search_db_create_reader(
 		}
 		if (entry === null) return null;
 
+		// The index can still serve the previous save while it builds the next one.
+		// API keys may read snippets only from the file's current saved text.
+		if (
+			args.savedOnly &&
+			(entry.kind !== "saved" ||
+				entry.node.kind !== "file" ||
+				entry.node.textKind === null ||
+				document.sourceKind !== "committed" ||
+				document.contentHeadId !== entry.node.contentHeadId)
+		)
+			return null;
+
 		// A private draft becomes searchable only after its creation intent and its text are sealed.
 		if (
 			entry.kind === "private" &&
@@ -143,6 +157,7 @@ export async function files_search_db_create_reader(
 
 	return {
 		active,
+		readsDrafts: ownerReader !== null,
 		resolveDocument,
 		get exhausted() {
 			return ownerReader?.exhausted ?? false;

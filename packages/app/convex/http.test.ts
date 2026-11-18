@@ -48,6 +48,8 @@ describe("http routes", () => {
 				"OPTIONS /api/v1/files/jobs/get",
 				"POST /api/v1/files/list",
 				"OPTIONS /api/v1/files/list",
+				"POST /api/v1/files/search",
+				"OPTIONS /api/v1/files/search",
 				"POST /api/v1/files/mkdir",
 				"OPTIONS /api/v1/files/mkdir",
 				"POST /api/v1/files/move",

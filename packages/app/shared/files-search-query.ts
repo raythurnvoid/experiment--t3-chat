@@ -44,6 +44,20 @@ export const files_search_query_FIELD_PATH_MAX_LENGTH = files_metadata_FIELD_PAT
  */
 export const files_search_query_FOLDER_PATH_MAX_LENGTH = 1024;
 
+const SNIPPET_RADIUS = 60;
+
+/**
+ * Show about 120 characters around the first searched word on one line.
+ */
+export function search_content_snippet(textChunk: string, query: string) {
+	const flatText = textChunk.replace(/\s+/gu, " ").trim();
+	const firstTerm = query.trim().split(/\s+/u)[0] ?? "";
+	const hitIndex = firstTerm ? flatText.toLowerCase().indexOf(firstTerm.toLowerCase()) : -1;
+	const start = hitIndex < 0 ? 0 : Math.max(0, hitIndex - SNIPPET_RADIUS);
+	const end = Math.min(flatText.length, start + SNIPPET_RADIUS * 2);
+	return `${start > 0 ? "…" : ""}${flatText.slice(start, end)}${end < flatText.length ? "…" : ""}`;
+}
+
 export const files_search_query_FILE_FIELDS = ["path", "content", "link"] as const;
 
 /**

@@ -50,20 +50,7 @@ export function search_free_text(text: string) {
 	return text.replace(/"/gu, "").trim();
 }
 
-const SNIPPET_RADIUS = 60;
-
-/**
- * The part of a content match's text chunk to show under the row: about 120 characters around the
- * first searched word, on one line.
- */
-export function search_content_snippet(textChunk: string, query: string) {
-	const flatText = textChunk.replace(/\s+/gu, " ").trim();
-	const firstTerm = query.trim().split(/\s+/u)[0] ?? "";
-	const hitIndex = firstTerm ? flatText.toLowerCase().indexOf(firstTerm.toLowerCase()) : -1;
-	const start = hitIndex < 0 ? 0 : Math.max(0, hitIndex - SNIPPET_RADIUS);
-	const end = Math.min(flatText.length, start + SNIPPET_RADIUS * 2);
-	return `${start > 0 ? "…" : ""}${flatText.slice(start, end)}${end < flatText.length ? "…" : ""}`;
-}
+export { search_content_snippet } from "../../shared/files-search-query.ts";
 
 /**
  * The `file.path` chip of a query, or null. `path` is the exact path. `depth` is "exact" for one

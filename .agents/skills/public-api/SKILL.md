@@ -451,6 +451,14 @@ Semantics that must not drift:
 - Physical deletion gives no refund. Deleting the current original upload object releases a committed target. Deleting an old attempt cannot release the winner. Receipts remain until workspace purge.
 - Workspace content purge calls `public_api_service_uploads_db_drain_batch` after file cleanup and before upload quota removal. It drains attempt receipts, destinations, and targets in bounded pages. An **uninstall writes to no `files_nodes` doc at all**: the uploaded files belong to the workspace, not to the plugin that put them there, and `workspace.plugins.manage` is not permission to delete a member's file or clear its write policy. Only a workspace-wide drain deletes receipt, destination, and target docs, because the workspace's files and quota docs go with them.
 
+# Saved file content search
+
+`POST /api/v1/files/search` takes `{ query, folderPath?, cursor? }`. A workspace API key needs both `files:list` and `files:read`. Personal keys use the user's file grants. Bound keys use the service account's grants. Each match must pass the current file read check in the key's workspace.
+
+Use 1 to 200 characters of search text. An optional absolute folder path includes its descendants. The response has `items` with `path`, `snippet` and the chunk's `lineStart`, plus `nextCursor` and `searchedTop`. Follow the cursor even on an empty page. A changed search view can return `invalid_cursor`. Start again from the first page.
+
+The index searches words in saved editable text. A file can have several matching chunks. Saved edits appear after indexing. Convex ranks up to 1,024 matching chunks per search stream before the folder and file read checks. If `searchedTop` is true, readable matches may be missing. Try a more specific query.
+
 # Bounded file reads
 
 `POST /api/v1/files/read` accepts only `{path,cursor?}` for text and binary files. Omit the cursor or send `null` for the first page. Pass the returned cursor with the same path to continue. Paths must be canonical root-based Files paths, without aliases, traversal, empty segments, backslashes, or wildcards. `maxBytes`, `pageBytes`, offsets and lengths are not accepted. The old `read-many` and `read-bytes` routes are removed.

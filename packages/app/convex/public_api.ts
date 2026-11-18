@@ -43,6 +43,7 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { async_all_settled_with_limit } from "../shared/async-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
+import { files_search_query_FOLDER_PATH_MAX_LENGTH, search_content_snippet } from "../shared/files-search-query.ts";
 import {
 	files_normalize_file_rename_name,
 	files_normalize_name,
@@ -95,6 +96,7 @@ import {
 	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
 	type files_nodes_get_by_path_Result,
 	type files_nodes_read_file_content_from_chunks_Result,
+	type files_nodes_text_search_files_Result,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import {
@@ -6847,6 +6849,151 @@ export async function public_api_http_read_file(args: {
 		});
 	}
 	return result;
+}
+
+const search_files_body_validator = z
+	.object({
+		query: z.string().trim().min(1).max(200),
+		folderPath: z
+			.string()
+			.max(files_search_query_FOLDER_PATH_MAX_LENGTH)
+			.refine((path) => path === "/" || is_canonical_file_path(path), "Use an absolute folder path.")
+			.optional(),
+		cursor: z
+			.string()
+			.min(1)
+			.max(16 * 1024)
+			.nullable()
+			.optional(),
+	})
+	.strict();
+
+export type public_api_http_search_files_Body = z.infer<typeof search_files_body_validator>;
+
+export const search_files = internalQuery({
+	args: {
+		credentialId: v.id("api_credentials"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		query: v.string(),
+		folderPath: v.optional(v.string()),
+		cursor: v.union(v.string(), v.null()),
+		numItems: v.number(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			items: v.array(v.object({ path: v.string(), snippet: v.string(), lineStart: v.number() })),
+			nextCursor: v.union(v.string(), v.null()),
+			searchedTop: v.boolean(),
+			retrySmaller: v.boolean(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		// Read the live key and each hit's permissions in the same transaction.
+		const live = await db_revalidate_user_credential(ctx, { ...args, requiredScope: "files:read" });
+		if (live._nay) return live;
+		if (!live._yay.scopes.includes("files:list")) return Result({ _nay: { message: "Permission denied" } });
+		const page: files_nodes_text_search_files_Result = await ctx.runQuery(internal.files_nodes.text_search_files, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			subject: credential_subject(live._yay),
+			query: args.query,
+			pathPrefix: args.folderPath,
+			savedOnly: true,
+			cursor: args.cursor,
+			numItems: args.numItems,
+		});
+		return Result({
+			_yay: {
+				items: page.items.map(({ path, textChunk, lineStart }) => ({
+					path,
+					snippet: search_content_snippet(textChunk, args.query),
+					lineStart,
+				})),
+				nextCursor: page.isDone ? null : page.continueCursor,
+				searchedTop: page.searchedTop,
+				retrySmaller: page.retrySmaller,
+			},
+		});
+	},
+});
+
+export async function public_api_http_search_files(args: {
+	ctx: ActionCtx;
+	request: Request;
+	path: "/api/v1/files/search";
+}) {
+	const { ctx, request, path } = args;
+	const auth = await public_api_authorize_request({
+		ctx,
+		request,
+		requiredScope: "files:read",
+		allowedKinds: ["user_api_key"],
+		route: path,
+	});
+	if (auth._nay) return auth._nay;
+	const { principal } = auth._yay;
+	if (!principal.scopes.includes("files:list")) {
+		return { status: 403, body: { message: "Permission denied", errorCode: "permission_denied" } } as const;
+	}
+	const body = await server_request_json_parse_and_validate(request, search_files_body_validator);
+	if (body._nay) return { status: 400, body: { message: body._nay.message, errorCode: "invalid_input" } } as const;
+	const { query, folderPath } = body._yay;
+	const { organizationId, workspaceId, credentialId, userId } = principal;
+	const scope = JSON.stringify({ organizationId, workspaceId, credentialId, query, folderPath });
+	let cursor: string | null = null;
+	const invalidCursor = {
+		status: 400,
+		body: { message: "Invalid cursor. Start the search again.", errorCode: "invalid_cursor" },
+	} as const;
+	if (body._yay.cursor) {
+		const opened = await crypto_open_cursor({ purpose: "files_search", scope, cursor: body._yay.cursor });
+		if (typeof opened !== "string") return invalidCursor;
+		cursor = opened;
+	}
+
+	// A deep folder can cost more permission reads. Retry the same page so no hit is skipped.
+	for (let numItems = 32; numItems >= 1; numItems /= 2) {
+		let result;
+		try {
+			result = await ctx.runQuery(internal.public_api.search_files, {
+				organizationId,
+				workspaceId,
+				credentialId,
+				userId,
+				query,
+				folderPath,
+				cursor,
+				numItems,
+			});
+		} catch (error) {
+			if (error instanceof ConvexError && error.data?.paginationError === "InvalidCursor") return invalidCursor;
+			throw error;
+		}
+		if (result._nay) {
+			const { message } = result._nay;
+			return message === "Unauthenticated"
+				? ({ status: 401, body: { message, errorCode: "unauthenticated" } } as const)
+				: ({ status: 403, body: { message, errorCode: "permission_denied" } } as const);
+		}
+		const { items, nextCursor, searchedTop, retrySmaller } = result._yay;
+		if (!retrySmaller) {
+			return {
+				status: 200,
+				headers: { "Cache-Control": "no-store" },
+				body: {
+					items,
+					nextCursor: nextCursor
+						? await crypto_seal_cursor({ purpose: "files_search", scope, payload: nextCursor })
+						: null,
+					searchedTop,
+				},
+			} as const;
+		}
+	}
+	return { status: 503, body: { message: "Search page unavailable", errorCode: "search_unavailable" } } as const;
 }
 
 const get_file_read_only_body_validator = z

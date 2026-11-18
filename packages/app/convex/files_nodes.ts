@@ -6574,6 +6574,7 @@ export const text_search_files = internalQuery({
 	args: {
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		...text_search_args,
+		savedOnly: v.optional(v.boolean()),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 	},
@@ -6645,18 +6646,13 @@ export const text_search_files = internalQuery({
 		const reader = await files_search_db_create_reader(ctx, args);
 		if (!reader.active) return empty;
 
-		// Only the owner's overlay reads pending chunks, like the reader.
-		const ownerPending =
-			access_control_subject_reads_drafts(args.subject) &&
-			!organizations_is_global_organization_id(args.organizationId) &&
-			scope.kind === "workspace";
 		const view = {
 			...(await files_saved_index_db_get_view(ctx.db, args)),
 			// The cursor keeps the whole view, so a search change starts the search again.
 			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
 		};
 		const tags = view.cohortId && view.view ? [undefined, { cohortId: view.cohortId, view: view.view }] : [undefined];
-		const sources = (ownerPending ? ["pending" as const, "committed" as const] : ["committed" as const]).flatMap(
+		const sources = (reader.readsDrafts ? ["pending" as const, "committed" as const] : ["committed" as const]).flatMap(
 			(sourceKind) => tags.map((tag) => ({ sourceKind, tag })),
 		);
 		const cursorScope = JSON.stringify({
@@ -6665,6 +6661,7 @@ export const text_search_files = internalQuery({
 			userId: args.userId,
 			subject: args.subject,
 			agentSource: args.agentSource,
+			savedOnly: args.savedOnly,
 			query: args.query,
 			pathPrefix: args.pathPrefix,
 			targets: args.targets,
@@ -6674,8 +6671,10 @@ export const text_search_files = internalQuery({
 			args.cursor === null
 				? { sourceIndex: 0, cursor: null, read: 0, scope: cursorScope, searchedTop: false }
 				: text_search_parse_cursor(args.cursor);
-		if (!position || position.scope !== cursorScope || !sources[position.sourceIndex])
+		if (!position || position.scope !== cursorScope || !sources[position.sourceIndex]) {
+			if (args.savedOnly) throw convex_invalid_cursor_error("Search changed. Start the search again.");
 			throw convex_error({ message: "Search changed. Start the search again." });
+		}
 		const source = sources[position.sourceIndex]!;
 		const result = await db_text_search_filtered_query(ctx, { ...args, ...source }).paginate({
 			cursor: position.cursor,

@@ -4,6 +4,7 @@ import type { HttpRouter, RouteSpec } from "convex/server";
 import type { api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import type {
 	public_api_http_read_file_Body,
+	public_api_http_search_files_Body,
 	public_api_http_get_file_read_only_Body,
 	public_api_http_set_file_read_only_Body,
 	public_api_http_set_file_public_Body,
@@ -44,6 +45,38 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							headers: Headers;
 							body: Body;
 							response: public_api_http_action_ResponseSpec<typeof import("./public_api.ts").public_api_http_read_file>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((/* iife */ path = "/api/v1/files/search" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = public_api_http_search_files_Body;
+
+						router.route({
+							path,
+							method,
+							handler: public_api_http_action(async (ctx, request) => {
+								const { public_api_http_search_files } = await import("./public_api.ts");
+								const result = await public_api_http_search_files({ ctx, request, path });
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: public_api_http_action_ResponseSpec<
+								typeof import("./public_api.ts").public_api_http_search_files
+							>;
 						};
 					})(),
 				}))(),

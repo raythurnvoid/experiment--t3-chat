@@ -32,11 +32,13 @@ import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { create_file_upload_targets, prepare_file_write } from "./public_api.ts";
 import { get_by_path, get_file_content_materialization_state, read_file_content_from_chunks } from "./files_nodes.ts";
+import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
 import { delete_paths, get_paths, transfer_paths } from "./public_api_files_organize.ts";
 import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
 import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
+import { organizations_db_create_workspace } from "./organizations.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import {
@@ -512,6 +514,179 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
+});
+
+describe("public files content search", () => {
+	test("returns only saved matches in the key's workspace and folder, with the account's own access", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-search" });
+		const other = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				...db,
+				name: "other",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (other._nay) throw new Error(other._nay.message);
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const seed = async (
+			workspaceId: Id<"organizations_workspaces">,
+			path: string,
+			committedMarkdown: string,
+			pendingMarkdown?: string,
+		) => {
+			const scope = { ...db, workspaceId };
+			const nodeId = await seed_markdown_file({ t, ...scope, path, committedMarkdown, pendingMarkdown });
+			await test_run_with_flush(t, async (ctx) => {
+				const result = await db_insert_file_text_content(ctx, {
+					...scope,
+					nodeId,
+					path,
+					rootKind: "rich_text",
+					textContent: committedMarkdown,
+				});
+				if (result._nay) throw new Error(result._nay.message);
+			});
+			return nodeId;
+		};
+		const sharedId = await seed(db.workspaceId, "/notes/one.md", "a searchable sentence", "unpublished proposal");
+		await seed(db.workspaceId, "/notes-old/two.md", "searchable sponsor only");
+		await seed(other._yay.workspaceId, "/notes/foreign.md", "searchable foreign file");
+		const account = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Search reader",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const serviceAccountId = account._yay.serviceAccountId;
+		expect(
+			await asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: db.membershipId,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: sharedId },
+				level: "read",
+			}),
+		).toEqual({ _yay: null });
+
+		for (const binding of [null, serviceAccountId]) {
+			const created = await asOwner.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: binding,
+				name: "Search",
+				scopes: ["files:list", "files:read"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const search = async (query: string, folderPath?: string) => {
+				const response = await t.fetch("/api/v1/files/search", {
+					method: "POST",
+					headers: auth_headers(created._yay.credential),
+					body: JSON.stringify({ query, folderPath }),
+				});
+				expect(response.status).toBe(200);
+				return await response.json();
+			};
+			const shared = {
+				path: "/notes/one.md",
+				snippet: expect.stringContaining("a searchable sentence"),
+				lineStart: 1,
+			};
+			const sponsor = {
+				path: "/notes-old/two.md",
+				snippet: expect.stringContaining("searchable sponsor only"),
+				lineStart: 1,
+			};
+			const all = await search("searchable");
+			const matches = binding === null ? [shared, sponsor] : [shared];
+			expect(all.items).toHaveLength(matches.length);
+			expect(all.items).toEqual(expect.arrayContaining(matches));
+			expect(await search("searchable", "/notes")).toEqual({ items: [shared], nextCursor: null, searchedTop: false });
+			expect(await search("unpublished")).toEqual({ items: [], nextCursor: null, searchedTop: false });
+		}
+	});
+
+	test("pages through saved chunks and binds the cursor to the key and search", async () => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-search-pages" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const create_key = async (name: string) => {
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: null,
+				name,
+				scopes: ["files:list", "files:read", "files:write"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			return created._yay.credential;
+		};
+		const key = await create_key("Page reader");
+		const otherKey = await create_key("Another reader");
+		// Two of these lines cannot fit in one indexed chunk.
+		const content = Array.from({ length: 34 }, (_, i) => `ledger ${i} ${"x".repeat(680)}\n`).join("");
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(key),
+			body: JSON.stringify({ path: "/pages.txt", content, nonCollaborative: true }),
+		});
+		expect(written.status).toBe(200);
+		await test_finish_file_index(t, ((await written.json()) as { nodeId: Id<"files_nodes"> }).nodeId);
+		const page = (body: Record<string, unknown> = {}, credential = key) =>
+			t.fetch("/api/v1/files/search", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ query: "ledger", ...body }),
+			});
+		const first = await page();
+		expect(first.status).toBe(200);
+		const { items, nextCursor } = await first.json();
+		expect(nextCursor).toEqual(expect.any(String));
+		for (const [body, credential] of [
+			[{ cursor: "invalid" }, key],
+			[{ cursor: nextCursor, query: "other" }, key],
+			[{ cursor: nextCursor, folderPath: "/elsewhere" }, key],
+			[{ cursor: nextCursor }, otherKey],
+		] as const) {
+			const invalid = await page(body, credential);
+			expect(invalid.status).toBe(400);
+			expect(await invalid.json()).toMatchObject({ errorCode: "invalid_cursor" });
+		}
+		const second = await page({ cursor: nextCursor });
+		expect(second.status).toBe(200);
+		const last = await second.json();
+		expect(last.nextCursor).toBeNull();
+		const lines = [...items, ...last.items].map((item) => item.lineStart).sort((a, b) => a - b);
+		expect(lines).toEqual(Array.from({ length: 34 }, (_, i) => i + 1));
+	});
+
+	test("requires both list and read scopes and a workspace API key", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-search-scope" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const grant = crypto_random_hex(32);
+		await seed_public_api_grant({ t, ...db, token: grant });
+		const credentials = [grant];
+		for (const scope of ["files:list", "files:read"] as const) {
+			const key = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: null,
+				name: "Single scope",
+				scopes: [scope],
+			});
+			if (key._nay) throw new Error(key._nay.message);
+			credentials.push(key._yay.credential);
+		}
+		for (const credential of credentials) {
+			const response = await t.fetch("/api/v1/files/search", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ query: "searchable" }),
+			});
+			expect(response.status).toBe(403);
+		}
+	});
 });
 
 describe("public_api_http_read_file", () => {

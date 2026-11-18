@@ -285,6 +285,34 @@ describe("write", () => {
 	});
 });
 
+describe("search", () => {
+	test("follows an empty page and prints matching text and the search limit as JSON", async () => {
+		const item = { path: "/notes/plan.md", snippet: "Meet the release team", lineStart: 3 };
+		const api = await start_api((request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(
+				JSON.stringify(
+					request.body.cursor === "p2"
+						? { items: [item], nextCursor: null, searchedTop: true }
+						: { items: [], nextCursor: "p2", searchedTop: false },
+				),
+			);
+		});
+		try {
+			const result = await run_cli(api.origin, ["search", "release team", "--folder", "/notes"]);
+			expect(result.code, result.stderr).toBe(0);
+			expect(JSON.parse(result.stdout.toString("utf8"))).toEqual({ items: [item], searchedTop: true });
+			expect(api.requests).toEqual([
+				{ route: "/api/v1/files/search", body: { query: "release team", folderPath: "/notes" } },
+				{ route: "/api/v1/files/search", body: { query: "release team", folderPath: "/notes", cursor: "p2" } },
+			]);
+			expect(api.authorizations).toEqual(["Bearer pk_test", "Bearer pk_test"]);
+		} finally {
+			await api.close();
+		}
+	});
+});
+
 describe("stat", () => {
 	test("--expect sets the status every path must have, and an API refusal prints no items", async () => {
 		const statuses: Record<string, string> = { "/a": "found", "/b": "missing" };
