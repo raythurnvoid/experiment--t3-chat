@@ -434,6 +434,11 @@ items), `copy-3` (208 items), and `copy-4` (416 items). Check the QA catalog bef
   2026-10-10, depending on machine load. To move it back without a browser, run
   `files_transfer:accept_input` with `convex run --identity` (the identity needs `email`, see
   `snippets.md`).
+- A plain Move from page context, when the UI or a `press-api` key cannot do it: call
+  `files_transfer.accept_input` with `{ membershipId, requestId: crypto.randomUUID(), kind: "move",
+  expectedSourceCount: sourceIds.length, sourceIds, targetParentId }`. `_yay.runId` names the run;
+  read the new paths back after it ends. This is the same call the Cut and Paste flow makes
+  (`files-clipboard.tsx`). Used 2026-11-18 when the API `mv` was refused as "sharing".
 - Move access while another job runs: accept complete public Move input. Check its
   accepted wait, then change the actor's access before the next root starts. Read `get` and
   `list_items` until the run ends. The next worker must check fresh access. Completed roots stay

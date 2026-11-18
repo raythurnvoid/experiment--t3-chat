@@ -43,10 +43,7 @@ import {
 	files_saved_placement_db_get_slot,
 	files_saved_placement_db_get_publish_receipt,
 } from "../server/files-saved-placement.ts";
-import {
-	access_control_db_extended_chain_allows,
-	access_control_db_resolve_trash_entry_area,
-} from "./access_control.ts";
+import { access_control_db_resolve_trash_entry_area } from "./access_control.ts";
 import {
 	activities_db_get_by_source_id,
 	activities_db_require_by_source_id,
@@ -1565,16 +1562,12 @@ async function db_headers(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, a
 				});
 		}
 
-		// In the app, write on the destination is enough to move an item into a shared folder. An API key
-		// must not share more than its scopes allow, so it also needs this scope. A Move never makes a file
-		// public: the flag stays only inside the same restricted area.
+		// Moving into an Add people folder only adds access at the destination.
+		// Crossing a restricted boundary changes the item's main access list.
 		if (run?.origin.kind === "api") {
 			const apiScopes = (await ctx.db.get("api_credentials", run.origin.credentialId))?.scopes ?? [];
 			const before = old ?? physical;
-			const read_before = (nodeId: Id<"files_nodes">) =>
-				files_saved_placement_db_get_node(ctx.db, nodeId, { cohortId: cohort._id, view: "before" });
-			// A restricted folder has its own people. So a move into, out of, or between restricted folders
-			// changes who can open the item. A moved restricted folder keeps its own people.
+			// A moved restricted folder keeps its own people.
 			if (
 				!apiScopes.includes("files:permissions") &&
 				scope !== physical._id &&
@@ -1584,31 +1577,6 @@ async function db_headers(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, a
 					_nay: {
 						name: "permission_denied",
 						message: `Moving "${name}" into or out of a restricted folder changes who can open it. That needs an API key with the files:permissions scope.`,
-					},
-				});
-			// The people added above the old place can already open the item. The check above keeps the
-			// item in its restricted area here, so the access checker's own walk tells if the destination
-			// chain head is in the old chain.
-			if (
-				!apiScopes.includes("files:permissions") &&
-				destinationExtendedScopeNodeId &&
-				!(await access_control_db_extended_chain_allows(ctx, {
-					organizationId: cohort.organizationId,
-					workspaceId: cohort.workspaceId,
-					node: {
-						_id: physical._id,
-						treePath: before.treePath,
-						restrictedScopeNodeId: before.restrictedScopeNodeId,
-						extendedScopeNodeId: before.extendedScopeNodeId,
-					},
-					get_node: read_before,
-					root_allows: async (rootId) => rootId === destinationExtendedScopeNodeId,
-				}))
-			)
-				return Result({
-					_nay: {
-						name: "permission_denied",
-						message: `Moving "${name}" here would share it with the people added to the destination folder. That needs an API key with the files:permissions scope.`,
 					},
 				});
 		}

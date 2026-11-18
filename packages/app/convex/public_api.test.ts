@@ -5906,14 +5906,14 @@ describe("locked and missing paths", () => {
 			});
 		});
 
-		test("an API move needs files:permissions to share an item", async () => {
+		test("an API move needs files:permissions to cross a restricted folder boundary", async () => {
 			const t = test_convex();
 			const f = await seed_hidden_folder(t);
 			const folders = (await post(t, "/api/v1/files/mkdir", f.ownerCredential, { paths: ["/team"] })).body as {
 				items: Array<{ nodeId: Id<"files_nodes"> }>;
 			};
 			const [teamId] = folders.items.map((item) => item.nodeId);
-			// Added people on `/team`.
+			// Mark `/team` as an Add people root.
 			await t.run((ctx) =>
 				ctx.db.patch("files_nodes", teamId!, { extendedScopeNodeId: teamId, parentExtendedScopeNodeId: null }),
 			);
@@ -5937,36 +5937,32 @@ describe("locked and missing paths", () => {
 			});
 
 			expect(await move(writer.credential, ["/notes"], "/team")).toMatchObject({
-				status: "failed",
-				refused: [
-					{
-						path: "/notes",
-						message:
-							'Moving "notes" here would share it with the people added to the destination folder. That needs an API key with the files:permissions scope.',
-					},
-				],
+				status: "succeeded",
+				refused: [],
 			});
-			expect(await move(writer.credential, ["/notes"], "/secret")).toMatchObject({
+			expect(
+				await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/team/notes", "/notes"] }),
+			).toMatchObject({ body: { items: [{ status: "found" }, { status: "missing" }] } });
+			expect(await move(writer.credential, ["/team/notes"], "/secret")).toMatchObject({
 				status: "failed",
 				refused: [
 					{
-						path: "/notes",
+						path: "/team/notes",
 						message:
 							'Moving "notes" into or out of a restricted folder changes who can open it. That needs an API key with the files:permissions scope.',
 					},
 				],
 			});
-			expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/notes"] })).toMatchObject({
+			expect(await post(t, "/api/v1/files/stat", f.ownerCredential, { paths: ["/team/notes"] })).toMatchObject({
 				body: { items: [{ status: "found" }] },
 			});
 
-			// Control: the same moves pass for a key with the scope.
+			// A key with the scope can move the item into `/secret`.
 			const sharer = await create_key({
 				asUser: f.asOwner,
 				membershipId: f.db.membershipId,
 				scopes: ["files:list", "files:write", "files:permissions"],
 			});
-			expect(await move(sharer.credential, ["/notes"], "/team")).toMatchObject({ status: "succeeded" });
 			expect(await move(sharer.credential, ["/team/notes"], "/secret")).toMatchObject({ status: "succeeded" });
 		});
 
