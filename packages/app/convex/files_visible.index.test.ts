@@ -82,15 +82,20 @@ test("agent metadata search keeps complete saved results and private drafts acro
 		overlayUserId: f.u.userId,
 		folderPath: "/",
 	};
-	const view = await f.t.query(internal.files_visible.internal_get_index_view, common);
+	const [moveView, view] = await Promise.all([
+		f.t.query(internal.files_visible.internal_get_move_view, common),
+		f.t.query(internal.files_visible.internal_get_index_view, common),
+	]);
+	if (!moveView) throw new Error("Expected a saved file view");
 	if (!view?.cohortId || !view.view) throw new Error("Expected a selected index view");
+	expect(view.generation).toBeGreaterThan(moveView.generation);
 	for (const source of [
 		{ kind: "normal" as const, generation: view.generation },
 		{ kind: "cohort" as const, cohortId: view.cohortId, view: view.view, generation: view.generation },
 	]) {
 		const result = await f.t.query(internal.files_visible.internal_search_metadata_saved, {
 			...common,
-			savedStream: { kind: "normal", generation: view.generation },
+			savedStream: { kind: "normal", generation: moveView.generation },
 			indexStream: source,
 			plan: { op: "prefix", fieldPath: "metadata.status", value: "" },
 			numItems: 20,

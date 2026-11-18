@@ -2537,6 +2537,8 @@ const app_convex_schema = defineSchema({
 				cohortId: v.null(),
 				indexRunId: v.id("files_index_runs"),
 				generation: v.number(),
+				// Index publishing advances generation. File listings keep their Move generation.
+				placementGeneration: v.optional(v.number()),
 				visibleView: files_move_view_validator,
 				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
 			}),
@@ -2545,6 +2547,7 @@ const app_convex_schema = defineSchema({
 				workspaceId: v.id("organizations_workspaces"),
 				cohortId: v.null(),
 				generation: v.number(),
+				placementGeneration: v.optional(v.number()),
 			}),
 			v.object({
 				organizationId: v.id("organizations"),

@@ -392,7 +392,7 @@ async function admit(ctx: MutationCtx, run: Run) {
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
 		.unique();
-	if (!ticket.first || slot?.cohortId || (slot && "indexRunId" in slot)) {
+	if (!ticket.first || (slot && (slot.cohortId !== null || "indexRunId" in slot))) {
 		await ctx.scheduler.runAfter(0, internal.files_index.wake, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
@@ -420,6 +420,7 @@ async function admit(ctx: MutationCtx, run: Run) {
 		cohortId: null,
 		indexRunId: run._id,
 		generation,
+		placementGeneration: slot?.placementGeneration ?? slot?.generation ?? 0,
 		visibleView: "before" as const,
 		migrationDirection: "to_cohort" as const,
 	};
@@ -593,6 +594,7 @@ async function finish(ctx: MutationCtx, run: Run) {
 			workspaceId: run.workspaceId,
 			cohortId: null,
 			generation: slot.generation,
+			placementGeneration: slot.placementGeneration ?? slot.generation,
 		});
 		await files_saved_placement_db_bump_search_generation(ctx, run);
 	}

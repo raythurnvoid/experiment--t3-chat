@@ -43,11 +43,11 @@ export async function files_saved_placement_db_get_view(
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.unique();
-	if (!slot?.cohortId)
+	if (!slot || slot.cohortId === null)
 		return {
 			cohortId: null,
 			view: null,
-			generation: slot?.generation ?? 0,
+			generation: slot?.placementGeneration ?? slot?.generation ?? 0,
 			migrationDirection: null,
 		};
 	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.

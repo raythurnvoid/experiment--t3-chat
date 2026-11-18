@@ -1367,6 +1367,7 @@ async function db_purge_organization_workspace_content_batch(
 				workspaceId,
 				cohortId: null,
 				generation: slot.generation,
+				placementGeneration: slot.placementGeneration ?? slot.generation,
 			});
 		await ctx.db.delete("files_index_runs", indexRun._id);
 		return { done: false, deletedCount: 1 + (input ? 1 : 0) };

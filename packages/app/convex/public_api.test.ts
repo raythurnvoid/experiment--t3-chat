@@ -4869,6 +4869,56 @@ describe("locked and missing paths", () => {
 		};
 	}
 
+	test("list cursors survive text indexing and still expire after a Move", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const f = await seed_hidden_folder(t);
+		const written = await post(t, "/api/v1/files/write", f.ownerCredential, {
+			path: "/index-cursor-note.md",
+			content: "# Index a file outside the listed folder",
+			nonCollaborative: true,
+		});
+		expect(written.status).toBe(200);
+		const { nodeId } = written.body as { nodeId: Id<"files_nodes"> };
+		const nextPages = await Promise.all(
+			[false, true].map(async (recursive) => {
+				const args = { path: "/secret", limit: 1, recursive };
+				const first = await list(t, f.ownerCredential, args);
+				expect(first).toMatchObject({
+					status: 200,
+					body: { items: [{ path: "/secret/h01.md" }], cursor: expect.any(String) },
+				});
+				return { ...args, cursor: first.body.cursor };
+			}),
+		);
+
+		await test_finish_file_index(t, nodeId);
+		for (const args of nextPages) {
+			expect(await list(t, f.ownerCredential, args), "the same cursor works after unrelated indexing").toMatchObject({
+				status: 200,
+				body: { items: [{ path: "/secret/h02.md" }] },
+			});
+		}
+
+		const move = await post(t, "/api/v1/files/move", f.ownerCredential, {
+			from: ["/index-cursor-note.md"],
+			to: "/notes",
+			requestId: "list-cursor-move",
+		});
+		expect(move.status).toBe(200);
+		const { jobId } = move.body as { jobId: Id<"activities"> };
+		const activity = await t.run((ctx) => ctx.db.get("activities", jobId));
+		if (activity?.source.kind !== "files_transfer_run") throw new Error("Expected a Move job");
+		await test_finish_transfer_run(t, activity.source.id);
+		expect(await t.run((ctx) => ctx.db.get("activities", jobId))).toMatchObject({ status: "succeeded" });
+		for (const args of nextPages) {
+			expect(await list(t, f.ownerCredential, args)).toEqual({
+				status: 400,
+				body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+			});
+		}
+	});
+
 	test("files list answers 403 for a locked path, 404 for a missing one and 400 for a readable file", async () => {
 		const t = test_convex();
 		const f = await seed_hidden_folder(t);

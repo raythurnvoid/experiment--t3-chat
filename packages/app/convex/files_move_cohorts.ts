@@ -326,18 +326,15 @@ async function db_begin(
 		conflictItemId: null,
 	});
 	const fields = {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
 		cohortId,
 		generation,
 		visibleView: "before" as const,
 		migrationDirection: "to_cohort" as const,
 	};
-	if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, fields);
-	else
-		await ctx.db.insert("files_move_workspace_slots", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			...fields,
-		});
+	if (slot) await ctx.db.replace("files_move_workspace_slots", slot._id, fields);
+	else await ctx.db.insert("files_move_workspace_slots", fields);
 	await files_saved_placement_db_bump_search_generation(ctx, args);
 	return Result({ _yay: cohortId });
 }
