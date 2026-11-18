@@ -708,6 +708,8 @@ PUT URL. The URL writes directly to
 `organizations/<org>/workspaces/<ws>/assets/<assetId>` with signed `If-None-Match: *`.
 The R2 finalizer confirms the object and publishes its metadata. Reusing the URL cannot overwrite it.
 
+Upload path lookups and Move write guards read only active Move slots. Search index jobs use slots with `cohortId: null`, outside that range. Updating an index slot does not make upload target creation retry.
+
 The whole batch validates before any write. Existing literal paths select their own target, even when locked.
 Replacement moves that target to Trash and creates the upload at the same path; it never changes a different canonical sibling.
 A create-only batch (`overwrite: "fail"`) onto a locked name answers 409 `A file already exists at this path`, like the write routes; a replace of it answers 403.

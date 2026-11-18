@@ -62,6 +62,22 @@ export async function files_saved_placement_db_get_view(
 export type files_saved_placement_View = Awaited<ReturnType<typeof files_saved_placement_db_get_view>>;
 
 /**
+ * Path lookups and write guards only need Moves. Keep search index writes outside their read range.
+ */
+export async function files_saved_placement_db_get_move_view(
+	db: QueryCtx["db"],
+	args: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">,
+): Promise<files_saved_placement_FixedView | undefined> {
+	const slot = await db
+		.query("files_move_workspace_slots")
+		.withIndex("by_workspace_cohort", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).gt("cohortId", null),
+		)
+		.unique();
+	return slot?.cohortId ? { cohortId: slot.cohortId, view: slot.visibleView } : undefined;
+}
+
+/**
  * Only a folder with staged places depends on the workspace's selected Move view.
  */
 export async function files_saved_placement_db_get_directory_view(
@@ -233,7 +249,7 @@ export async function files_saved_placement_db_get_slot(
 		? null
 		: (currentView ??
 			(organizationId && workspaceId
-				? await files_saved_placement_db_get_view(db, { organizationId, workspaceId })
+				? await files_saved_placement_db_get_move_view(db, { organizationId, workspaceId })
 				: null));
 	const selected =
 		fixedView ?? (current?.cohortId && current.view ? { cohortId: current.cohortId, view: current.view } : undefined);

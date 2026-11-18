@@ -30,10 +30,10 @@ import {
 import { files_db_resolve_scope } from "../convex/files_scopes.ts";
 import { access_control_db_can_act_on_file_node, type access_control_Subject } from "../convex/access_control.ts";
 import {
+	files_saved_placement_db_get_move_view,
 	files_saved_placement_db_get_node,
 	files_saved_placement_db_get_path,
 	files_saved_placement_db_get_sequence,
-	files_saved_placement_db_get_view,
 } from "./files-saved-placement.ts";
 import { files_saved_content_db_yjs_updates } from "./files-saved-content.ts";
 import { files_saved_content_apply_header, files_saved_content_db_get_head } from "./files-saved-content-head.ts";
@@ -321,10 +321,11 @@ export async function files_db_get_visible_node_by_path(
 	const { organizationId, workspaceId } = args;
 	const scope = files_db_resolve_scope(ctx, workspaceId);
 	if (!organizations_is_global_organization_id(organizationId) && scope.kind === "workspace") {
-		const view = await files_saved_placement_db_get_view(ctx.db, { organizationId, workspaceId: scope.workspaceId });
-		if (view.cohortId !== null && view.view !== null) {
-			return await files_saved_placement_db_get_path(ctx.db, args, { cohortId: view.cohortId, view: view.view });
-		}
+		const view = await files_saved_placement_db_get_move_view(ctx.db, {
+			organizationId,
+			workspaceId: scope.workspaceId,
+		});
+		if (view) return await files_saved_placement_db_get_path(ctx.db, args, view);
 	}
 
 	const node = await ctx.db
@@ -358,8 +359,7 @@ export async function files_db_create_path_lookups(
 		!organizations_is_global_organization_id(organizationId) && scope.kind === "workspace"
 			? { organizationId, workspaceId: scope.workspaceId }
 			: null;
-	const view = workspace ? await files_saved_placement_db_get_view(ctx.db, workspace) : null;
-	const fixedView = view?.cohortId && view.view ? { cohortId: view.cohortId, view: view.view } : undefined;
+	const fixedView = workspace ? await files_saved_placement_db_get_move_view(ctx.db, workspace) : undefined;
 	const nodes = new Map<string, Doc<"files_nodes"> | null>();
 	// The folders the request names: each found parent and each new folder.
 	const named = new Set<string>();

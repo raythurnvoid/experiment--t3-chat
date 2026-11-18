@@ -3,7 +3,7 @@ import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { getFunctionName, type FunctionArgs } from "convex/server";
-import type { Id } from "./_generated/dataModel";
+import type { Id, TableNames } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server.js";
 import {
 	test_convex,
@@ -30,7 +30,7 @@ import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../share
 import { r2_confirmed_object_delete, r2_server_side_copy } from "./r2_client.ts";
 import { r2_create_asset_key, r2_PUT_MAY_ARRIVE_MARGIN_MS } from "./r2_assets.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { prepare_file_write } from "./public_api.ts";
+import { create_file_upload_targets, prepare_file_write } from "./public_api.ts";
 import { get_by_path, get_file_content_materialization_state, read_file_content_from_chunks } from "./files_nodes.ts";
 import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
 import { delete_paths, get_paths, transfer_paths } from "./public_api_files_organize.ts";
@@ -6817,6 +6817,61 @@ describe("files upload-urls", () => {
 			}
 		},
 	);
+
+	test("upload target creation reads only active Move slots", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-move-slot-reads" });
+		const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-move-slot-reads" });
+		const upload = (paths: string[]) =>
+			t.fetch("/api/v1/files/upload-urls", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({
+					files: paths.map((path) => ({ path, size: 1, contentType: "image/png" })),
+					overwrite: "replace",
+				}),
+			});
+		expect((await upload(["/old.png"])).status).toBe(200);
+		await t.run((ctx) =>
+			ctx.db.insert("files_move_workspace_slots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				cohortId: null,
+				generation: 1,
+			}),
+		);
+
+		const slots: unknown[] = [];
+		test_spy_handler(create_file_upload_targets, async (handler, ctx, args) => {
+			const query = ctx.db.query.bind(ctx.db);
+			vi.spyOn(ctx.db, "query").mockImplementation(<Table extends TableNames>(table: Table) => {
+				const reader = query(table);
+				if (table === "files_move_workspace_slots") {
+					const withIndex = reader.withIndex.bind(reader);
+					vi.spyOn(reader, "withIndex").mockImplementation((name, range) => {
+						const indexed = withIndex(name, range);
+						const unique = indexed.unique.bind(indexed);
+						vi.spyOn(indexed, "unique").mockImplementation(async () => {
+							const slot = await unique();
+							slots.push(slot);
+							return slot;
+						});
+						return indexed;
+					});
+				}
+				return reader;
+			});
+			return await handler(ctx, args);
+		});
+
+		const response = await upload(["/folder/new.png", "/old.png"]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			files: [{ path: "/folder/new.png" }, { path: "/old.png" }],
+		});
+		expect(new Set(slots), "upload must not read a slot without an active Move").toEqual(new Set([null]));
+	});
 
 	test("a folder a Move holds refuses the whole batch with 409 before any item is written", async () => {
 		const t = test_convex();

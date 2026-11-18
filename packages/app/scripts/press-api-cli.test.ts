@@ -425,7 +425,7 @@ describe("status", () => {
 			response.end(
 				JSON.stringify(
 					request.route === "/.well-known/agent-skills/index.json"
-						? { skills: [{ name: "press-api", version: "99.0.0" }] }
+						? { skills: [{ name: "press-api", version: "1.10.0" }] }
 						: verified,
 				),
 			);
@@ -433,8 +433,9 @@ describe("status", () => {
 		try {
 			const result = await run_cli(api.origin, ["status"]);
 			expect(result.code, result.stderr).toBe(0);
-			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject({ ...verified, servedVersion: "99.0.0" });
-			expect(result.stderr).toContain("serves 99.0.0");
+			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject({ ...verified, servedVersion: "1.10.0" });
+			expect(result.stderr).toContain("serves 1.10.0");
+			expect(result.stderr).toContain("Update the skill");
 			expect(api.requests).toEqual([
 				{ route: "/api/v1/auth/verify", body: {} },
 				{ route: "/.well-known/agent-skills/index.json", body: {} },
@@ -442,6 +443,31 @@ describe("status", () => {
 			// The index is public, so the key must not go there.
 			expect(api.authorizations).toEqual(["Bearer pk_test", undefined]);
 			expect(result.stdout.toString("utf8")).not.toContain("pk_test");
+		} finally {
+			await api.close();
+		}
+	});
+
+	test.each([
+		["1.7.2", "Your local copy is newer."],
+		["preview", "The version order is unknown."],
+	])("gives accurate advice when the API serves %s", async (servedVersion, message) => {
+		const api = await start_api((request, response) => {
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(
+				JSON.stringify(
+					request.route === "/.well-known/agent-skills/index.json"
+						? { skills: [{ name: "press-api", version: servedVersion }] }
+						: { organizationId: "o1", workspaceId: "w1" },
+				),
+			);
+		});
+		try {
+			const result = await run_cli(api.origin, ["status"]);
+			expect(result.code, result.stderr).toBe(0);
+			expect(JSON.parse(result.stdout.toString("utf8"))).toMatchObject({ servedVersion });
+			expect(result.stderr).toContain(message);
+			expect(result.stderr).not.toContain("Update the skill");
 		} finally {
 			await api.close();
 		}

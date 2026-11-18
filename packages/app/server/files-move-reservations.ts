@@ -9,7 +9,7 @@ import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import type { files_PendingParent } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
-import { files_saved_placement_db_get_node } from "./files-saved-placement.ts";
+import { files_saved_placement_db_get_move_view, files_saved_placement_db_get_node } from "./files-saved-placement.ts";
 import { files_content_heads_db_is_staged_insert } from "./files-content-heads.ts";
 
 type Source = Doc<"files_move_source_reservations">["source"];
@@ -89,11 +89,9 @@ async function get_slot_cohort(db: QueryCtx["db"], scope: Scope) {
 	const key = `${organizationId}:${workspaceId}`;
 	let cohortId = state?.slots.get(key);
 	if (!cohortId) {
-		cohortId = db
-			.query("files_move_workspace_slots")
-			.withIndex("by_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
-			.unique()
-			.then((slot) => slot?.cohortId ?? null);
+		cohortId = files_saved_placement_db_get_move_view(db, { organizationId, workspaceId }).then(
+			(view) => view?.cohortId ?? null,
+		);
 		state?.slots.set(key, cohortId);
 	}
 	return await cohortId;

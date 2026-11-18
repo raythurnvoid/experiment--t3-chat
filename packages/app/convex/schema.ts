@@ -2556,7 +2556,9 @@ const app_convex_schema = defineSchema({
 				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
 			}),
 		),
-	).index("by_workspace", ["organizationId", "workspaceId"]),
+	)
+		.index("by_workspace", ["organizationId", "workspaceId"])
+		.index("by_workspace_cohort", ["organizationId", "workspaceId", "cohortId"]),
 
 	/**
 	 * Saved search pages restart when this number changes. A Move changes it once per cleaned node, so
