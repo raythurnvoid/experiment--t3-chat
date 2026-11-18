@@ -3,7 +3,7 @@
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server.js";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import type { files_DirectoryView } from "../shared/files.ts";
+import { files_saved_view_key, type files_DirectoryView } from "../shared/files.ts";
 import { files_saved_content_apply_header, files_saved_content_db_get_head } from "./files-saved-content-head.ts";
 
 export type files_saved_placement_FixedView = {
@@ -47,14 +47,14 @@ export async function files_saved_placement_db_get_view(
 		return {
 			cohortId: null,
 			view: null,
-			generation: slot?.placementGeneration ?? slot?.generation ?? 0,
+			generation: 0,
 			migrationDirection: null,
 		};
 	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.
 	return {
 		cohortId: slot.cohortId,
 		view: slot.visibleView,
-		generation: slot.generation,
+		generation: files_saved_view_key(slot.cohortId, slot.visibleView, slot.migrationDirection),
 		migrationDirection: slot.migrationDirection,
 	};
 }

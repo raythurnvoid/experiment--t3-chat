@@ -184,7 +184,7 @@ describe("initial Move publication", () => {
 			progress: { total: 1, completed: 1, failed: 0, canceled: 0 },
 		});
 		const view = await asUser.query(api.files_tree.get_workspace_move_view, { membershipId: db.membershipId });
-		expect(view).toMatchObject({ cohortId: cohort._id, view: "after", generation: cohort.slotGeneration });
+		expect(view).toMatchObject({ cohortId: cohort._id, view: "after", generation: `${cohort._id}:after:to_normal` });
 		const selected = await asUser.query(api.files_tree.list_tree_children, {
 			membershipId: db.membershipId,
 			parentId: targetId,

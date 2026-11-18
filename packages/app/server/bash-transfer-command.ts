@@ -368,24 +368,33 @@ export async function bash_transfer_command_run(
 					command === "cp" && skipped > 0
 						? await ctx.runQuery(internal.files_transfer.list_denied_for_agent, scope)
 						: null;
-				const deniedLines = (denied?.items ?? []).map((item) =>
+				const issueLines = (denied?.items ?? []).map((item) =>
 					item.kind === "file"
 						? `cp: cannot open '${sourceRoot.renderShellPath(item.path)}' for reading: Permission denied\n`
 						: `cp: cannot access '${sourceRoot.renderShellPath(item.path)}': Permission denied\n`,
 				);
-				if (denied && !denied.isDone) deniedLines.push("cp: more items were not copied: Permission denied\n");
+				if (denied && !denied.isDone) issueLines.push("cp: more items were not copied: Permission denied\n");
+				if (command === "cp" && failed > 0) {
+					const problems = await ctx.runQuery(internal.files_transfer.list_denied_for_agent, {
+						...scope,
+						failed: true,
+					});
+					for (const item of problems?.items ?? [])
+						issueLines.push(`cp: '${sourceRoot.renderShellPath(item.path)}': ${item.message}\n`);
+					if (problems && !problems.isDone) issueLines.push("cp: more failures are listed in Files\n");
+				}
 				return {
 					stdout: stoppedEmpty
 						? ""
 						: `Transfer ${runId}: ${completed} ready for review, ${skipped} skipped, ${failed} failed. Activity ${activityId}. Review in Files.\n`,
 					stderr:
-						deniedLines.join("") +
+						issueLines.join("") +
 						(activity.errorMessage
 							? `${command}: ${activity.errorMessage}\n`
 							: stoppedEmpty
 								? `${command}: transfer stopped. Activity ${activityId}\n`
 								: ""),
-					exitCode: activity.status === "succeeded" && deniedLines.length === 0 ? 0 : 1,
+					exitCode: activity.status === "succeeded" && issueLines.length === 0 ? 0 : 1,
 				};
 			}
 

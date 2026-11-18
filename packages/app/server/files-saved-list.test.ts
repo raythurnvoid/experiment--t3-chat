@@ -37,7 +37,8 @@ describe("saved list action", () => {
 	test("re-seeks a completed selected source after staging moves a row behind its old cursor", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt", "/b.txt"] });
 		let migrated = false;
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: async (query, args) => {
 				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
 				if (!migrated && getFunctionName(query) === "files_nodes:list_subtree") {
@@ -75,7 +76,8 @@ describe("saved list action", () => {
 		await f.stageNode(f.normalNodes.get("/b.txt")!);
 		await f.publish();
 		let migrated = false;
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: async (query, args) => {
 				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
 				if (!migrated && getFunctionName(query) === "files_nodes:list_subtree") {
@@ -108,10 +110,11 @@ describe("saved list action", () => {
 		).toEqual(["/b.txt"]);
 	});
 
-	test("refuses an abort direction change between the two native source reads", async () => {
+	test("retries the same page after an abort changes direction between source reads", async () => {
 		const f = await test_create_saved_placement_fixture();
 		let aborted = false;
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: async (query, args) => {
 				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
 				if (!aborted && getFunctionName(query) === "files_nodes:list_subtree") {
@@ -134,7 +137,8 @@ describe("saved list action", () => {
 				cursorScope: "abort",
 				cursor: null,
 			}),
-		).rejects.toThrow("Move view changed");
+		).resolves.toMatchObject({ _yay: { page: expect.any(Array) } });
+		expect(aborted).toBe(true);
 	});
 
 	test("returns a public error for a malformed continuation cursor", async () => {
@@ -179,7 +183,8 @@ describe("saved list action", () => {
 			numItems: 1,
 			cursorScope: "member",
 		};
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
@@ -219,7 +224,8 @@ describe("saved list action", () => {
 			numItems: 2,
 			cursorScope: "caller",
 		};
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
@@ -248,7 +254,8 @@ describe("saved list action", () => {
 			order: "desc" as const,
 			cursorScope: "caller",
 		};
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 		const pages: string[][] = [];
@@ -263,7 +270,7 @@ describe("saved list action", () => {
 		expect(pages).toEqual([["/z.txt", "/target"], ["/old.txt", "/b.txt"], ["/a.txt"]]);
 	});
 
-	test("binds the global key to scope and the selected cohort view", async () => {
+	test("binds the global key to the caller and continues in the current view", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt"] });
 		const args = {
 			organizationId: f.db.organizationId,
@@ -276,7 +283,8 @@ describe("saved list action", () => {
 			numItems: 1,
 			cursorScope: "caller",
 		};
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
@@ -284,21 +292,22 @@ describe("saved list action", () => {
 			files_saved_list_page(ctx, { ...args, cursorScope: "other", cursor: first.continueCursor }),
 		).rejects.toThrow("scope changed");
 		await f.publish();
-		await expect(files_saved_list_page(ctx, { ...args, cursor: first.continueCursor })).rejects.toThrow(
-			"scope changed",
-		);
+		expect(
+			(await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor }))._yay?.page.map((row) => row.path),
+		).toEqual(["/target"]);
 		const after = (await files_saved_list_page(ctx, { ...args, folderPath: "/target", numItems: 2, cursor: null }))
 			._yay!;
 		expect(after.page.map((node) => node.path)).toEqual(["/target/new.txt"]);
 	});
 
 	// Five walks over the Move fixture take about 30 s on a busy machine, so the default 30 s is too short.
-	test("lists type-filtered rows once in both Move views and refuses a view change between pages", async () => {
+	test("continues a type-filtered recursive walk across publication", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.md", "/b.md", "/z.txt"] });
 		// A non-matching row in the Move view: the view stream must filter by type too.
 		await f.stageNode(f.normalNodes.get("/a.md")!);
 		let stageBetweenReads = true;
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: async (query, args) => {
 				const result = await f.t.action((ctx) => ctx.runQuery(query, args));
 				if (stageBetweenReads && getFunctionName(query) === "files_nodes:list_subtree") {
@@ -334,9 +343,9 @@ describe("saved list action", () => {
 		expect(await walk(), "a filtered row shows once in the before view").toEqual(["/old.txt", "/z.txt"]);
 		const first = (await files_saved_list_page(ctx, { ...args, cursor: null }))._yay!;
 		await f.publish();
-		await expect(files_saved_list_page(ctx, { ...args, cursor: first.continueCursor })).rejects.toThrow(
-			"scope changed",
-		);
+		expect(
+			(await files_saved_list_page(ctx, { ...args, cursor: first.continueCursor }))._yay?.page.map((row) => row.path),
+		).toEqual(["/target/new.txt"]);
 		expect(await walk(), "a filtered row shows once in the after view").toEqual(["/target/new.txt", "/z.txt"]);
 		for (const path of ["/a.md", "/z.txt"]) await f.materializeNode(f.normalNodes.get(path)!);
 		await f.materializeNode(f.nodeId);
@@ -356,7 +365,8 @@ describe("saved list action", () => {
 			});
 			await ctx.db.patch("files_nodes", file._id, { restrictedScopeNodeId: folderId });
 		});
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 		const walk = async () => {
@@ -385,10 +395,11 @@ describe("saved list action", () => {
 		expect(await walk(), "the after view").toEqual(["/r", "/r/x.txt", "/target", "/target/new.txt"]);
 	}, 120_000);
 
-	test("checks the folder once on every page, never for the root, and in the selected Move view", async () => {
+	test("checks the folder before and after each page, never for the root, and in the selected Move view", async () => {
 		const f = await test_create_saved_placement_fixture({ normalPaths: ["/a.txt", "/target/a.txt"] });
 		const calls: string[] = [];
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => {
 				calls.push(getFunctionName(query));
 				return f.t.action((ctx) => ctx.runQuery(query, args));
@@ -432,7 +443,7 @@ describe("saved list action", () => {
 			cursor = page.continueCursor;
 		}
 		expect(pages.flat()).toEqual(["/target/a.txt", "/target/new.txt"]);
-		expect(count("get_by_path"), "one folder check per page").toBe(pages.length);
+		expect(count("get_by_path"), "the folder identity still matches after reading").toBe(2 * pages.length);
 		expect(count("get_path_access"), "a found folder asks no locked or missing question").toBe(0);
 	});
 
@@ -475,7 +486,8 @@ describe("saved list action", () => {
 			}
 			for (let index = 0; index < 5; index++) await node({ parentId: "root", path: `/c-${index}.txt`, kind: "file" });
 		});
-		const ctx: Pick<ActionCtx, "runQuery"> = {
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => f.t.action((ctx) => ctx.runMutation(fn, args)),
 			runQuery: (query, args) => f.t.action((ctx) => ctx.runQuery(query, args)),
 		};
 

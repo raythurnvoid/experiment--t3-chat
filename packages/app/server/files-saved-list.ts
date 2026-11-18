@@ -1,5 +1,5 @@
 import type { FunctionArgs } from "convex/server";
-import { compareValues, v } from "convex/values";
+import { compareValues, ConvexError, v } from "convex/values";
 import { validate } from "convex-helpers/validators";
 import { z } from "zod";
 import { internal } from "../convex/_generated/api.js";
@@ -37,10 +37,25 @@ function compare_keys(a: Key, b: Key) {
  * row and nothing under it is read.
  */
 export async function files_saved_list_page(
-	ctx: Pick<ActionCtx, "runQuery">,
+	ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
+	args: Parameters<typeof read_page>[1],
+) {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await read_page(ctx, args);
+		} catch (error) {
+			if (!(error instanceof ConvexError) || error.data?.reason !== "saved_move_view_changed") throw error;
+			if (attempt === 1)
+				return Result({ _nay: { name: "listing_busy", message: "Files are moving. Retry this page." } });
+		}
+	}
+}
+
+async function read_page(
+	ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
 	args: Omit<
 		FunctionArgs<typeof internal.files_nodes.list_subtree>,
-		"savedStream" | "seek" | "organizationId" | "workspaceId" | "contentTypePrefix"
+		"savedStream" | "seek" | "listRoot" | "organizationId" | "workspaceId" | "contentTypePrefix"
 	> & {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -66,9 +81,7 @@ export async function files_saved_list_page(
 	const path = server_path_normalize(args.folderPath);
 	// Check the folder on every page, so a folder archived between pages answers 404 too. Read it as
 	// saved only, like the list itself. The workspace root has no doc.
-	const [view, membership, root] = await Promise.all([
-		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
-		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+	const get_root = () =>
 		path === "/"
 			? null
 			: ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -78,9 +91,14 @@ export async function files_saved_list_page(
 					visibilityUserId: args.visibilityUserId,
 					subject: args.subject,
 					path,
-				}),
+				});
+	const [view, initialMembership, root] = await Promise.all([
+		ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs),
+		ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+		get_root(),
 	]);
-	if (!view || !membership) return Result({ _yay: { page: [], continueCursor: "", isDone: true } });
+	if (!view || !initialMembership)
+		return Result({ _nay: { name: "folder_locked", message: `Permission denied: ${path}` } });
 	if (!root) {
 		// Locked, not hidden: an item the caller cannot open, or any path below a locked folder, is
 		// "Permission denied". Only a missing path is "not found". The workspace root is locked for a
@@ -100,6 +118,14 @@ export async function files_saved_list_page(
 		return Result({ _nay: { name: "not_a_folder", message: `Path must point to a folder: ${path}` } });
 	}
 
+	const membership =
+		cursor === null && initialMembership?.lifetime === null
+			? await ctx.runMutation(internal.public_api.pin_file_list_membership, {
+					membershipId: initialMembership.membershipId,
+				})
+			: initialMembership;
+	if (!membership) return Result({ _nay: { name: "folder_locked", message: `Permission denied: ${path}` } });
+
 	const sources: files_SavedStream[] = [{ kind: "normal", generation: view.generation }];
 	if (view.cohortId !== null && view.view !== null) {
 		sources.push({ kind: "cohort", cohortId: view.cohortId, view: view.view, generation: view.generation });
@@ -108,27 +134,35 @@ export async function files_saved_list_page(
 	if (view.migrationDirection === "to_normal") sources.reverse();
 	const check_view = async () => {
 		const current = await ctx.runQuery(internal.files_visible.internal_get_move_view, viewArgs);
-		const currentMembership = await ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs);
+		const [currentMembership, currentRoot] = await Promise.all([
+			ctx.runQuery(internal.public_api.get_file_read_membership, memberArgs),
+			get_root(),
+		]);
+		if (
+			root?._id !== currentRoot?._id ||
+			root?.treePath !== currentRoot?.treePath ||
+			root?.restrictedScopeNodeId !== currentRoot?.restrictedScopeNodeId
+		)
+			throw convex_invalid_cursor_error("The listed folder changed.");
+		if (JSON.stringify(currentMembership) !== JSON.stringify(membership))
+			throw convex_invalid_cursor_error("The saved list scope changed.");
 		if (
 			!current ||
 			current.generation !== view.generation ||
 			current.cohortId !== view.cohortId ||
 			current.view !== view.view ||
-			current.migrationDirection !== view.migrationDirection ||
-			JSON.stringify(currentMembership) !== JSON.stringify(membership)
+			current.migrationDirection !== view.migrationDirection
 		) {
-			throw convex_invalid_cursor_error("The saved Move view changed.");
+			throw convex_invalid_cursor_error("The saved Move view changed.", "saved_move_view_changed");
 		}
 	};
 	// The folder id is in the scope, so a cursor stops working when the folder is replaced at the same path.
-	const scope = JSON.stringify([
-		cursorScope,
-		membership,
-		queryArgs,
-		contentTypePrefixes ?? null,
-		sources,
-		root?._id ?? null,
-	]);
+	const scope = JSON.stringify([cursorScope, membership, queryArgs, contentTypePrefixes ?? null, root?._id ?? null]);
+	const listRoot = {
+		nodeId: root?._id ?? null,
+		treePath: root?.treePath ?? "/",
+		scopeNodeId: root?.restrictedScopeNodeId ?? null,
+	};
 	if (args.maxDepth === undefined) {
 		if (args.order === "desc") throw convex_error({ message: "A recursive list reads in path order only." });
 		let walkCursor = null;
@@ -155,6 +189,7 @@ export async function files_saved_list_page(
 				(contentTypePrefixes ?? [undefined]).map((contentTypePrefix) => async (frame, numItems) => {
 					const result: files_nodes_list_subtree_Result = await ctx.runQuery(internal.files_nodes.list_subtree, {
 						...readArgs,
+						listRoot,
 						...filter,
 						folderPath: args.folderPath,
 						contentTypePrefix,
@@ -179,6 +214,7 @@ export async function files_saved_list_page(
 			boundaries: sources.map((source) => async (frame, numItems) => {
 				const result = await ctx.runQuery(internal.files_nodes.list_subtree_boundaries, {
 					...readArgs,
+					listRoot,
 					...filter,
 					contentTypePrefixes,
 					savedStream: source,
@@ -241,6 +277,7 @@ export async function files_saved_list_page(
 				for (let phase = 0; ; phase++) {
 					const result: files_nodes_list_subtree_Result = await ctx.runQuery(internal.files_nodes.list_subtree, {
 						...queryArgs,
+						listRoot,
 						contentTypePrefix,
 						cursor: null,
 						numItems: Math.min(100, numItems - page.length),

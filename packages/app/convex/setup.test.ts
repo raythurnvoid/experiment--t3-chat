@@ -555,7 +555,6 @@ export async function test_db_hold_move_slot(
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId))
 		.unique();
-	const generation = (slot?.generation ?? 0) + 1;
 	const pins = await files_media_validation_db_capture_versions(ctx, { userId: scope.userId, scopes: [scope] });
 	const cohortId = await ctx.db.insert("files_move_cohorts", {
 		organizationId: scope.organizationId,
@@ -569,7 +568,6 @@ export async function test_db_hold_move_slot(
 			runId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
 			itemId: "999999files_transfer_items" as Id<"files_transfer_items">,
 		},
-		slotGeneration: generation,
 		fence: 1,
 		attemptFence: 1,
 		workId: null,
@@ -612,7 +610,6 @@ export async function test_db_hold_move_slot(
 	if (slot) {
 		await ctx.db.patch("files_move_workspace_slots", slot._id, {
 			cohortId,
-			generation,
 			visibleView: "before",
 			migrationDirection: "to_cohort",
 		});
@@ -621,7 +618,6 @@ export async function test_db_hold_move_slot(
 			organizationId: scope.organizationId,
 			workspaceId: scope.workspaceId,
 			cohortId,
-			generation,
 			visibleView: "before",
 			migrationDirection: "to_cohort",
 		});

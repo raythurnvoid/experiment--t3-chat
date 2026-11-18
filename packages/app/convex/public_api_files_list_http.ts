@@ -176,8 +176,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									!z.object({ paginationError: z.literal("InvalidCursor") }).safeParse(error.data).success
 								)
 									throw error;
-								// Clients restart with `cursor: null` on this code. A Move or Rename in the workspace, a
-								// replaced folder, or a host update all end old cursors, so this is a normal answer.
+								// A replaced folder, unreadable walk boundary or bad seal cannot safely continue.
 								return {
 									status: 400,
 									body: await fail({
@@ -188,6 +187,11 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								} as const;
 							}
 							if (listed._nay) {
+								if (listed._nay.name === "listing_busy")
+									return {
+										status: 503,
+										body: await fail({ status: 503, message: listed._nay.message, errorCode: "listing_busy" }),
+									} as const;
 								// A code grant that lost its source gets the same answer as on the success path below.
 								if (principal.kind === "public_api_grant" && principal.agentSource !== null) {
 									const current = await public_api_resolve_live_principal(ctx, {

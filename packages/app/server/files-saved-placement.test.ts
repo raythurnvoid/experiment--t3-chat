@@ -542,7 +542,7 @@ describe("saved placement foundation", () => {
 		if (!before?.cohortId || !before.view) throw new Error("Expected the active saved view");
 		const savedStream =
 			kind === "normal"
-				? { kind, generation: before.generation - 1 }
+				? { kind, generation: 0 }
 				: { kind, cohortId: before.cohortId, view: before.view, generation: before.generation };
 		const args = {
 			membershipId: f.db.membershipId,
@@ -674,11 +674,10 @@ describe("saved placement foundation", () => {
 				get.mockRestore();
 			}
 		});
-		const cohort = await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId));
 		expect(view).toEqual({
 			cohortId: f.cohortId,
 			view: "before",
-			generation: cohort?.slotGeneration,
+			generation: `${f.cohortId}:before:to_cohort`,
 			migrationDirection: "to_cohort",
 		});
 	});

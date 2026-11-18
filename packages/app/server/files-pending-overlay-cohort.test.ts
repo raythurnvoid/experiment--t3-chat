@@ -69,6 +69,46 @@ async function owner_work(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("Move owner views", () => {
+	test("a continued listing reports lost workspace access", async () => {
+		const f = await fixture({ normalPaths: ["/a.txt", "/b.txt"] });
+		const { userId, organizationId, workspaceId, membershipId } = f.db;
+		const thread = await f.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId,
+			clientGeneratedId: "continue-folder-list",
+			lastMessageAt: Date.now(),
+		});
+		const capture = await f.t.mutation(internal.ai_chat_workspaces.capture, { userId, membershipId });
+		if (thread._nay || capture._nay) throw new Error("Could not open the chat");
+		const ctx = { runQuery: f.t.query } as unknown as Pick<ActionCtx, "runQuery">;
+		const args = {
+			agentSource: {
+				organizationId,
+				workspaceId,
+				userId,
+				membershipId,
+				threadId: thread._yay.threadId,
+				membershipLifetime: capture._yay.membershipLifetime,
+			},
+			organizationId,
+			workspaceId,
+			visibilityUserId: userId,
+			subject: { kind: "user" as const, userId, plugin: null },
+			folderPath: "/",
+			numItems: 1,
+		};
+		const children = (cursor: string | null) =>
+			files_pending_overlay_list(ctx, { ...args, mode: "children", order: "asc", cursor });
+		const levels = (cursor: string | null) =>
+			files_pending_overlay_list_levels(ctx, { ...args, maxDepth: 2, foldersOnly: false, cursor });
+		const first = await children(null);
+		const nested = await levels(null);
+		expect(first._yay?.continueCursor).toBeTypeOf("string");
+		expect(nested._yay?.continueCursor).toBeTypeOf("string");
+		await f.t.run((ctx) => ctx.db.delete("organizations_workspaces_users", f.db.membershipId));
+		expect((await children(first._yay!.continueCursor))._nay?.message).toBe("Permission denied");
+		expect((await levels(nested._yay!.continueCursor))._nay?.message).toBe("Permission denied");
+	});
+
 	test("asks the normal overlay audit to wait for the Move", async () => {
 		const f = await fixture();
 		const result = await f.t.query(internal.files_pending_overlay.check_user, {
@@ -668,14 +708,17 @@ describe("Move owner views", () => {
 			cursor = result._yay!.cursor;
 			if (result._yay!.done) break;
 		}
-		const generation = (await f.t.run((ctx) => ctx.db.get("files_move_cohorts", f.cohortId)))!.slotGeneration;
-		const read = (view: "before" | "after") =>
-			f.asUser.query(api.files_pending_list.list_files_pending_updates, {
+		const read = async (view: "before" | "after") => {
+			const selected = await f.asUser.query(api.files_tree.get_workspace_move_view, {
+				membershipId: f.db.membershipId,
+			});
+			return f.asUser.query(api.files_pending_list.list_files_pending_updates, {
 				membershipId: f.db.membershipId,
 				listKey: "all",
-				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation },
+				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: selected!.generation },
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
+		};
 		expect((await read("before")).page.map((row) => row.pendingUpdateId)).toEqual([f.proposal._id]);
 		await f.publish();
 		expect((await read("after")).page.map((row) => row.pendingUpdateId)).toEqual([f.proposal._id]);

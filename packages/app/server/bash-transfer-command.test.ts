@@ -779,6 +779,26 @@ describe("bash_transfer_command_run", () => {
 		expect(runner.reset).toHaveBeenCalledTimes(1);
 	});
 
+	test("cp reports each observed child failure after a partial copy", async () => {
+		const runner = create_runner();
+		runner.runQuery
+			.mockResolvedValueOnce({
+				activity: { status: "partial", progress: { completed: 2, skipped: 0, failed: 1 } },
+			})
+			.mockResolvedValueOnce({
+				items: [{ path: "/source/moved", kind: "folder", message: "Source moved" }],
+				isDone: true,
+			});
+		const result = await runner.run("cp", ["-R", "source", "dest"]);
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain("2 ready for review, 0 skipped, 1 failed");
+		expect(result.stderr).toContain("/source/moved': Source moved");
+		expect(runner.runQuery).toHaveBeenCalledWith(
+			internal.files_transfer.list_denied_for_agent,
+			expect.objectContaining({ failed: true }),
+		);
+	});
+
 	test("recursive no-clobber merges folders and skips occupied file leaves", async () => {
 		const runner = create_runner();
 		await runner.run("cp", ["-Rn", "source", "dest"]);

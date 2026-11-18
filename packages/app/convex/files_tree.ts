@@ -167,7 +167,7 @@ export const get_workspace_move_view = query({
 		v.object({
 			cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 			view: v.union(v.literal("before"), v.literal("after"), v.null()),
-			generation: v.number(),
+			generation: v.union(v.string(), v.number()),
 			searchGeneration: v.number(),
 		}),
 	),

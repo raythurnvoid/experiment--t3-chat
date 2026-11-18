@@ -105,7 +105,7 @@ export const get_workspace_index_view = query({
 		v.object({
 			cohortId: v.union(v.id("files_move_cohorts"), v.id("files_index_runs"), v.null()),
 			view: v.union(v.literal("before"), v.literal("after"), v.null()),
-			generation: v.number(),
+			generation: v.union(v.string(), v.number()),
 			searchGeneration: v.number(),
 		}),
 	),

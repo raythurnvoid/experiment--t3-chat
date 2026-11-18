@@ -11,7 +11,10 @@ import {
 	test_create_saved_text_file,
 	test_finish_pending_update_run,
 	test_mocks_fill_db_with,
+	test_mocks,
 } from "./setup.test.ts";
+import { files_content_heads_db_wrap } from "../server/files-content-heads.ts";
+import { test_create_saved_placement_fixture } from "../server/files-saved-placement.test-fixtures.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
@@ -41,6 +44,120 @@ afterEach(() => {
 });
 
 describe("advance", () => {
+	test.each([
+		["saved", 105],
+		["saved", 1050],
+		["draft", 105],
+		["draft", 1050],
+	] as const)(
+		"a %s folder Copy continues from its key when Move publishes among %i children",
+		async (sourceView, count) => {
+			const f = await test_create_saved_placement_fixture({ signedIn: true, transactionLimits: true });
+			const { t, db } = f;
+			const member = await add_member({ ...f, folders: new Map() });
+			// All extra rows belong to this directory. The first discovery step must read just one page.
+			let staged: Id<"files_nodes"> | undefined;
+			for (let offset = 0; offset < count; offset += 100) {
+				staged = await t.run(async (ctx) => {
+					const content = files_content_heads_db_wrap(ctx);
+					let last = f.nodeId;
+					for (let i = offset; i < Math.min(count, offset + 100); i++) {
+						const name = "a" + String(i).padStart(4, "0") + ".txt";
+						last = await content.db.insert("files_nodes", {
+							...test_mocks.files.base(),
+							kind: "file",
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							createdBy: db.userId,
+							updatedBy: db.userId,
+							parentId: f.parentId,
+							pathDepth: 2,
+							ancestor1: f.parentId,
+							name,
+							sortName: name,
+							path: "/target/" + name,
+							treePath: "/target/" + name,
+						});
+					}
+					await content.flush();
+					return last;
+				});
+			}
+			await f.stageNode(staged!);
+			const thread = await member.asUser.mutation(api.ai_chat.thread_create, {
+				membershipId: member.membershipId,
+				clientGeneratedId: "live-copy",
+				lastMessageAt: Date.now(),
+			});
+			if (thread._nay) throw new Error(thread._nay.message);
+			const started =
+				sourceView === "saved"
+					? await start_transfer(member.asUser, {
+							membershipId: member.membershipId,
+							requestId: "live-copy",
+							kind: "copy",
+							sourceIds: [f.parentId],
+							targetParentId: "root",
+						})
+					: await start_agent_transfer(t, {
+							membershipId: member.membershipId,
+							sourceWorkspace: "current",
+							destinationWorkspace: "current",
+							threadId: thread._yay.threadId,
+							requestId: "live-copy",
+							kind: "copy",
+							sources: [{ kind: "saved", id: f.parentId }],
+							targetParent: { kind: "root" },
+							targetPath: "/",
+							targetName: "copy",
+							missingParentNames: [],
+							conflictPolicy: { file: "replace", folder: "merge" },
+						});
+			if (started._nay) throw new Error(started._nay.message);
+			const { runId } = started._yay;
+			const step = () =>
+				t.run(async (ctx) => {
+					const before = await ctx.meta.getTransactionMetrics();
+					await ctx.runMutation(internal.files_transfer.advance, { runId });
+					const after = await ctx.meta.getTransactionMetrics();
+					return {
+						ranges: after.databaseQueries.used - before.databaseQueries.used,
+						bytes: after.bytesRead.used - before.bytesRead.used,
+						writes: after.documentsWritten.used - before.documentsWritten.used,
+					};
+				});
+			const firstReads = await step();
+			const manifest = () =>
+				t.run((ctx) =>
+					ctx.db
+						.query("files_transfer_items")
+						.withIndex("by_run_order", (q) => q.eq("runId", runId))
+						.collect(),
+				);
+			const first = await manifest();
+			expect(first.map((item) => item.sourceName).slice(1)).toEqual(
+				Array.from({ length: 50 }, (_, i) => "a" + String(i).padStart(4, "0") + ".txt"),
+			);
+			expect(JSON.parse(first[0]!.discoveryCursor!)).toMatchObject({
+				seek: { key: ["a0049.txt", expect.any(Number), expect.any(String)], inclusive: false },
+			});
+			expect(firstReads.ranges, "bounded reads for 50 children").toBeLessThan(sourceView === "saved" ? 150 : 350);
+			expect(firstReads.bytes).toBeLessThan(1024 * 1024);
+			expect(firstReads.writes).toBeLessThan(120);
+			await f.publish();
+			for (let i = 0; i < Math.ceil(count / 50) + 6; i++) {
+				await step();
+				if ((await t.run((ctx) => ctx.db.get("files_transfer_runs", runId)))?.step === "plan") break;
+			}
+			const all = await manifest();
+			expect(all[0]!.discoveryDone).toBe(true);
+			expect(all.map((item) => item.source.id)).toContain(staged);
+			expect(all.map((item) => item.sourceName)).toContain("new.txt");
+			expect(new Set(all.map((item) => item.source.id)).size).toBe(count + 2);
+			expect(all).toHaveLength(count + 2);
+		},
+		120_000,
+	);
 	test.each([
 		["Free", "saved"],
 		["full", "saved"],

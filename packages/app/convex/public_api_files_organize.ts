@@ -3406,7 +3406,7 @@ export const get_job = internalQuery({
 							? {
 									path: item.sourcePath,
 									message: item.errorMessage ?? "Failed",
-									// Only an API Move saves a code on a failed item, for a refused permission.
+									// A source that became unreadable keeps its permission error.
 									errorCode:
 										item.errorCode === "permission_denied" ? ("permission_denied" as const) : ("conflict" as const),
 								}

@@ -85,6 +85,7 @@ import app_convex_schema, {
 import { files_search_db_create_reader } from "./files_search.ts";
 import {
 	files_saved_placement_db_get_node,
+	files_saved_placement_db_get_view,
 	files_saved_placement_db_get_proposal,
 	files_saved_placement_db_get_sequence,
 } from "../server/files-saved-placement.ts";
@@ -105,6 +106,7 @@ import { files_index_range_apply, files_index_range_phases } from "../server/fil
 import {
 	files_tree_walk_db_boundaries,
 	files_tree_walk_db_resolve_stack,
+	files_tree_walk_check_frame,
 	files_tree_walk_boundary_status_validator,
 	files_tree_walk_frame_validator,
 	files_tree_walk_phase,
@@ -4081,8 +4083,55 @@ const subtree_key_validator = v.object({
 	nodeId: v.string(),
 });
 
+const list_root_validator = v.object({
+	nodeId: v.union(v.id("files_nodes"), v.null()),
+	treePath: v.string(),
+	scopeNodeId: v.union(v.id("files_nodes"), v.null()),
+});
+
+// The public action reads each range in a separate query. A frame checked by an earlier query
+// may now be under a locked ancestor, even when its own grant is still valid.
+async function check_list_root(
+	ctx: QueryCtx,
+	args: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId"> & {
+		subject: access_control_Subject;
+		listRoot?: Infer<typeof list_root_validator>;
+		frame?: Infer<typeof files_tree_walk_frame_validator>;
+	},
+) {
+	const start = args.listRoot;
+	if (!start) return;
+	const checker = access_control_create_file_checker(ctx, args);
+	const volume = files_db_resolve_scope(ctx, args.workspaceId).kind === "volume";
+	if (start.nodeId) {
+		const root = await files_saved_placement_db_get_node(ctx.db, start.nodeId);
+		if (
+			!root ||
+			root.organizationId !== args.organizationId ||
+			root.workspaceId !== args.workspaceId ||
+			root.archiveOperationId !== null ||
+			root.treePath !== start.treePath ||
+			root.kind !== "folder" ||
+			root.restrictedScopeNodeId !== start.scopeNodeId ||
+			(!volume && !(await checker.can(root, "content.read")))
+		)
+			throw convex_invalid_cursor_error("The listed folder changed.");
+	} else if (!volume && !(await checker.can(null, "content.read")))
+		throw convex_invalid_cursor_error("The listed folder changed.");
+	if (args.frame)
+		await files_tree_walk_check_frame(
+			{
+				get_node: (id) => files_saved_placement_db_get_node(ctx.db, id),
+				can: async (node) => volume || (await checker.can(node, "content.read")),
+				start,
+			},
+			args.frame,
+		);
+}
+
 export const list_subtree = internalQuery({
 	args: {
+		listRoot: v.optional(list_root_validator),
 		agentSource: v.optional(ai_chat_workspaces_source_validator),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
@@ -4129,9 +4178,13 @@ export const list_subtree = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
-		if (authorized._nay) return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+		if (authorized._nay) {
+			if (args.listRoot) throw convex_invalid_cursor_error("The listed folder is no longer accessible.");
+			return { page: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
 		const scope = files_db_resolve_scope(ctx, args.workspaceId);
 		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+		await check_list_root(ctx, args);
 		const lowercaseExtension = args.lowercaseExtension;
 		const kind = args.kind;
 		const contentTypeMatch =
@@ -4409,6 +4462,7 @@ async function walk_frame_lists_locked(
 export const list_subtree_boundaries = internalQuery({
 	args: {
 		...walk_read_args,
+		listRoot: v.optional(list_root_validator),
 		savedStream: v.optional(files_saved_stream_validator),
 		frame: files_tree_walk_frame_validator,
 		numItems: v.number(),
@@ -4430,8 +4484,12 @@ export const list_subtree_boundaries = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		const authorized = await files_db_authorize_file_read(ctx, { ...args, userId: args.visibilityUserId });
-		if (authorized._nay) return { page: [], frontier: null, phaseCount: 0, isDone: true };
+		if (authorized._nay) {
+			if (args.listRoot) throw convex_invalid_cursor_error("The listed folder is no longer accessible.");
+			return { page: [], frontier: null, phaseCount: 0, isDone: true };
+		}
 		const saved = await files_saved_stream_db_create(ctx.db, args, args.savedStream);
+		await check_list_root(ctx, args);
 		const checker = access_control_create_file_checker(ctx, args);
 		const result = await files_tree_walk_db_boundaries({
 			saved,
@@ -6811,7 +6869,7 @@ export const search_saved = query({
 			ctx.db,
 			membership,
 			index
-				? { kind: "normal", generation: index.view.generation }
+				? { kind: "normal", generation: (await files_saved_placement_db_get_view(ctx.db, membership)).generation }
 				: args.savedStream?.kind === "cohort" && moveId
 					? { ...args.savedStream, cohortId: moveId }
 					: args.savedStream?.kind === "normal"

@@ -854,6 +854,8 @@ unused fields when a node moves to a shallower folder or root.
 
 **Typed path maintenance.** The existing target, parent, old-path-prefix and pathless jobs also visit typed entries. Move owner collection follows their parent and path ranges, including stationary replacements. Staging builds both typed views; staging and cleanup change the search generation even when no ordinary place changes. Cleanup promotes the selected typed docs and deletes all resolver work for both Move views.
 
+Folder Copy lists saved children and, for a draft source, the owner’s visible draft children. Each page checks its source folder and resumes after its last directory key in the current Move view. A child moved behind that key can be missed. An unattended Copy records a listed child that moved away and continues with its siblings. An interactive changed-source choice still belongs to its item.
+
 **Unfinished resolution.** A read budget ends one worker step, not the target's result. The worker saves its resolver frames and keeps the overlay job counted. It resumes against the same source and selected-view pins; a changed pin clears old work in pages before restarting. It publishes structural docs only after resolution completes. The path-free Pending list stays immediate. A saved MIME change advances the shared source pin while leased, without creating work for each owner.
 
 Full inline path resolution checks all seven transaction metrics before each source read. A selected-view

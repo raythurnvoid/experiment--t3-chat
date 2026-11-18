@@ -39,12 +39,12 @@ with private proposals. `files_pending_updates.ts` and
   There is no total selection cap. Sources and destination parents use tagged saved/private
   IDs. The destination path, parent, optional target name, and missing Copy parents are fixed at
   acceptance. A repeated request ID returns its original run; changed intent or expired membership refuses.
-- Copy discovers active descendants in pages of 50 before creating output.
-  This is a paged scan, not a snapshot of the whole tree at one instant. Later additions are not
-  guaranteed to be included. Output starts only after discovery ends. The completed manifest stays
-  fixed during Retry. So Retry needs a finished discovery: a run that stopped or failed while
-  Activity `progress.total` is still null offers no Retry, and `retry_remaining` refuses it with
-  "This Copy stopped before it found all its files. Start a new Copy instead." Every publication checks source identity and destination placement. Copy into
+- Copy discovers active descendants in pages of 50 before creating output. It keeps its place when
+  files move, so an item moved behind its current page may be missed. An unattended Copy reports a
+  listed child that vanished or moved and continues with the other items.
+- Retry uses the completed file list. If a folder disappeared before Copy finished listing it,
+  Activity `progress.total` stays null and Retry is unavailable. Start a new Copy to check that
+  folder again. Every publication checks source identity and destination placement. Copy into
   a descendant is allowed when it cannot replace or merge into a captured source. It never discovers
   its own output. Move into a descendant is refused.
 - Full-folder Copy checks every included saved child. A child the actor cannot open is locked:

@@ -303,7 +303,7 @@ filter to search inside the folder". `/*` takes words only. Both input footers s
     later text once it stays the same for 1 second. So a menu opens again with its rows and no
     skeleton, also with text left in its box. Text typed quickly stays live: the cache stops keeping
     new idle queries once 250 are idle, and a page for every typed prefix would take the folder's
-    place. An old Move generation leaves only these few pages idle, for up to 5 minutes.
+    place. An old Move view leaves only these few pages idle, for up to 5 minutes.
     An ordinary cursor error takes a new ID. The folder view reads its own queries (sort, README, drafts,
     write permission, selected node) through `useCachedQuery` too. Per-row queries stay on the
     plain `useQuery`: the cache keeps at most 250 idle queries, and the rows of a big folder would push

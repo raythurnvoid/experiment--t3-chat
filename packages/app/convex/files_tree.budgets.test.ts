@@ -83,7 +83,7 @@ describe("tree page read budgets", () => {
 		const split = vi.spyOn(treeDb, "files_tree_db_page_needs_split");
 		let view: "before" | "after" | null = null;
 		let cohortId: Id<"files_move_cohorts"> | null = null;
-		let generation = 0;
+		let generation: number | string = 0;
 		const check = async (
 			field: "tree" | "name" | "metadata.status" | "shared" | "roots",
 			stream: "normal" | "cohort",
@@ -195,7 +195,9 @@ describe("tree page read budgets", () => {
 			}
 			return cohortId;
 		});
-		generation = await t.run(async (ctx) => (await ctx.db.get("files_move_cohorts", cohortId!))!.slotGeneration);
+		generation = (await f.asOwner.query(api.files_tree.get_workspace_move_view, {
+			membershipId: f.owner.membershipId,
+		}))!.generation;
 		view = "before";
 		// Move reserves nodes before it copies their metadata and share docs. Normal index docs can
 		// therefore load expensive Move nodes too.
@@ -226,6 +228,9 @@ describe("tree page read budgets", () => {
 			await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after" });
 		});
 		view = "after";
+		generation = (await f.asOwner.query(api.files_tree.get_workspace_move_view, {
+			membershipId: f.owner.membershipId,
+		}))!.generation;
 		await check_stream("cohort");
 	});
 });

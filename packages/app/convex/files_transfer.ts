@@ -490,6 +490,58 @@ async function db_skip_item(ctx: MutationCtx, item: Doc<"files_transfer_items">)
 	});
 }
 
+async function db_handle_changed_source(
+	ctx: MutationCtx,
+	run: Doc<"files_transfer_runs">,
+	item: Doc<"files_transfer_items">,
+	reader: Awaited<ReturnType<typeof files_visible_db_create_reader>>,
+	missing: boolean,
+) {
+	if (reader.exhausted || !reader.active || (missing && reader.isBlocked(item.source))) {
+		await db_stop_run({
+			ctx,
+			run,
+			errorMessage: reader.exhausted ? "The source path needs too many reads" : "Permission denied",
+		});
+		return;
+	}
+	if (run.kind !== "copy" || !item.parentItemId || !(run.fixedDeadline || run.origin.kind === "api")) {
+		await db_pause_item({ ctx, item, kind: "source_changed" });
+		return;
+	}
+	// The child was listed earlier. Preserve the result while the rest of an unattended Copy continues.
+	let message = missing ? "Source no longer available" : "Source moved";
+	if (missing && item.source.kind === "saved") {
+		const node = await files_saved_placement_db_get_node(ctx.db, item.source.id);
+		if (node && node.archiveOperationId === null && !(await reader.canRead(node))) message = "Permission denied";
+	}
+	if (item.state === "copying") {
+		await files_transfer_db_fail_copy_item(ctx, {
+			itemId: item._id,
+			attempt: item.attempt,
+			message,
+			errorCode: message === "Permission denied" ? "permission_denied" : undefined,
+		});
+	} else {
+		const activity = await files_transfer_status_db_require_activity(ctx, run._id);
+		if (item.kind === "folder" && !item.discoveryDone && !run.incompleteDiscovery)
+			await ctx.db.patch("files_transfer_runs", run._id, { incompleteDiscovery: true });
+		await ctx.db.patch("files_transfer_items", item._id, {
+			state: "failed",
+			discoveryDone: true,
+			errorMessage: message,
+			errorCode: message === "Permission denied" ? "permission_denied" : null,
+		});
+		await ctx.db.patch("activities", activity._id, {
+			progress: { ...activity.progress, failed: activity.progress.failed + 1 },
+			errorMessage: activity.errorMessage ?? message,
+			errorCode: "copy_failed",
+			updatedAt: Date.now(),
+		});
+	}
+	await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
+}
+
 async function db_get_active_move_cohort(ctx: MutationCtx, run: Doc<"files_transfer_runs">) {
 	if (run.kind !== "move" || run.publication !== "saved") return null;
 	const slot = await ctx.db
@@ -1086,7 +1138,7 @@ export async function files_transfer_db_prepare_copy_item(
 		reader: sourceReader,
 	});
 	if (!sourceEntry || sourceEntry.path !== item.sourcePath) {
-		await db_pause_item({ ctx, item, kind: "source_changed" });
+		await db_handle_changed_source(ctx, run, item, sourceReader, !sourceEntry);
 		return Result({ _yay: null });
 	}
 	const copiedFlags = files_nodes_db_copied_from_read_only_fields({
@@ -1347,6 +1399,7 @@ export async function files_transfer_db_fail_copy_item(
 		itemId: Id<"files_transfer_items">;
 		attempt: number;
 		workId?: NonNullable<Doc<"files_transfer_items">["workId"]>;
+		errorCode?: string;
 		message: string;
 	},
 ) {
@@ -1366,7 +1419,11 @@ export async function files_transfer_db_fail_copy_item(
 
 	await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
 	await files_nodes_content_db_discard_transfer_file_capture(ctx, { itemId: item._id });
-	await ctx.db.patch("files_transfer_items", item._id, { state: "failed", errorMessage: args.message });
+	await ctx.db.patch("files_transfer_items", item._id, {
+		state: "failed",
+		errorMessage: args.message,
+		errorCode: args.errorCode ?? null,
+	});
 	if (item.preparation)
 		await files_pending_nodes_db_discard(ctx, {
 			...run,
@@ -2439,17 +2496,24 @@ export const get_for_agent = internalQuery({
 /**
  * The first 100 items a Copy skipped because its user cannot open them, in discovery order. Bash
  * prints one "Permission denied" line for each, and one line without a count when there are more:
- * the run's `skipped` count also holds `cp -n` skips.
+ * the run's `skipped` count also holds `cp -n` skips. Pass failed to read actual per-item errors.
  */
 export const list_denied_for_agent = internalQuery({
 	args: {
+		failed: v.optional(v.boolean()),
 		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("ai_chat_threads"),
 		runId: v.id("files_transfer_runs"),
 	},
 	returns: v.union(
 		v.object({
-			items: v.array(v.object({ path: v.string(), kind: v.union(v.literal("folder"), v.literal("file")) })),
+			items: v.array(
+				v.object({
+					path: v.string(),
+					kind: v.union(v.literal("folder"), v.literal("file")),
+					message: v.optional(v.string()),
+				}),
+			),
 			isDone: v.boolean(),
 		}),
 		v.null(),
@@ -2457,11 +2521,19 @@ export const list_denied_for_agent = internalQuery({
 	handler: async (ctx, args) => {
 		const run = await db_get_agent_run(ctx, args);
 		if (!run) return null;
-		const page = await ctx.db
-			.query("files_transfer_items")
-			.withIndex("by_run_skipReason_order", (q) => q.eq("runId", run._id).eq("skipReason", "permission_denied"))
-			.paginate({ numItems: 100, cursor: null });
-		return { items: page.page.map((item) => ({ path: item.sourcePath, kind: item.kind })), isDone: page.isDone };
+		const items = ctx.db.query("files_transfer_items");
+		const query = args.failed
+			? items.withIndex("by_run_state_order", (q) => q.eq("runId", run._id).eq("state", "failed"))
+			: items.withIndex("by_run_skipReason_order", (q) => q.eq("runId", run._id).eq("skipReason", "permission_denied"));
+		const page = await query.paginate({ numItems: 100, cursor: null });
+		return {
+			items: page.page.map((item) => ({
+				path: item.sourcePath,
+				kind: item.kind,
+				...(args.failed ? { message: item.errorMessage ?? "Copy failed" } : {}),
+			})),
+			isDone: page.isDone,
+		};
 	},
 });
 
@@ -3072,7 +3144,12 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">, wr
 
 	if (item) {
 		const parent = item.parentItemId ? await ctx.db.get("files_transfer_items", item.parentItemId) : null;
-		if (item.choice === "skip" || parent?.state === "skipped" || parent?.state === "canceled") {
+		if (
+			item.choice === "skip" ||
+			parent?.state === "skipped" ||
+			parent?.state === "failed" ||
+			parent?.state === "canceled"
+		) {
 			await db_skip_item(ctx, item);
 			await ctx.db.patch("files_transfer_items", item._id, { discoveryDone: true });
 			await ctx.scheduler.runAfter(0, internal.files_transfer.advance, { runId: run._id });
@@ -3081,73 +3158,33 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">, wr
 
 		const source = await files_transfer_status_db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
 		if (!source || source.path !== item.sourcePath) {
-			await db_pause_item({ ctx, item, kind: "source_changed" });
+			await db_handle_changed_source(ctx, run, item, reader, !source);
 			return;
 		}
 
-		const children: Array<{
-			target: files_PendingTarget;
-			name: string;
-			path: string;
-			kind: "file" | "folder";
-			locked: boolean;
-		}> = [];
-		let isDone: boolean;
-		let continueCursor: string | null;
-
-		if (run.sourceView === "draft") {
-			// The merged cursor of the saved and place streams goes into `discoveryCursor`.
-			const listed = await files_pending_overlay_list(ctx, {
-				organizationId: sourceScope.organizationId,
-				workspaceId: sourceScope.workspaceId,
-				visibilityUserId: run.userId,
-				subject: writeContext.subject,
-				overlayUserId: run.userId,
-				requireComplete: true,
-				folderPath: source.path,
-				mode: "children",
-				order: "asc",
-				cursor: item.discoveryCursor,
-				numItems: DISCOVERY_PAGE_SIZE,
-			});
-			if (listed._nay) {
-				await db_stop_run({ ctx, run, errorMessage: listed._nay.message });
-				return;
-			}
-			if (listed._yay.items.some((child) => child.preparing)) {
-				await db_pause_item({ ctx, item, kind: "source_changed" });
-				return;
-			}
-
-			children.push(...listed._yay.items);
-			isDone = listed._yay.isDone;
-			continueCursor = listed._yay.continueCursor;
-		} else {
-			if (source.kind !== "saved") return;
-			const page = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
-					q
-						.eq("organizationId", sourceScope.organizationId)
-						.eq("workspaceId", sourceScope.workspaceId)
-						.eq("moveCohortId", undefined)
-						.eq("parentId", source.node._id)
-						.eq("archiveOperationId", null),
-				)
-				.paginate({ cursor: item.discoveryCursor, numItems: DISCOVERY_PAGE_SIZE });
-
-			for (const child of page.page) {
-				children.push({
-					target: { kind: "saved", id: child._id },
-					name: child.name,
-					path: child.path,
-					kind: child.kind,
-					locked: !(await reader.canRead(child)),
-				});
-			}
-
-			isDone = page.isDone;
-			continueCursor = page.continueCursor;
+		const listed = await files_pending_overlay_list(ctx, {
+			organizationId: sourceScope.organizationId,
+			workspaceId: sourceScope.workspaceId,
+			visibilityUserId: run.userId,
+			subject: writeContext.subject,
+			overlayUserId: run.sourceView === "draft" ? run.userId : undefined,
+			requireComplete: true,
+			expectedRoot:
+				source.kind === "saved" ? { kind: "saved", id: source.node._id } : { kind: "private", id: source.node._id },
+			folderPath: source.path,
+			mode: "children",
+			order: "asc",
+			cursor: item.discoveryCursor,
+			numItems: DISCOVERY_PAGE_SIZE,
+		});
+		if (listed._nay) {
+			await db_stop_run({ ctx, run, errorMessage: listed._nay.message });
+			return;
+		}
+		const { items: children, isDone, continueCursor } = listed._yay;
+		if (children.some((child) => child.preparing)) {
+			await db_pause_item({ ctx, item, kind: "source_changed" });
+			return;
 		}
 
 		let added = 0;
@@ -3204,7 +3241,7 @@ async function db_discover(ctx: MutationCtx, run: Doc<"files_transfer_runs">, wr
 	}
 
 	const currentActivity = await files_transfer_status_db_require_activity(ctx, run._id);
-	if (currentActivity.status === "running" || currentActivity.status === "awaiting_input")
+	if (!run.incompleteDiscovery && (currentActivity.status === "running" || currentActivity.status === "awaiting_input"))
 		await ctx.db.patch("activities", currentActivity._id, {
 			progress: { ...currentActivity.progress, total: currentActivity.progress.discovered },
 			updatedAt: Date.now(),
@@ -3238,11 +3275,21 @@ async function db_plan(args: {
 		// Leave the next item for another step if its name search could exceed this step's budget.
 		if (run.kind === "copy" && nameLookups.remaining < MAX_NAME_ATTEMPTS + 2) break;
 		const parent = item.parentItemId ? await ctx.db.get("files_transfer_items", item.parentItemId) : null;
-		if (item.state === "completed" || item.state === "canceled" || item.state === "conflict") {
+		if (
+			item.state === "completed" ||
+			item.state === "canceled" ||
+			item.state === "conflict" ||
+			item.state === "failed"
+		) {
 			cursor = item.order;
 			continue;
 		}
-		if (item.state === "skipped" || item.choice === "skip" || parent?.state === "skipped") {
+		if (
+			item.state === "skipped" ||
+			item.choice === "skip" ||
+			parent?.state === "skipped" ||
+			parent?.state === "failed"
+		) {
 			if (item.state !== "skipped") await db_skip_item(ctx, item);
 			cursor = item.order;
 			continue;
@@ -3251,7 +3298,7 @@ async function db_plan(args: {
 		const source = await files_transfer_status_db_get_entry({ ctx, run: sourceScope, target: item.source, reader });
 		if (reader.exhausted && cursor !== run.planCursor) break;
 		if (!source || source.path !== item.sourcePath) {
-			await db_pause_item({ ctx, item, kind: "source_changed" });
+			await db_handle_changed_source(ctx, run, item, reader, !source);
 			return false;
 		}
 

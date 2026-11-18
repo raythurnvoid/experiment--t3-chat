@@ -67,8 +67,9 @@ async function shared_fixture() {
 			level: "read",
 		}),
 	).toEqual({ _yay: null });
-	const view = await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId });
-	return { ...f, member, asOwner, asMember, principal, generation: view!.generation };
+	const generation = async () =>
+		(await asOwner.query(api.files_tree.get_workspace_move_view, { membershipId: f.db.membershipId }))!.generation;
+	return { ...f, member, asOwner, asMember, principal, generation };
 }
 
 describe("share rows during a Move", () => {
@@ -84,11 +85,11 @@ describe("share rows during a Move", () => {
 			["after", "new.txt"],
 			["before", "old.txt"],
 		]);
-		const read = (view: "before" | "after") =>
+		const read = async (view: "before" | "after") =>
 			f.asMember.query(api.files_tree.list_tree_shared_roots, {
 				membershipId: f.member.membershipId,
 				principalIndex: 0,
-				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: f.generation },
+				savedStream: { kind: "cohort", cohortId: f.cohortId, view, generation: await f.generation() },
 				paginationOpts: { cursor: null, numItems: 20 },
 			});
 		expect((await read("before")).page.map((row) => row.name)).toEqual(["old.txt"]);
@@ -97,7 +98,7 @@ describe("share rows during a Move", () => {
 				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
-					savedStream: { kind: "normal", generation: f.generation },
+					savedStream: { kind: "normal", generation: await f.generation() },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})
 			).page,
@@ -145,7 +146,7 @@ describe("share rows during a Move", () => {
 				await f.asMember.query(api.files_tree.list_tree_shared_roots, {
 					membershipId: f.member.membershipId,
 					principalIndex: 0,
-					savedStream: { kind: "cohort", cohortId: f.cohortId, view: "after", generation: f.generation },
+					savedStream: { kind: "cohort", cohortId: f.cohortId, view: "after", generation: await f.generation() },
 					paginationOpts: { cursor: null, numItems: 20 },
 				})
 			).page,

@@ -4869,7 +4869,7 @@ describe("locked and missing paths", () => {
 		};
 	}
 
-	test("list cursors survive text indexing and still expire after a Move", async () => {
+	test("list cursors continue after indexing and a whole Move between pages", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const f = await seed_hidden_folder(t);
@@ -4912,9 +4912,12 @@ describe("locked and missing paths", () => {
 		await test_finish_transfer_run(t, activity.source.id);
 		expect(await t.run((ctx) => ctx.db.get("activities", jobId))).toMatchObject({ status: "succeeded" });
 		for (const args of nextPages) {
-			expect(await list(t, f.ownerCredential, args)).toEqual({
-				status: 400,
-				body: { message: "This list cursor changed. Start a new page.", errorCode: "invalid_cursor" },
+			expect(
+				await list(t, f.ownerCredential, args),
+				"the original cursor still reaches the next sibling",
+			).toMatchObject({
+				status: 200,
+				body: { items: [{ path: "/secret/h02.md" }] },
 			});
 		}
 	});
@@ -6066,6 +6069,53 @@ describe("locked and missing paths", () => {
 			).toEqual({
 				status: 403,
 				body: { message: "Permission denied", errorCode: "permission_denied", path: "/secret" },
+			});
+		});
+
+		test("folder copy reports a moved child and keeps its other output", async () => {
+			const t = test_convex();
+			const f = await seed_hidden_folder(t);
+			expect(
+				(
+					await post(t, "/api/v1/files/mkdir", f.memberCredential, {
+						paths: ["/live", "/live/gone", "/live/gone/undiscovered", "/live/kept"],
+					})
+				).status,
+			).toBe(200);
+			const copy = await post(t, "/api/v1/files/copy", f.memberCredential, {
+				from: ["/live"],
+				to: "/notes/copied",
+				requestId: "live-copy",
+			});
+			const { jobId } = copy.body as { jobId: string };
+			const activity = await get_activity(t, jobId);
+			if (activity?.source.kind !== "files_transfer_run") throw new Error("Expected Copy");
+			const runId = activity.source.id;
+			for (let step = 0; step < 10; step++) {
+				await t.mutation(internal.files_transfer.advance, { runId });
+				if ((await get_activity(t, jobId))?.progress?.discovered === 3) break;
+			}
+			expect((await get_activity(t, jobId))?.progress?.discovered).toBe(3);
+			const move = await post(t, "/api/v1/files/move", f.ownerCredential, {
+				from: ["/live/gone"],
+				to: "/notes",
+				requestId: "move-child",
+			});
+			await finish_move(t, (move.body as { jobId: string }).jobId);
+			await finish_copy(t, jobId);
+			expect(await post(t, "/api/v1/files/jobs/get", f.memberCredential, { jobId })).toMatchObject({
+				body: {
+					status: "partial",
+					progress: { failed: 1, completed: 2, total: null },
+					refused: [{ path: "/live/gone", message: "Source moved", errorCode: "conflict" }],
+				},
+			});
+			expect(
+				await post(t, "/api/v1/files/stat", f.memberCredential, {
+					paths: ["/notes/copied/kept", "/notes/copied/gone"],
+				}),
+			).toMatchObject({
+				body: { items: [{ status: "found" }, { status: "missing" }] },
 			});
 		});
 

@@ -88,7 +88,7 @@ test("agent metadata search keeps complete saved results and private drafts acro
 	]);
 	if (!moveView) throw new Error("Expected a saved file view");
 	if (!view?.cohortId || !view.view) throw new Error("Expected a selected index view");
-	expect(view.generation).toBeGreaterThan(moveView.generation);
+	expect(view.cohortId).not.toBe(moveView.cohortId);
 	for (const source of [
 		{ kind: "normal" as const, generation: view.generation },
 		{ kind: "cohort" as const, cohortId: view.cohortId, view: view.view, generation: view.generation },

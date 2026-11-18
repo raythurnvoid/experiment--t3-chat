@@ -46,6 +46,7 @@ import {
 	files_tree_walk_boundary_status,
 	files_tree_walk_db_boundaries,
 	files_tree_walk_db_resolve_stack,
+	files_tree_walk_check_frame,
 	files_tree_walk_boundary_status_validator,
 	files_tree_walk_frame_validator,
 	files_tree_walk_phase,
@@ -587,7 +588,7 @@ async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?
 const move_view_validator = v.object({
 	cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 	view: v.union(v.literal("before"), v.literal("after"), v.null()),
-	generation: v.number(),
+	generation: v.union(v.string(), v.number()),
 	searchGeneration: v.number(),
 	migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal"), v.null()),
 });
@@ -1656,11 +1657,24 @@ export const internal_list_subtree_saved = internalQuery({
 
 		// `savedTreePath` is the range in saved space, `ownerTreePath` the same folder in the user's paths.
 		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
-		if (!subtree) return stream_done(root.parent);
+		if (!subtree) {
+			if (args.frame) throw convex_invalid_cursor_error("The listed folder changed.");
+			return stream_done(root.parent);
+		}
 		const { savedTreePath, ownerTreePath } = subtree;
 
-		// Clamp `rangeStart` into the range after `savedTreePath`. `lastKey` only skips rows of this range, so it
-		// needs no clamp.
+		if (args.frame) {
+			const checker = access_control_create_file_checker(ctx, args);
+			await files_tree_walk_check_frame(
+				{
+					get_node: (id) => files_saved_placement_db_get_node(ctx.db, id),
+					can: reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+					start: { treePath: savedTreePath, scopeNodeId: subtree.node?.restrictedScopeNodeId ?? null },
+				},
+				args.frame,
+			);
+		}
+		// Clamp the start into the saved folder. The last key only skips rows inside that range.
 		const upper = path_tree_prefix_upper_bound(savedTreePath);
 		const rangeStart = args.position.rangeStart;
 		if (rangeStart !== null && compareValues(rangeStart, upper) >= 0) return stream_done(root.parent);
@@ -1883,9 +1897,17 @@ export const internal_list_subtree_boundaries = internalQuery({
 		if (!opened._yay) return Result({ _yay: { root: null, ...none } });
 		const { reader, tenant, root, saved } = opened._yay;
 		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
-		if (!subtree) return Result({ _yay: { root: root.parent, ...none } });
+		if (!subtree) throw convex_invalid_cursor_error("The listed folder changed.");
 		const { savedTreePath, ownerTreePath } = subtree;
 		const checker = access_control_create_file_checker(ctx, args);
+		await files_tree_walk_check_frame(
+			{
+				get_node: (id) => files_saved_placement_db_get_node(ctx.db, id),
+				can: reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+				start: { treePath: savedTreePath, scopeNodeId: subtree.node?.restrictedScopeNodeId ?? null },
+			},
+			args.frame,
+		);
 		const result = await files_tree_walk_db_boundaries({
 			saved,
 			frame: args.frame,

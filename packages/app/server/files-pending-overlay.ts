@@ -44,7 +44,7 @@ import {
 } from "../shared/files.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { convex_error } from "./convex-utils.ts";
+import { convex_error, convex_invalid_cursor_error } from "./convex-utils.ts";
 import {
 	files_share_rows_db_node_changed,
 	files_share_rows_db_sync_grant,
@@ -3440,12 +3440,12 @@ export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, l
 // The cursors below use Convex validators, not zod. This module is on the file open path, and
 // loading zod there made each file open slower. See "External data validation" in AGENTS.md.
 const saved_source_validator = v.union(
-	v.object({ kind: v.literal("normal"), generation: v.number() }),
+	v.object({ kind: v.literal("normal"), generation: v.union(v.string(), v.number()) }),
 	v.object({
 		kind: v.literal("cohort"),
 		cohortId: v.string(),
 		view: v.union(v.literal("before"), v.literal("after")),
-		generation: v.number(),
+		generation: v.union(v.string(), v.number()),
 	}),
 );
 
@@ -3491,6 +3491,22 @@ const list_cursor_validator = v.object({
 });
 
 /**
+ * Live cursors store one logical stream per saved or draft range. Resolve the physical sources
+ * again on the next page, even when a Move has finished in the meantime.
+ */
+const live_cursor_validator = v.object({
+	...list_cursor_validator.fields,
+	streams: v.array(list_cursor_validator.fields.streams.element.omit("savedStream", "indexStream")),
+});
+
+const children_cursor_validator = v.object({
+	scope: v.string(),
+	root: v.string(),
+	lastTargetId: v.union(v.string(), v.null()),
+	seek: v.object({ key: v.array(v.any()), inclusive: v.boolean() }),
+});
+
+/**
  * The `movedIn` arg of a nested stream's query. Other streams pass none.
  */
 function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } | null) {
@@ -3520,6 +3536,22 @@ function moved_in_args(movedIn: { savedNodeId: string; ownerTreePath: string } |
  * limit.
  */
 export async function files_pending_overlay_list(
+	ctx: Parameters<typeof read_list_page>[0],
+	args: Parameters<typeof read_list_page>[1],
+): Promise<files_visible_list_Result> {
+	const live = args.mode === "children" || (args.mode === "subtree" && args.order === "asc" && !args.updated);
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const page = await read_list_page(ctx, args, live);
+			if (!live || page._nay?.name !== "saved_move_view_changed") return page;
+		} catch (error) {
+			if (!live || !(error instanceof ConvexError) || error.data?.reason !== "saved_move_view_changed") throw error;
+		}
+		if (attempt === 1) return Result({ _nay: { message: "Files are moving. Retry this page." } });
+	}
+}
+
+async function read_list_page(
 	ctx: Pick<ActionCtx, "runQuery"> & { meta?: ActionCtx["meta"] | QueryCtx["meta"] },
 	args: {
 		agentSource?: Infer<typeof ai_chat_workspaces_source_validator>;
@@ -3529,6 +3561,7 @@ export async function files_pending_overlay_list(
 		subject: access_control_Subject;
 		overlayUserId?: Id<"users">;
 		requireComplete?: boolean;
+		expectedRoot?: files_PendingParent;
 		folderPath: string;
 		mode: "children" | "subtree" | "metadata";
 		/**
@@ -3556,6 +3589,7 @@ export async function files_pending_overlay_list(
 		numItems: number;
 		cursor: string | null;
 	},
+	live: boolean,
 ): Promise<files_visible_list_Result> {
 	const { order } = args;
 	const overlay = args.overlayUserId === args.visibilityUserId && access_control_subject_reads_drafts(args.subject);
@@ -3580,11 +3614,12 @@ export async function files_pending_overlay_list(
 		...(args.kind === undefined ? {} : { kind: args.kind }),
 		...(args.lowercaseExtension === undefined ? {} : { lowercaseExtension: args.lowercaseExtension }),
 	};
-	const view: files_saved_placement_View | null = await ctx.runQuery(
-		internal.files_visible.internal_get_move_view,
-		streamArgs,
-	);
-	if (!view) return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
+	const view = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
+	if (!view) {
+		if (args.requireComplete || args.cursor !== null)
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
+		return Result({ _yay: { items: [], continueCursor: null, isDone: true } });
+	}
 	const savedSources: files_SavedStream[] = [
 		{ kind: "normal", generation: view.generation },
 		...(view.cohortId && view.view
@@ -3630,8 +3665,14 @@ export async function files_pending_overlay_list(
 		args.requireComplete,
 		args.plan,
 		args.updated,
-		[view.cohortId, view.view, view.generation, view.migrationDirection],
-		indexView && [indexView.cohortId, indexView.view, indexView.generation, indexView.migrationDirection],
+		live ? "live-v1" : [view.cohortId, view.view, view.generation, view.migrationDirection],
+		indexView && [
+			indexView.cohortId,
+			indexView.view,
+			indexView.generation,
+			indexView.migrationDirection,
+			view.searchGeneration,
+		],
 	]);
 	const pageSize = Math.max(1, Math.floor(args.numItems));
 	const plan = args.plan;
@@ -3705,7 +3746,27 @@ export async function files_pending_overlay_list(
 	let root: string | null = null;
 	let lastTargetId: string | null = null;
 	let cursorStreams: CursorStream[];
-	if (args.cursor === null) {
+	let childSeek: Infer<typeof children_cursor_validator>["seek"] = { key: [], inclusive: true };
+	if (args.cursor === null || args.mode === "children") {
+		if (args.cursor !== null) {
+			let raw: unknown;
+			try {
+				raw = JSON.parse(args.cursor);
+			} catch {
+				return Result({
+					_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
+				});
+			}
+			if (!validate(children_cursor_validator, raw) || raw.scope !== scope)
+				return Result({
+					_nay: {
+						message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
+					},
+				});
+			root = raw.root;
+			lastTargetId = raw.lastTargetId;
+			childSeek = raw.seek;
+		}
 		cursorStreams = savedSources.flatMap((savedStream, index) => [
 			// A walk reads every saved source itself.
 			...(args.mode === "metadata" || (walk && index > 0)
@@ -3733,6 +3794,7 @@ export async function files_pending_overlay_list(
 				: []),
 			// The frontmatter of the user's text drafts of saved files.
 		]);
+		if (args.mode === "children") for (const stream of cursorStreams) stream.seek = childSeek;
 		if (args.mode === "metadata") {
 			// Metadata docs can move between index views while tree and draft docs stay in place.
 			cursorStreams.unshift(
@@ -3763,24 +3825,36 @@ export async function files_pending_overlay_list(
 				_nay: { message: "cursor is invalid; rerun the original command to get a fresh Next page cursor." },
 			});
 		}
+		const parsed =
+			live && validate(live_cursor_validator, raw) && raw.streams.length <= 256
+				? {
+						...raw,
+						streams: raw.streams.flatMap((stream) => {
+							const sources =
+								walk && (stream.kind === "saved" || stream.kind === "nested") ? [viewStream] : savedSources;
+							return sources.map((savedStream) => ({ ...stream, savedStream }));
+						}),
+					}
+				: !live && validate(list_cursor_validator, raw) && raw.streams.length <= 256
+					? raw
+					: null;
 		if (
-			!validate(list_cursor_validator, raw) ||
-			raw.scope !== scope ||
-			raw.streams.length > 256 ||
-			!raw.streams.every((stream) => Number.isInteger(stream.numItems) && stream.numItems > 0)
+			!parsed ||
+			parsed.scope !== scope ||
+			!parsed.streams.every((stream) => Number.isInteger(stream.numItems) && stream.numItems > 0)
 		)
 			return Result({
 				_nay: {
 					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
 				},
 			});
-		root = raw.root;
-		lastTargetId = raw.lastTargetId;
-		cursorStreams = raw.streams;
+		root = parsed.root;
+		lastTargetId = parsed.lastTargetId;
+		cursorStreams = parsed.streams;
 	}
 	const is_walk = (stream: Pick<CursorStream, "kind">) => walk && (stream.kind === "saved" || stream.kind === "nested");
 	const is_migrating = (stream: CursorStream) =>
-		stream.kind !== "pending" && (stream.indexStream ? indexView?.cohortId : view.cohortId) != null;
+		stream.kind !== "pending" && (live || (stream.indexStream ? indexView?.cohortId : view.cohortId) != null);
 	const streams: Stream[] = cursorStreams.map((stream) => ({
 		...stream,
 		position: is_migrating(stream) && !is_walk(stream) ? start : stream.position,
@@ -3818,6 +3892,8 @@ export async function files_pending_overlay_list(
 		}
 		const walk = stream.walk;
 		const { root: walkRoot, start: walkStart } = walk;
+		if (live && (cursor || stream.movedIn) && (walkStart === null || walkRoot === null))
+			return Result({ _nay: { message: "The open folder changed since the last page." } });
 		if (walkStart === null || walkRoot === null)
 			return Result({
 				_yay: { root: walkRoot, rows: [], frontier: null, position: start, done: true, decided: 0, overBudget: false },
@@ -3826,11 +3902,13 @@ export async function files_pending_overlay_list(
 		// A failed stream call ends the walk with its answer.
 		let failed: StreamResult | null = null;
 		const stopped = new Error("The walk stopped on a failed stream call");
-		const yay_of = <T extends { _nay?: unknown; _yay?: unknown }>(result: T) => {
+		const yay_of = <T extends { _nay?: unknown; _yay?: { root: files_PendingParent | null } }>(result: T) => {
 			if (result._nay) {
 				failed = result as unknown as typeof failed;
 				throw stopped;
 			}
+			if (live && JSON.stringify(result._yay?.root) !== JSON.stringify(walkRoot))
+				throw convex_invalid_cursor_error("The listed folder changed.");
 			return result._yay as NonNullable<T["_yay"]>;
 		};
 		const common = { ...streamArgs, ...movedIn, position: start };
@@ -3928,6 +4006,7 @@ export async function files_pending_overlay_list(
 			});
 		} catch (error) {
 			if (error === stopped && failed) return failed;
+			if (live && error instanceof ConvexError && error.data?.reason === "saved_move_view_changed") throw error;
 			// A frame above the cursor changed, or the start did.
 			if (error instanceof ConvexError && error.data?.paginationError === "InvalidCursor")
 				return Result({
@@ -4036,6 +4115,7 @@ export async function files_pending_overlay_list(
 		const runnable = blocking.filter(
 			(stream) =>
 				(!is_migrating(stream) ||
+					(live && view.cohortId === null) ||
 					is_walk(stream) ||
 					!stream.hasRead ||
 					(stream.indexStream ?? stream.savedStream).kind !==
@@ -4056,6 +4136,14 @@ export async function files_pending_overlay_list(
 				}
 				const result = await run(stream);
 				if (result._nay) return result;
+				if (
+					args.expectedRoot &&
+					(result._yay.root?.kind !== args.expectedRoot.kind ||
+						(result._yay.root.kind !== "root" &&
+							args.expectedRoot.kind !== "root" &&
+							result._yay.root.id !== args.expectedRoot.id))
+				)
+					return Result({ _nay: { name: "source_changed", message: "Source folder changed" } });
 				const rootKey = JSON.stringify(result._yay.root);
 				if (root !== null && rootKey !== root)
 					return Result({
@@ -4111,6 +4199,7 @@ export async function files_pending_overlay_list(
 		if (row.denied !== undefined && args.mode === "subtree") denied.push(row.denied);
 		// Two calls read different snapshots, so a moved row can come from two streams. `seen` starts with
 		// the last row of the page before, so a page that ends between two such rows does not repeat it.
+		if (args.mode === "children") childSeek = { key: row.key, inclusive: false };
 		if (row.item && !seen.has(row.item.target.id)) {
 			seen.add(row.item.target.id);
 			items.push(row.match ? { ...row.item, match: row.match } : row.item);
@@ -4123,7 +4212,22 @@ export async function files_pending_overlay_list(
 	const left = streams.filter((stream) =>
 		is_migrating(stream) ? streams.some((other) => pairKey(other) === pairKey(stream) && other.open) : stream.open,
 	);
-	if (view.cohortId || indexView?.cohortId) {
+	if (args.mode === "children" && items.length === 0 && left.length) {
+		// An empty page can still pass hidden rows. Only advance past work every open range decided.
+		let earliest: typeof childSeek | undefined;
+		for (const stream of left) {
+			if (!stream.open) continue;
+			const head = stream.buffer[0];
+			const seek = head
+				? { key: head.key, inclusive: true }
+				: stream.frontier
+					? { key: stream.frontier, inclusive: false }
+					: childSeek;
+			if (!earliest || compare(seek.key, earliest.key) < 0 || (compare(seek.key, earliest.key) === 0 && seek.inclusive))
+				earliest = seek;
+		}
+		if (earliest) childSeek = earliest;
+	} else if (args.mode !== "children" && (live || view.cohortId || indexView?.cohortId)) {
 		for (const stream of left) {
 			if (!is_migrating(stream) || is_walk(stream)) continue;
 			let seek: { key: Value[]; inclusive: boolean } | null = null;
@@ -4156,12 +4260,15 @@ export async function files_pending_overlay_list(
 		finalView.view !== view.view ||
 		finalView.generation !== view.generation ||
 		finalView.migrationDirection !== view.migrationDirection ||
+		(indexView !== null && finalView.searchGeneration !== view.searchGeneration) ||
 		finalIndexView?.cohortId !== indexView?.cohortId ||
 		finalIndexView?.view !== indexView?.view ||
 		finalIndexView?.generation !== indexView?.generation ||
 		finalIndexView?.migrationDirection !== indexView?.migrationDirection
 	)
-		return Result({ _nay: { message: "Listing changed. Start again." } });
+		return Result({
+			_nay: { name: live ? "saved_move_view_changed" : undefined, message: "Listing changed. Start again." },
+		});
 	return Result({
 		_yay: {
 			items,
@@ -4169,21 +4276,31 @@ export async function files_pending_overlay_list(
 			continueCursor:
 				left.length === 0
 					? null
-					: JSON.stringify({
-							scope,
-							root: root ?? "null",
-							lastTargetId: items.at(-1)?.target.id ?? lastTargetId,
-							streams: left.map((stream) => ({
-								kind: stream.kind,
-								movedIn: stream.movedIn,
-								numItems: stream.numItems,
-								position: stream.position,
-								savedStream: stream.savedStream,
-								indexStream: stream.indexStream,
-								seek: stream.seek,
-								parentAlias: stream.parentAlias,
-							})),
-						} satisfies Infer<typeof list_cursor_validator>),
+					: args.mode === "children"
+						? JSON.stringify({
+								scope,
+								root: root ?? "null",
+								lastTargetId: items.at(-1)?.target.id ?? lastTargetId,
+								seek: childSeek,
+							})
+						: JSON.stringify({
+								scope,
+								root: root ?? "null",
+								lastTargetId: items.at(-1)?.target.id ?? lastTargetId,
+								streams: left
+									.filter(
+										(stream, index) => !live || left.findIndex((other) => pairKey(other) === pairKey(stream)) === index,
+									)
+									.map((stream) => ({
+										kind: stream.kind,
+										movedIn: stream.movedIn,
+										numItems: stream.numItems,
+										position: live && !is_walk(stream) ? start : stream.position,
+										...(live ? {} : { savedStream: stream.savedStream, indexStream: stream.indexStream }),
+										seek: stream.seek,
+										parentAlias: stream.parentAlias,
+									})),
+							}),
 			isDone: left.length === 0,
 		},
 	});
@@ -4203,10 +4320,7 @@ const LEVELS_MAX_CALLS = 40;
 
 const levels_cursor_validator = v.object({
 	scope: v.string(),
-	/**
-	 * The Move view of the first page. The page stops when it changed, so it never mixes two views.
-	 */
-	view: v.string(),
+	view: v.optional(v.string()), // Older depth cursors include the selected Move.
 	/**
 	 * One per open folder, the start folder first. A folder stays here until its own rows and every
 	 * folder inside it are done, so each page checks the whole chain.
@@ -4280,7 +4394,7 @@ export async function files_pending_overlay_list_levels(
 	const changed = Result({
 		_nay: { message: "the folder changed since the last page; rerun the original command without --cursor." },
 	});
-	const listingChanged = Result({ _nay: { message: "Listing changed. Start again." } });
+	const listingChanged = Result({ _nay: { message: "Files are moving. Retry this page." } });
 	const view_key = (view: files_saved_placement_View) =>
 		JSON.stringify([view.cohortId, view.view, view.generation, view.migrationDirection]);
 	const read_view = async () => {
@@ -4288,8 +4402,10 @@ export async function files_pending_overlay_list_levels(
 		return view && view_key(view);
 	};
 	const moveView = await ctx.runQuery(internal.files_visible.internal_get_move_view, streamArgs);
-	if (moveView === null)
+	if (moveView === null) {
+		if (args.cursor !== null) return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		return Result({ _yay: { items: [], denied: [], depthCut: false, continueCursor: null, isDone: true } });
+	}
 	const view = view_key(moveView);
 	// While a Move runs, a saved read must name its view. Read the folders in the Move's visible view,
 	// like the walk start of `files_pending_overlay_list`.
@@ -4345,7 +4461,6 @@ export async function files_pending_overlay_list_levels(
 					message: "cursor does not match this listing; rerun the original command to get a fresh Next page cursor.",
 				},
 			});
-		if (raw.view !== view) return changed;
 		// One query per folder, the start folder first. A lost grant on the start folder answers
 		// "Permission denied", like a first page would.
 		for (const [index, frame] of raw.frames.entries()) {
@@ -4390,8 +4505,7 @@ export async function files_pending_overlay_list_levels(
 			cursor: frame.cursor,
 		});
 		calls++;
-		// A frame's cursor holds the view of the call that made it. After a Move changes the view in this
-		// page, the next call refuses that cursor, so say what really happened.
+		// A Move during this page can invalidate a range already read in it.
 		if (listed._nay) return (await read_view()) === view ? listed : listingChanged;
 
 		// Move the phase on before pushing a child, so the parent never lists its last folder again.
@@ -4430,9 +4544,7 @@ export async function files_pending_overlay_list_levels(
 			denied,
 			depthCut,
 			continueCursor:
-				frames.length === 0
-					? null
-					: JSON.stringify({ scope, view, frames } satisfies Infer<typeof levels_cursor_validator>),
+				frames.length === 0 ? null : JSON.stringify({ scope, frames } satisfies Infer<typeof levels_cursor_validator>),
 			isDone: frames.length === 0,
 		},
 	});

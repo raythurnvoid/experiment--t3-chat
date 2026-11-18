@@ -140,7 +140,10 @@ import {
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { plugins_file_grants_db_validate_pair } from "../server/plugins-file-grants.ts";
 import { plugins_service_db_can_write_destination } from "./plugins_service.ts";
-import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
+import {
+	organizations_membership_lifetimes_db_ensure,
+	organizations_membership_lifetimes_db_get,
+} from "./organizations_membership_lifetimes.ts";
 import { plugins_scheduled_access_db_authorize_assignment } from "./plugins_scheduled_access.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
 import { public_api_credentials_db_has_live_account } from "./public_api_credentials_db.ts";
@@ -2119,8 +2122,24 @@ export const get_file_read_membership = internalQuery({
 		if (!membership) return null;
 		const lifetime = await organizations_membership_lifetimes_db_get(ctx, args);
 		if (lifetime && (!lifetime.active || lifetime.membershipId !== membership._id)) return null;
-		// Durable work creates the lifetime. Pin absence too, so later creation ends this cursor.
+		// Exact reads also pin absence. Directory listing initializes old memberships before paging.
 		return { membershipId: membership._id, lifetime: lifetime?.lifetime ?? null };
+	},
+});
+
+// Old active memberships may have no lifetime until their first durable job.
+export const pin_file_list_membership = internalMutation({
+	args: { membershipId: v.id("organizations_workspaces_users") },
+	returns: v.union(v.object({ membershipId: v.id("organizations_workspaces_users"), lifetime: v.number() }), v.null()),
+	handler: async (ctx, { membershipId }) => {
+		const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
+		if (!membership?.active) return null;
+		const current = await organizations_membership_lifetimes_db_get(ctx, membership);
+		if (current && (!current.active || current.membershipId !== membershipId)) return null;
+		return {
+			membershipId,
+			lifetime: current?.lifetime ?? (await organizations_membership_lifetimes_db_ensure(ctx, membership)),
+		};
 	},
 });
 

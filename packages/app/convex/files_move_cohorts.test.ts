@@ -263,7 +263,9 @@ async function expect_slot_copies_view(f: Awaited<ReturnType<typeof native_rotat
 	});
 	const toNormal = ["published", "finishing", "aborting", "complete"];
 	if (slot?.cohortId) {
-		expect(slot.generation, "the active slot and cohort have the same generation").toBe(cohort?.slotGeneration);
+		expect(slot.cohortId).toBe(cohort?._id);
+		expect(slot).not.toHaveProperty("generation");
+		expect(cohort).not.toHaveProperty("slotGeneration");
 		expect({ view: slot.visibleView, direction: slot.migrationDirection }).toEqual({
 			view: cohort?.visibleView,
 			direction: toNormal.includes(cohort!.phase) ? "to_normal" : "to_cohort",

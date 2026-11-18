@@ -365,28 +365,34 @@ describe("download", () => {
 		expect(readFileSync(path.join(f.target, "gone"), "utf8")).toBe("bytes of gone");
 	});
 
-	test("restarts the listing when a move invalidates the cursor", async () => {
+	test("keeps downloaded files and observed failures when continuation becomes unsafe", async () => {
 		const f = await fixture([row("first"), row("second")]);
-		let restarted = false;
+		let invalidated = false;
 		f.remote.api = (route, body, response) => {
-			if (route !== "files/list" || restarted) return false;
+			if (route !== "files/list" || invalidated) return false;
 			if (body.cursor === "moved") {
-				restarted = true;
+				invalidated = true;
 				json(response, { errorCode: "invalid_cursor", message: "List again" }, 400);
-			} else json(response, { items: [row("first")], isDone: false, cursor: "moved" });
+			} else
+				json(response, { items: [row("first"), { ...row("locked"), locked: true }], isDone: false, cursor: "moved" });
 			return true;
 		};
 		const result = await f.start();
-		expect(result.code, result.stderr).toBe(0);
-		expect(JSON.parse(result.stdout)).toMatchObject({ status: "complete", filesSeen: 2 });
+		expect(result.code, result.stderr).toBe(1);
+		expect(JSON.parse(result.stdout)).toMatchObject({ status: "partial", filesSeen: 2, saved: 1, denied: 1 });
+		expect(f.calls.filter((call) => call.route === "files/list").map((call) => call.body.cursor)).toEqual([
+			null,
+			"moved",
+		]);
 		const attempts = readFileSync(JSON.parse(result.stdout).errors, "utf8").trim().split("\n");
 		expect(attempts.map((line) => JSON.parse(line))).toContainEqual(
-			expect.objectContaining({ stage: "files/list", code: "invalid_cursor", retry: true }),
+			expect.objectContaining({ stage: "files/list", code: "invalid_cursor", retry: false }),
 		);
-		expect(f.gets.map((get) => get.id).sort()).toEqual(["first", "second"]);
+		expect(readFileSync(path.join(f.target, "first"), "utf8")).toBe("bytes of first");
+		expect(f.gets.map((get) => get.id)).toEqual(["first"]);
 	});
 
-	test("retries an invalid cursor on the first page", async () => {
+	test("reports an invalid first page without a second scan", async () => {
 		const f = await fixture([row("retry")]);
 		let invalidated = false;
 		f.remote.api = (route, _body, response) => {
@@ -396,10 +402,39 @@ describe("download", () => {
 			return true;
 		};
 		const result = await f.start();
-		expect(result.code, result.stderr).toBe(0);
-		expect(f.calls.filter((call) => call.route === "files/list").map((call) => call.body.cursor)).toEqual([null, null]);
+		expect(result.code, result.stderr).toBe(1);
+		expect(f.calls.filter((call) => call.route === "files/list").map((call) => call.body.cursor)).toEqual([null]);
 		expect(JSON.parse(result.stdout)).not.toHaveProperty("pathsChecked");
-		expect(readFileSync(path.join(f.target, "retry"), "utf8")).toBe("bytes of retry");
+		expect(f.gets).toEqual([]);
+	});
+
+	test("retries a busy listing with the same cursor and records the reason", async () => {
+		const f = await fixture([row("first"), row("second")]);
+		let busy = true;
+		f.remote.api = (route, body, response) => {
+			if (route !== "files/list") return false;
+			if (body.cursor === null) {
+				json(response, { items: [row("first")], isDone: false, cursor: "next" });
+			} else if (busy) {
+				busy = false;
+				json(response, { errorCode: "listing_busy", retryAfterMs: 0 }, 503);
+			} else {
+				json(response, { items: [row("second")], isDone: true, cursor: null });
+			}
+			return true;
+		};
+		const result = await f.start();
+		expect(result.code, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({ saved: 2, retries: 1 });
+		expect(f.calls.filter((call) => call.route === "files/list").map((call) => call.body.cursor)).toEqual([
+			null,
+			"next",
+			"next",
+		]);
+		const attempts = readFileSync(JSON.parse(result.stdout).errors, "utf8").trim().split("\n");
+		expect(attempts.map((line) => JSON.parse(line))).toContainEqual(
+			expect.objectContaining({ stage: "files/list", code: "listing_busy", retry: true }),
+		);
 	});
 
 	test("stops when a new folder replaces the source between stat and the first page", async () => {

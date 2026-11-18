@@ -14,6 +14,7 @@ import {
 } from "../server/files-index.ts";
 import { files_content_heads_db_for_head, files_content_heads_db_flush } from "../server/files-content-heads.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
+import { files_saved_index_run_is_publishing } from "../server/files-saved-index.ts";
 import {
 	files_pending_overlay_db_has_saved_scope_job,
 	files_pending_overlay_db_schedule_saved_scope,
@@ -152,7 +153,7 @@ export const start = internalMutation({
 			generation: 0,
 			nextAttemptAt: Date.now() + RECOVER_MS,
 			scheduledId: null,
-			slotGeneration: null,
+			admitted: false,
 			published: false,
 			aborting: false,
 			error: null,
@@ -413,14 +414,11 @@ async function admit(ctx: MutationCtx, run: Run) {
 		!same_placement(node, run.placement)
 	)
 		return await progress(ctx, run, { phase: "cleanup_candidates", aborting: true, nextPosition: 0 });
-	const generation = (slot?.generation ?? 0) + 1;
 	const fields = {
 		organizationId: run.organizationId,
 		workspaceId: run.workspaceId,
 		cohortId: null,
 		indexRunId: run._id,
-		generation,
-		placementGeneration: slot?.placementGeneration ?? slot?.generation ?? 0,
 		visibleView: "before" as const,
 		migrationDirection: "to_cohort" as const,
 	};
@@ -429,7 +427,7 @@ async function admit(ctx: MutationCtx, run: Run) {
 	await files_saved_placement_db_bump_search_generation(ctx, run);
 	return await progress(ctx, run, {
 		phase: "tag_text",
-		slotGeneration: generation,
+		admitted: true,
 		previousHeadId: state.publishedHeadId,
 		cursor: null,
 	});
@@ -440,7 +438,7 @@ async function slot_for(ctx: MutationCtx, run: Run) {
 		.query("files_move_workspace_slots")
 		.withIndex("by_workspace", (q) => q.eq("organizationId", run.organizationId).eq("workspaceId", run.workspaceId))
 		.unique();
-	if (!slot || !("indexRunId" in slot) || slot.indexRunId !== run._id || slot.generation !== run.slotGeneration)
+	if (!slot || !("indexRunId" in slot) || slot.indexRunId !== run._id)
 		throw should_never_happen("Index publisher lost its workspace slot", { runId: run._id });
 	return slot;
 }
@@ -587,14 +585,13 @@ async function finish(ctx: MutationCtx, run: Run) {
 		.withIndex("by_run", (q) => q.eq("runId", run._id))
 		.unique();
 	if (input) await ctx.db.delete("files_index_inputs", input._id);
-	if (run.slotGeneration !== null) {
+	const publishing = files_saved_index_run_is_publishing(run);
+	if (publishing) {
 		const slot = await slot_for(ctx, run);
 		await ctx.db.replace("files_move_workspace_slots", slot._id, {
 			organizationId: run.organizationId,
 			workspaceId: run.workspaceId,
 			cohortId: null,
-			generation: slot.generation,
-			placementGeneration: slot.placementGeneration ?? slot.generation,
 		});
 		await files_saved_placement_db_bump_search_generation(ctx, run);
 	}
@@ -605,7 +602,7 @@ async function finish(ctx: MutationCtx, run: Run) {
 	});
 	await ctx.db.delete("files_index_runs", run._id);
 	const node = await ctx.db.get("files_nodes", run.fileNodeId);
-	if (node && run.slotGeneration !== null)
+	if (node && publishing)
 		await files_pending_overlay_db_schedule_saved_places(
 			ctx,
 			{
@@ -653,7 +650,8 @@ export const advance = internalMutation({
 			!run.aborting &&
 			(!(await ctx.db.get("files_nodes", run.fileNodeId)) || (!run.published && !(await workspace_live(ctx, run))))
 		) {
-			if (run.slotGeneration !== null) {
+			const publishing = files_saved_index_run_is_publishing(run);
+			if (publishing) {
 				const slot = await slot_for(ctx, run);
 				await ctx.db.patch("files_move_workspace_slots", slot._id, {
 					visibleView: "before",
@@ -661,7 +659,7 @@ export const advance = internalMutation({
 				});
 			}
 			await progress(ctx, run, {
-				phase: run.slotGeneration === null ? "cleanup_candidates" : "cleanup_text",
+				phase: publishing ? "cleanup_text" : "cleanup_candidates",
 				aborting: true,
 				cursor: null,
 			});

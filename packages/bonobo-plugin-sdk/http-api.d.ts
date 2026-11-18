@@ -1388,6 +1388,15 @@ export type BonoboHttpApi = {
 						retryAfterMs?: undefined;
 					};
 				};
+				503: {
+					headers: {
+						[x: string]: string;
+					};
+					body: {
+						message: string;
+						errorCode: "listing_busy";
+					};
+				};
 				500: {
 					headers: {
 						[x: string]: string;

@@ -2853,10 +2853,6 @@ async function db_end_restore(
 ): Promise<Extract<StepOutcome, { kind: "continue" | "done" }>> {
 	const { run } = args;
 
-	// A Move changes tree paths, so a saved cursor could skip items. Start again from the first root.
-	const { generation } = await files_saved_placement_db_get_view(ctx.db, run);
-	if (generation !== run.ending!.generation) run.ending = { ...run.ending!, rootIndex: 0, cursor: null, generation };
-
 	const parents = new Map<Id<"files_nodes">, Doc<"files_nodes"> | null>();
 	// An item is alone in Trash when its folder is not in the item's own delete.
 	const insert_entry_if_alone = async (node: Doc<"files_nodes">) => {
@@ -3148,7 +3144,6 @@ async function db_stop_run(
 		return;
 	}
 
-	const { generation } = await files_saved_placement_db_get_view(ctx.db, run);
 	await ctx.db.patch("files_archive_runs", runId, {
 		ending: {
 			status: args.status,
@@ -3156,7 +3151,6 @@ async function db_stop_run(
 			errorCode: args.errorCode,
 			rootIndex: 0,
 			cursor: null,
-			generation,
 		},
 	});
 	const activity = await db_require_activity(ctx, runId);

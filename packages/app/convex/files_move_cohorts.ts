@@ -284,10 +284,8 @@ async function db_begin(
 	}
 	const pins = await files_media_validation_db_capture_versions(ctx, { userId: args.userId, scopes: [args] });
 	const now = Date.now();
-	const generation = (slot?.generation ?? 0) + 1;
 	const cohortId = await ctx.db.insert("files_move_cohorts", {
 		...args,
-		slotGeneration: generation,
 		workId: null,
 		deadlineAt: now + RUN_TIMEOUT_MS,
 		reviewDeadlineAt: now + RUN_TIMEOUT_MS,
@@ -329,7 +327,6 @@ async function db_begin(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		cohortId,
-		generation,
 		visibleView: "before" as const,
 		migrationDirection: "to_cohort" as const,
 	};
@@ -2263,7 +2260,7 @@ async function db_publish(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, o
 			q.eq("organizationId", cohort.organizationId).eq("workspaceId", cohort.workspaceId),
 		)
 		.unique();
-	if (slot?.cohortId !== cohort._id || slot.generation !== cohort.slotGeneration)
+	if (slot?.cohortId !== cohort._id)
 		throw should_never_happen("Move lost its workspace slot", { cohortId: cohort._id });
 	await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after", migrationDirection: "to_normal" });
 	await files_saved_placement_db_bump_search_generation(ctx, cohort);
@@ -2545,7 +2542,6 @@ async function db_release(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">) {
 			organizationId: slot.organizationId,
 			workspaceId: slot.workspaceId,
 			cohortId: null,
-			generation: slot.generation,
 		});
 		await files_saved_placement_db_bump_search_generation(ctx, cohort);
 	}

@@ -7,7 +7,7 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import { access_control_db_ensure_role_assignment, type access_control_Subject } from "../convex/access_control.ts";
 import { insert_installation } from "../convex/files_share_links.setup.test.ts";
 import { grant_plugin_file_access } from "../convex/plugins.setup.test.ts";
-import { test_convex, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
+import { test_convex, test_db_hold_move_slot, test_mocks, test_mocks_fill_db_with } from "../convex/setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import {
 	create_bash_runner,
@@ -657,9 +657,9 @@ describe("a caller who cannot open the root", () => {
 			await drain_scheduled_continuations(owner);
 		};
 		const ctx = {
-			runQuery: (query: FunctionReference<"query">, args: Record<string, unknown>) =>
-				t.action((ctx) => ctx.runQuery(query, args)),
-		} as unknown as Pick<ActionCtx, "runQuery">;
+			runMutation: (fn, args) => t.action((ctx) => ctx.runMutation(fn, args)),
+			runQuery: (fn, args) => t.action((ctx) => ctx.runQuery(fn, args)),
+		} satisfies Pick<ActionCtx, "runQuery" | "runMutation">;
 		const as_user = (userId: Id<"users">) => ({
 			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
@@ -831,14 +831,13 @@ describe("the walk on a real database", () => {
 						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId),
 					)
 					.unique();
-				if (slot) await ctx.db.patch("files_move_workspace_slots", slot._id, { generation: slot.generation + 1 });
-				else
-					await ctx.db.insert("files_move_workspace_slots", {
+				if (slot?.cohortId)
+					await ctx.db.replace("files_move_workspace_slots", slot._id, {
 						organizationId: seeded.organizationId,
 						workspaceId: seeded.workspaceId,
 						cohortId: null,
-						generation: 1,
 					});
+				else await test_db_hold_move_slot(ctx, seeded);
 			});
 		const { ctx, calls } = metered_ctx(t);
 		const as_user = (userId: Id<"users">) => ({
@@ -880,6 +879,35 @@ describe("the walk on a real database", () => {
 			member: as_user(memberId),
 		};
 	}
+	test("a public recursive range checks the boundary again after its grant is lost", async () => {
+		const { t, member, share, unshare } = await seed_team();
+		await share("/docs");
+		await share("/docs/nested/deep.md");
+		let revoked = false;
+		const ctx: Pick<ActionCtx, "runQuery" | "runMutation"> = {
+			runMutation: (fn, args) => t.action((ctx) => ctx.runMutation(fn, args)),
+			runQuery: async (fn, args) => {
+				const frame = (args as { frame?: { treePath: string } }).frame;
+				if (!revoked && frame?.treePath === "/docs/") {
+					revoked = true;
+					await unshare("/docs");
+				}
+				return t.action((ctx) => ctx.runQuery(fn, args));
+			},
+		};
+		await expect(
+			files_saved_list_page(ctx, {
+				...member,
+				folderPath: "/",
+				minDepth: 1,
+				cursorScope: "list",
+				cursor: null,
+				numItems: 100,
+			}),
+		).rejects.toThrow("The folder changed");
+		expect(revoked).toBe(true);
+	});
+
 	/** 200 files in /docs/many and one open file, each with `topic: atlas`. */
 	async function seed_many() {
 		const atlas = "---\ntopic: atlas\n---\n";
@@ -1201,10 +1229,10 @@ describe("the walk on a real database", () => {
 
 		const moved = await open_nested(owner, false);
 		await bump_move_view();
-		expect(await moved()).toEqual(changed);
+		expect((await moved())._yay?.items[0]?.path).toBe("/docs/nested/s1");
 	}, 120_000);
 
-	test("a depth walk page answers Listing changed when a Move changes the view between two of its listings", async () => {
+	test("a depth walk page asks to retry the same page when Move changes its view during the request", async () => {
 		const { ctx, bump_move_view, owner } = await seed_team();
 		// One page that changes the view right after its `bumpAt`-th view read.
 		const page_with_bump = async (bumpAt: number | null) => {
@@ -1235,7 +1263,7 @@ describe("the walk on a real database", () => {
 		// before the last one ends the last listing, so only the walker's last read sees the change.
 		for (const bumpAt of [3, clean.viewReads - 1])
 			expect((await page_with_bump(bumpAt)).page, `change after view read ${bumpAt}`).toEqual({
-				_nay: { message: "Listing changed. Start again." },
+				_nay: { message: "Files are moving. Retry this page." },
 			});
 	});
 });

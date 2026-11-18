@@ -1,7 +1,7 @@
 import type { Doc, Id } from "../convex/_generated/dataModel.js";
 import type { QueryCtx } from "../convex/_generated/server.js";
 import type { PaginationOptions } from "convex/server";
-import type { files_IndexDirectoryView, files_IndexStream } from "../shared/files.ts";
+import { files_saved_view_key, type files_IndexDirectoryView, type files_IndexStream } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { convex_invalid_cursor_error } from "./convex-utils.ts";
 
@@ -9,6 +9,10 @@ export type files_saved_index_ViewTag = {
 	cohortId: Id<"files_move_cohorts"> | Id<"files_index_runs">;
 	view: "before" | "after";
 };
+
+export function files_saved_index_run_is_publishing(run: Doc<"files_index_runs">) {
+	return run.admitted ?? run.slotGeneration != null;
+}
 
 /**
  * Scope jobs wait until this file's index docs stop changing views.
@@ -19,7 +23,7 @@ export async function files_saved_index_db_is_publishing(db: QueryCtx["db"], nod
 		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
 		.unique();
 	const run = state?.activeRunId ? await db.get("files_index_runs", state.activeRunId) : null;
-	return run !== null && run.slotGeneration !== null;
+	return run !== null && files_saved_index_run_is_publishing(run);
 }
 
 /**
@@ -43,7 +47,7 @@ export async function files_saved_index_db_get_view(
 		return {
 			cohortId: indexSlot.indexRunId,
 			view: indexSlot.visibleView,
-			generation: indexSlot.generation,
+			generation: files_saved_view_key(indexSlot.indexRunId, indexSlot.visibleView, indexSlot.migrationDirection),
 			migrationDirection: indexSlot.migrationDirection,
 		};
 	}
@@ -51,10 +55,10 @@ export async function files_saved_index_db_get_view(
 		return {
 			cohortId: slot.cohortId,
 			view: slot.visibleView,
-			generation: slot.generation,
+			generation: files_saved_view_key(slot.cohortId, slot.visibleView, slot.migrationDirection),
 			migrationDirection: slot.migrationDirection,
 		};
-	return { cohortId: null, view: null, generation: slot?.generation ?? 0, migrationDirection: null };
+	return { cohortId: null, view: null, generation: 0, migrationDirection: null };
 }
 
 /**

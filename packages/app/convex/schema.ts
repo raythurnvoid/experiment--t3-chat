@@ -494,21 +494,21 @@ export const files_index_view_tag_validator = v.object({
 });
 
 export const files_index_stream_validator = v.union(
-	v.object({ kind: v.literal("normal"), generation: v.number() }),
+	v.object({ kind: v.literal("normal"), generation: v.union(v.string(), v.number()) }),
 	v.object({
 		kind: v.literal("cohort"),
 		...files_index_view_tag_validator.fields,
-		generation: v.number(),
+		generation: v.union(v.string(), v.number()),
 	}),
 );
 
 export const files_saved_stream_validator = v.union(
-	v.object({ kind: v.literal("normal"), generation: v.number() }),
+	v.object({ kind: v.literal("normal"), generation: v.union(v.string(), v.number()) }),
 	v.object({
 		kind: v.literal("cohort"),
 		cohortId: v.id("files_move_cohorts"),
 		view: files_move_view_validator,
-		generation: v.number(),
+		generation: v.union(v.string(), v.number()),
 	}),
 );
 
@@ -2464,7 +2464,8 @@ const app_convex_schema = defineSchema({
 		generation: v.number(),
 		nextAttemptAt: v.number(),
 		scheduledId: v.union(v.id("_scheduled_functions"), v.null()),
-		slotGeneration: v.union(v.number(), v.null()),
+		slotGeneration: v.optional(v.union(v.number(), v.null())),
+		admitted: v.optional(v.boolean()),
 		published: v.boolean(),
 		aborting: v.boolean(),
 		error: v.union(v.string(), v.null()),
@@ -2536,8 +2537,7 @@ const app_convex_schema = defineSchema({
 				workspaceId: v.id("organizations_workspaces"),
 				cohortId: v.null(),
 				indexRunId: v.id("files_index_runs"),
-				generation: v.number(),
-				// Index publishing advances generation. File listings keep their Move generation.
+				generation: v.optional(v.number()),
 				placementGeneration: v.optional(v.number()),
 				visibleView: files_move_view_validator,
 				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
@@ -2546,14 +2546,14 @@ const app_convex_schema = defineSchema({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				cohortId: v.null(),
-				generation: v.number(),
+				generation: v.optional(v.number()),
 				placementGeneration: v.optional(v.number()),
 			}),
 			v.object({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				cohortId: v.id("files_move_cohorts"),
-				generation: v.number(),
+				generation: v.optional(v.number()),
 				// Tree pages read this copy, so they do not run again on every Move step.
 				visibleView: files_move_view_validator,
 				migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal")),
@@ -2592,7 +2592,7 @@ const app_convex_schema = defineSchema({
 				planEpoch: v.number(),
 			}),
 		),
-		slotGeneration: v.number(),
+		slotGeneration: v.optional(v.number()),
 		fence: v.number(),
 		attemptFence: v.number(),
 		workId: v.union(vWorkId, v.null()),
@@ -6683,6 +6683,8 @@ const app_convex_schema = defineSchema({
 		fixedDeadline: v.boolean(),
 		outputReviewUntil: v.optional(v.number()),
 		conflictPolicy: files_transfer_conflict_policy_validator,
+		// A folder moved or disappeared before Copy finished listing it.
+		incompleteDiscovery: v.optional(v.literal(true)),
 		step: v.union(
 			v.literal("uploading"),
 			v.literal("select"),
@@ -7229,8 +7231,8 @@ const app_convex_schema = defineSchema({
 		 * Set while a restore or forced archive that ended early gives Trash entries to the items it left
 		 * in Trash, so none of them is missing from the Trash list. It keeps the status and error the job
 		 * reports when that is done. A restore reads each selected root's items of its operation
-		 * (`rootIndex`, and a native page `cursor`), and starts again when a Move changed paths
-		 * (`generation`). A forced archive gives entries inside each folder still in its queue.
+		 * with a native cursor while its running operation blocks Moves. A forced archive gives
+		 * entries inside each folder still in its queue.
 		 */
 		ending: v.optional(
 			v.object({
@@ -7239,7 +7241,7 @@ const app_convex_schema = defineSchema({
 				errorCode: v.string(),
 				rootIndex: v.number(),
 				cursor: v.union(v.string(), v.null()),
-				generation: v.number(),
+				generation: v.optional(v.number()),
 			}),
 		),
 		/**

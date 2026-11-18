@@ -301,6 +301,24 @@ export const files_tree_walk_stack_validator = v.union(
 );
 
 /**
+ * Check boundary permissions again in the range query.
+ */
+export async function files_tree_walk_check_frame(
+	args: Omit<Parameters<typeof files_tree_walk_db_resolve_stack>[0], "top">,
+	frame: files_tree_walk_FrameArgs,
+) {
+	if (frame.treePath === args.start.treePath && frame.scopeNodeId === args.start.scopeNodeId) return;
+	if (
+		!frame.scopeNodeId ||
+		!(await files_tree_walk_db_resolve_stack({
+			...args,
+			top: { nodeId: frame.scopeNodeId, treePath: frame.treePath },
+		}))
+	)
+		throw invalid_cursor();
+}
+
+/**
  * One page of the walk. `rows` and `boundaries` are the streams of one frame (one per saved source
  * and filter); the walk merges them by the full key. Throws an invalid cursor when a frame above
  * the cursor changed.

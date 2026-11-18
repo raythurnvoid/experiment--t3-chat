@@ -14,22 +14,27 @@ import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root" as const;
 
+// The wire field is also read by older open tabs. Active views use their exact owner and read order.
+export function files_saved_view_key(ownerId: string, view: "before" | "after", direction: "to_cohort" | "to_normal") {
+	return `${ownerId}:${view}:${direction}`;
+}
+
 export type files_SavedStream =
-	| { kind: "normal"; generation: number }
+	| { kind: "normal"; generation: string | number }
 	| {
 			kind: "cohort";
 			cohortId: app_convex_Id<"files_move_cohorts">;
 			view: "before" | "after";
-			generation: number;
+			generation: string | number;
 	  };
 
 export type files_IndexStream =
-	| { kind: "normal"; generation: number }
+	| { kind: "normal"; generation: string | number }
 	| {
 			kind: "cohort";
 			cohortId: app_convex_Id<"files_move_cohorts"> | app_convex_Id<"files_index_runs">;
 			view: "before" | "after";
-			generation: number;
+			generation: string | number;
 	  };
 
 export type files_DirectoryView = {
