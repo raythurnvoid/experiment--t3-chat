@@ -7113,7 +7113,6 @@ describe("files upload-urls", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				cohortId: null,
-				generation: 1,
 			}),
 		);
 

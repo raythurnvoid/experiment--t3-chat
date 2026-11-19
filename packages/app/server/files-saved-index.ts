@@ -10,10 +10,6 @@ export type files_saved_index_ViewTag = {
 	view: "before" | "after";
 };
 
-export function files_saved_index_run_is_publishing(run: Doc<"files_index_runs">) {
-	return run.admitted ?? run.slotGeneration != null;
-}
-
 /**
  * Scope jobs wait until this file's index docs stop changing views.
  */
@@ -23,7 +19,7 @@ export async function files_saved_index_db_is_publishing(db: QueryCtx["db"], nod
 		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
 		.unique();
 	const run = state?.activeRunId ? await db.get("files_index_runs", state.activeRunId) : null;
-	return run !== null && files_saved_index_run_is_publishing(run);
+	return run?.admitted ?? false;
 }
 
 /**
@@ -58,7 +54,7 @@ export async function files_saved_index_db_get_view(
 			generation: files_saved_view_key(slot.cohortId, slot.visibleView, slot.migrationDirection),
 			migrationDirection: slot.migrationDirection,
 		};
-	return { cohortId: null, view: null, generation: 0, migrationDirection: null };
+	return { cohortId: null, view: null, generation: 0 as const, migrationDirection: null };
 }
 
 /**

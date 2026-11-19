@@ -453,7 +453,7 @@ describe("files_pending_overlay flush", () => {
 		).toMatchObject({ entry: { path: "/notes.md" }, canAccept: false, moveDestinationUnreadable: true });
 	});
 
-	test("a moved-in folder's next page shows nothing once its destination is unreadable", async () => {
+	test("a moved-in folder's next page stops when its destination is unreadable", async () => {
 		const f = await fixture();
 		const team = await f.saved(null, "team", "folder");
 		const proj = await f.saved(null, "proj", "folder");
@@ -466,7 +466,9 @@ describe("files_pending_overlay flush", () => {
 		// The cursor keeps the moved-in folder's stream open. The path does not change, so only the
 		// access check on the next page stops it.
 		await f.restrict(team);
-		expect((await f.v_find({ kind: "file", cursor: first.cursor })).paths).toEqual([]);
+		await expect(f.v_find({ kind: "file", cursor: first.cursor })).rejects.toThrow(
+			"The open folder changed since the last page.",
+		);
 	});
 
 	test.each([
@@ -1891,7 +1893,6 @@ describe("files_nodes restricted scopes", () => {
 				organizationId: f.u.organizationId,
 				workspaceId: f.u.workspaceId,
 				cohortId: null,
-				generation: 0,
 			}),
 		);
 		expect(await scope_differences(f)).toEqual({ differences: [], busyWorkspaceIds: [] });
@@ -1976,7 +1977,6 @@ describe("files_nodes restricted scopes", () => {
 				organizationId: slot.organizationId,
 				workspaceId: slot.workspaceId,
 				cohortId: null,
-				generation: slot.generation,
 			});
 			await ctx.db.patch("organizations_workspaces", f.u.workspaceId, { pluginDataPurgeStartedAt: Date.now() });
 		});

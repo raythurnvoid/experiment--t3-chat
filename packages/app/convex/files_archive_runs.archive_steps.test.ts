@@ -655,7 +655,6 @@ describe("a step that keeps failing", () => {
 				organizationId: slot.organizationId,
 				workspaceId: slot.workspaceId,
 				cohortId: null,
-				generation: slot.generation,
 			});
 		});
 		expect((await run_to_end(f, job)).activity.status).toBe("succeeded");

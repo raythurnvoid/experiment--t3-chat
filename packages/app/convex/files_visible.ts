@@ -588,7 +588,7 @@ async function db_stream_open(ctx: QueryCtx, args: StreamOpenArgs & { readLimit?
 const move_view_validator = v.object({
 	cohortId: v.union(v.id("files_move_cohorts"), v.null()),
 	view: v.union(v.literal("before"), v.literal("after"), v.null()),
-	generation: v.union(v.string(), v.number()),
+	generation: v.union(v.string(), v.literal(0)),
 	searchGeneration: v.number(),
 	migrationDirection: v.union(v.literal("to_cohort"), v.literal("to_normal"), v.null()),
 });

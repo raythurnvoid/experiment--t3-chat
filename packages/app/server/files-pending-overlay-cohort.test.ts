@@ -283,7 +283,6 @@ describe("Move owner views", () => {
 				organizationId: slot.organizationId,
 				workspaceId: slot.workspaceId,
 				cohortId: null,
-				generation: slot.generation,
 			});
 		});
 		const scheduled = () => f.t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());

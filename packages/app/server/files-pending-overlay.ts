@@ -3440,12 +3440,12 @@ export async function files_pending_overlay_db_can_join_step(ctx: MutationCtx, l
 // The cursors below use Convex validators, not zod. This module is on the file open path, and
 // loading zod there made each file open slower. See "External data validation" in AGENTS.md.
 const saved_source_validator = v.union(
-	v.object({ kind: v.literal("normal"), generation: v.union(v.string(), v.number()) }),
+	v.object({ kind: v.literal("normal"), generation: v.union(v.string(), v.literal(0)) }),
 	v.object({
 		kind: v.literal("cohort"),
 		cohortId: v.string(),
 		view: v.union(v.literal("before"), v.literal("after")),
-		generation: v.union(v.string(), v.number()),
+		generation: v.union(v.string(), v.literal(0)),
 	}),
 );
 
@@ -4320,7 +4320,6 @@ const LEVELS_MAX_CALLS = 40;
 
 const levels_cursor_validator = v.object({
 	scope: v.string(),
-	view: v.optional(v.string()), // Older depth cursors include the selected Move.
 	/**
 	 * One per open folder, the start folder first. A folder stays here until its own rows and every
 	 * folder inside it are done, so each page checks the whole chain.

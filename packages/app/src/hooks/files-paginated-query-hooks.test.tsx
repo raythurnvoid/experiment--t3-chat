@@ -272,7 +272,7 @@ describe("useFilesPaginatedQuery", () => {
 			const nextArgs: Args =
 				reason === "saved_search_view_changed"
 					? { ...args, searchGeneration: 1 }
-					: { ...args, savedStream: { kind: "normal", generation: 1 } };
+					: { ...args, savedStream: { kind: "normal", generation: "move:before:to_cohort" } };
 			hook.rerender({ args: nextArgs, query });
 			act(() => retainedLoadMore(2));
 			expect(watches.size, "a retained callback cannot append an old cursor while new args load").toBe(2);
@@ -296,7 +296,7 @@ describe("useFilesPaginatedQuery", () => {
 		act(() => retainedLoadMore(2));
 		expect(hook.result.current).toMatchObject({ results: [], status: "LoadingMore", isLoading: true });
 		expect(watches.size, "a later view error waits without another page or session").toBe(2);
-		hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation: 1 } }, query });
+		hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation: "move:before:to_cohort" } }, query });
 		const fresh = activeWatches()[0]!;
 		answer(fresh, page(["b", "c"], true, ""));
 		expect(hook.result.current.results).toEqual([{ name: "b" }, { name: "c" }]);
@@ -321,7 +321,7 @@ describe("useFilesPaginatedQuery", () => {
 		expect(watches.size, "a split view error creates no retry session").toBe(3);
 		expect(listeners.get(parent.key)?.size, "a failed split never replaces its parent").toBeGreaterThan(0);
 		expect(hook.result.current).toMatchObject({ results: [], isLoading: true });
-		hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation: 1 } }, query });
+		hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation: "move:before:to_cohort" } }, query });
 		expect(activeWatches()).toHaveLength(1);
 		answer(activeWatches()[0]!, page(["new"], true, ""));
 		expect(hook.result.current.results).toEqual([{ name: "new" }]);
@@ -518,19 +518,17 @@ describe("useFilesPaginatedQuery", () => {
 		expect(ids.filter((id) => id >= 0)).toHaveLength(1);
 	});
 
-	test("releases old Move generations before the default cache timeout", () => {
+	test("releases old Move views before the default cache timeout", () => {
 		const hook = renderHook(
 			(props: { args: Args }) => useFilesPaginatedQuery(query, props.args, { initialNumItems: 2 }),
 			{ wrapper: CachingWrapper, initialProps: { args } },
 		);
 		let previous = activeWatches()[0]!;
 		answer(previous, page(["generation-0"], true, ""));
-		for (const generation of [1, 2]) {
+		for (const generation of ["move:before:to_cohort", "move:after:to_normal"]) {
 			answer(previous, changedView());
 			hook.rerender({ args: { ...args, savedStream: { kind: "normal", generation } } });
-			expect(listeners.get(previous.key)?.size, "an old Move generation has no listener before the cache timeout").toBe(
-				0,
-			);
+			expect(listeners.get(previous.key)?.size, "an old Move view has no listener before the cache timeout").toBe(0);
 			previous = activeWatches()[0]!;
 			answer(previous, page([`generation-${generation}`], true, ""));
 			expect(hook.result.current.results).toEqual([{ name: `generation-${generation}` }]);

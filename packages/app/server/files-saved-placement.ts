@@ -36,7 +36,7 @@ export async function files_saved_placement_db_get_view(
 		return {
 			cohortId: null,
 			view: null,
-			generation: 0,
+			generation: 0 as const,
 			migrationDirection: null,
 		};
 	const slot = await db
@@ -47,7 +47,7 @@ export async function files_saved_placement_db_get_view(
 		return {
 			cohortId: null,
 			view: null,
-			generation: 0,
+			generation: 0 as const,
 			migrationDirection: null,
 		};
 	// Every Move step patches the cohort. Read the slot's copy, so open trees do not run again per step.

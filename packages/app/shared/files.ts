@@ -20,21 +20,21 @@ export function files_saved_view_key(ownerId: string, view: "before" | "after", 
 }
 
 export type files_SavedStream =
-	| { kind: "normal"; generation: string | number }
+	| { kind: "normal"; generation: string | 0 }
 	| {
 			kind: "cohort";
 			cohortId: app_convex_Id<"files_move_cohorts">;
 			view: "before" | "after";
-			generation: string | number;
+			generation: string | 0;
 	  };
 
 export type files_IndexStream =
-	| { kind: "normal"; generation: string | number }
+	| { kind: "normal"; generation: string | 0 }
 	| {
 			kind: "cohort";
 			cohortId: app_convex_Id<"files_move_cohorts"> | app_convex_Id<"files_index_runs">;
 			view: "before" | "after";
-			generation: string | number;
+			generation: string | 0;
 	  };
 
 export type files_DirectoryView = {

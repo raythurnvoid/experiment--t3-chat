@@ -316,7 +316,7 @@ describe("files_nodes.purge_nodes", () => {
 				generation: 0,
 				nextAttemptAt: 0,
 				scheduledId: null,
-				slotGeneration: null,
+				admitted: false,
 				published: false,
 				aborting: false,
 				error: null,

@@ -57,7 +57,6 @@ async function release(f: Fixture) {
 			organizationId: slot.organizationId,
 			workspaceId: slot.workspaceId,
 			cohortId: null,
-			generation: slot.generation,
 		});
 		await ctx.db.patch("files_move_cohorts", f.cohortId, { phase: "complete", workPhase: "complete" });
 	});

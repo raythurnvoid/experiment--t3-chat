@@ -853,7 +853,6 @@ describe("Move write reservations", () => {
 				organizationId: slot.organizationId,
 				workspaceId: slot.workspaceId,
 				cohortId: null,
-				generation: slot.generation,
 			});
 			await ctx.db.patch("files_nodes", f.nodeId, { moveCohortId: undefined });
 		});
@@ -1135,7 +1134,6 @@ describe("Move write reservations", () => {
 				organizationId: slot!.organizationId,
 				workspaceId: slot!.workspaceId,
 				cohortId: null,
-				generation: slot!.generation,
 			});
 		});
 		await sweep();
@@ -1427,7 +1425,6 @@ describe("Move write reservations", () => {
 				organizationId: slot!.organizationId,
 				workspaceId: slot!.workspaceId,
 				cohortId: null,
-				generation: slot!.generation,
 			});
 		});
 		await f.t.run(async (ctx) => {

@@ -83,7 +83,7 @@ describe("tree page read budgets", () => {
 		const split = vi.spyOn(treeDb, "files_tree_db_page_needs_split");
 		let view: "before" | "after" | null = null;
 		let cohortId: Id<"files_move_cohorts"> | null = null;
-		let generation: number | string = 0;
+		let generation: 0 | string = 0;
 		const check = async (
 			field: "tree" | "name" | "metadata.status" | "shared" | "roots",
 			stream: "normal" | "cohort",

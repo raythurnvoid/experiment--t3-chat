@@ -348,7 +348,7 @@ describe("useFilesSortedChildren", () => {
 
 	test("merges matching directory views and holds rows until publication reaches every stream", () => {
 		const cohortId = "cohort_1" as app_convex_Id<"files_move_cohorts">;
-		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 1 };
+		sorted.view = { cohortId, view: "before", generation: "cohort_1:before:to_cohort", searchGeneration: 1 };
 		const before = { cohortId, view: "before" } as const;
 		const after = { cohortId, view: "after" } as const;
 		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
@@ -367,7 +367,7 @@ describe("useFilesSortedChildren", () => {
 		expect(result.current.rows?.map((row) => row.name)).toEqual(["a.md", "b.md"]);
 		act(() => {
 			sorted.directoryViews.set(afterKey, before);
-			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 2 };
+			sorted.view = { cohortId, view: "after", generation: "cohort_1:after:to_normal", searchGeneration: 2 };
 			notify_sorted();
 		});
 		expect(
@@ -390,7 +390,7 @@ describe("useFilesSortedChildren", () => {
 		sorted.view =
 			initialView === null
 				? { cohortId: null, view: null, generation: 0, searchGeneration: 0 }
-				: { ...initialView, generation: 0, searchGeneration: 0 };
+				: { ...initialView, generation: `cohort_1:${initialView.view}`, searchGeneration: 0 };
 		const fixture = { kind: "file", segment: "value", field: "name", direction: "asc" } as const;
 		const rows = file_names(150).map((name) => saved_row({ kind: "file", name }));
 		sorted.rows.set(sorted_fixture_key({ ...fixture, directoryView: initialView }), rows);
@@ -404,8 +404,8 @@ describe("useFilesSortedChildren", () => {
 		act(() => {
 			sorted.view =
 				nextView === null
-					? { cohortId: null, view: null, generation: 1, searchGeneration: 1 }
-					: { ...nextView, generation: 1, searchGeneration: 1 };
+					? { cohortId: null, view: null, generation: 0, searchGeneration: 1 }
+					: { ...nextView, generation: `cohort_1:${nextView.view}`, searchGeneration: 1 };
 			notify_sorted();
 		});
 		expect(result.current.rows, "Show more keeps all loaded rows while the Move pages refill").toHaveLength(150);
@@ -940,13 +940,18 @@ describe("useFilesSearchSaved", () => {
 
 	test("content search follows index publication while name search keeps the tree view", () => {
 		const cohortId = "index_search" as app_convex_Id<"files_index_runs">;
-		sorted.indexView = { cohortId, view: "before", generation: 3, searchGeneration: 6 };
+		const before = "index_search:before:to_cohort";
+		const after = "index_search:after:to_normal";
+		sorted.indexView = { cohortId, view: "before", generation: before, searchGeneration: 6 };
 		const clause = { kind: "content", text: "plan" };
 		for (const view of ["before", "after"] as const)
-			saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view, generation: 3 }]), {
-				results: [saved_match(view === "before" ? "/old.md" : "/new.md")],
-				status: "Exhausted",
-			});
+			saved.answers.set(
+				JSON.stringify([clause, { kind: "cohort", cohortId, view, generation: view === "before" ? before : after }]),
+				{
+					results: [saved_match(view === "before" ? "/old.md" : "/new.md")],
+					status: "Exhausted",
+				},
+			);
 		const { result } = render_search("plan");
 		expect(saved.argsSeen.filter((args) => args.clause.kind === "name").map((args) => args.savedStream)).toEqual([
 			{ kind: "normal", generation: 0 },
@@ -959,7 +964,7 @@ describe("useFilesSearchSaved", () => {
 			status: "done",
 		});
 		act(() => {
-			sorted.indexView = { cohortId, view: "after", generation: 3, searchGeneration: 7 };
+			sorted.indexView = { cohortId, view: "after", generation: after, searchGeneration: 7 };
 			notify_sorted();
 		});
 		expect(result.current.contents).toMatchObject({ rows: [{ path: "/new.md" }], status: "done" });
@@ -967,13 +972,15 @@ describe("useFilesSearchSaved", () => {
 
 	test("keeps selected saved matches and restarts search at publication", () => {
 		const cohortId = "cohort_search" as app_convex_Id<"files_move_cohorts">;
-		sorted.view = { cohortId, view: "before", generation: 1, searchGeneration: 4 };
+		const before = "cohort_search:before:to_cohort";
+		const after = "cohort_search:after:to_normal";
+		sorted.view = { cohortId, view: "before", generation: before, searchGeneration: 4 };
 		const clause = { kind: "name", text: "plan" };
-		saved.answers.set(JSON.stringify([clause, { kind: "normal", generation: 1 }]), {
+		saved.answers.set(JSON.stringify([clause, { kind: "normal", generation: before }]), {
 			results: [saved_match("/normal-plan.md")],
 			status: "Exhausted",
 		});
-		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "before", generation: 1 }]), {
+		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "before", generation: before }]), {
 			results: [saved_match("/old-plan.md")],
 			status: "Exhausted",
 		});
@@ -982,18 +989,18 @@ describe("useFilesSearchSaved", () => {
 			result.current.names.rows.map((row) => row.path),
 			"selected saved matches remain visible during a linked move",
 		).toEqual(["/normal-plan.md", "/old-plan.md"]);
-		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "after", generation: 2 }]), {
+		saved.answers.set(JSON.stringify([clause, { kind: "cohort", cohortId, view: "after", generation: after }]), {
 			results: [saved_match("/new-plan.md")],
 			status: "Exhausted",
 		});
 		act(() => {
-			sorted.view = { cohortId, view: "after", generation: 2, searchGeneration: 5 };
+			sorted.view = { cohortId, view: "after", generation: after, searchGeneration: 5 };
 			notify_sorted();
 		});
 		expect(result.current.names.rows.map((row) => row.path)).toEqual(["/new-plan.md"]);
 		expect(saved.argsSeen.at(-1)).toMatchObject({
 			searchGeneration: 5,
-			savedStream: { kind: "cohort", view: "after", generation: 2 },
+			savedStream: { kind: "cohort", view: "after", generation: after },
 		});
 	});
 

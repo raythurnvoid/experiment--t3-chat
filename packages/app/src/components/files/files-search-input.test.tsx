@@ -26,8 +26,8 @@ vi.mock("convex/react", async (importOriginal) => ({
 				: getFunctionName(query) === "files_tree:get_workspace_move_view" ||
 					  getFunctionName(query) === "files_metadata:get_workspace_index_view"
 					? test_catalog.cohortKeys
-						? { generation: 1, cohortId: "cohort_1", view: "after", searchGeneration: 1 }
-						: { generation: 1, cohortId: null, view: null, searchGeneration: 1 }
+						? { generation: "cohort_1:after:to_normal", cohortId: "cohort_1", view: "after", searchGeneration: 1 }
+						: { generation: 0, cohortId: null, view: null, searchGeneration: 1 }
 					: test_catalog.loading.has(args.fieldPath!)
 						? undefined
 						: test_catalog_field(args.fieldPath!),
@@ -439,7 +439,7 @@ describe("FilesSearchInput", () => {
 				membershipId: "test-membership",
 				folderPath: "/",
 				prefix: "metadata.STA",
-				savedStream: { kind: "normal", generation: 1 },
+				savedStream: { kind: "normal", generation: 0 },
 			});
 
 			// Text that starts a namespace name asks the whole namespace.

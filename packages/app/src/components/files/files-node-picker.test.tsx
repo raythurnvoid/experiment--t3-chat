@@ -38,7 +38,7 @@ Element.prototype.scrollIntoView = vi.fn();
 
 const MEMBERSHIP_ID = "membership_1";
 const EMPTY_PAGE = { page: [], isDone: true, continueCursor: "" };
-const NORMAL_STREAM: files_SavedStream = { kind: "normal", generation: 1 };
+const NORMAL_STREAM: files_SavedStream = { kind: "normal", generation: 0 };
 
 const results = new Map<string, unknown>();
 const listeners = new Map<string, Set<() => void>>();
@@ -164,7 +164,7 @@ function set_move_view(cohortId: string | null) {
 	results.set(
 		watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
 		{
-			generation: 1,
+			generation: cohortId === null ? 0 : `${cohortId}:after:to_normal`,
 			searchGeneration: 1,
 			cohortId,
 			view: cohortId === null ? null : "after",
@@ -376,13 +376,16 @@ describe("FilesNodePicker", () => {
 				paginationOpts: { cursor: null },
 			});
 		const row = (path: string) => ({ kind: "file", nodeId: path, path, contentType: "text/markdown" });
-		results.set(search_key(NORMAL_STREAM), { ...EMPTY_PAGE, page: [row("/notes.md")] });
+		results.set(search_key({ kind: "normal", generation: "cohort_1:after:to_normal" }), {
+			...EMPTY_PAGE,
+			page: [row("/notes.md")],
+		});
 		results.set(
 			search_key({
 				kind: "cohort",
 				cohortId: "cohort_1" as app_convex_Id<"files_move_cohorts">,
 				view: "after",
-				generation: 1,
+				generation: "cohort_1:after:to_normal",
 			}),
 			{
 				...EMPTY_PAGE,
@@ -398,9 +401,10 @@ describe("FilesNodePicker", () => {
 		"searches both saved Move streams in the %s view and pages each one",
 		async (view) => {
 			const folderPath = view === "before" ? "/source" : "/destination";
+			const generation = `cohort_1:${view}:${view === "before" ? "to_cohort" : "to_normal"}`;
 			results.set(
 				watch_key(getFunctionName(app_convex_api.files_tree.get_workspace_move_view), { membershipId: MEMBERSHIP_ID }),
-				{ cohortId: "cohort_1", view, generation: 7, searchGeneration: 11 },
+				{ cohortId: "cohort_1", view, generation, searchGeneration: 11 },
 			);
 			const searchArgs = {
 				membershipId: MEMBERSHIP_ID,
@@ -408,8 +412,8 @@ describe("FilesNodePicker", () => {
 				folderPath,
 				searchGeneration: 11,
 			};
-			const normal = { kind: "normal", generation: 7 };
-			const cohort = { kind: "cohort", cohortId: "cohort_1", view, generation: 7 };
+			const normal = { kind: "normal", generation };
+			const cohort = { kind: "cohort", cohortId: "cohort_1", view, generation };
 			const normalRow = {
 				kind: "file",
 				nodeId: "normal",

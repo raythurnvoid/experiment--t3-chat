@@ -516,7 +516,6 @@ describe("saved placement foundation", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				cohortId: null,
-				generation: 4,
 			}),
 			counterId: await ctx.db.insert("files_move_search_generations", {
 				organizationId: db.organizationId,
@@ -542,7 +541,7 @@ describe("saved placement foundation", () => {
 		if (!before?.cohortId || !before.view) throw new Error("Expected the active saved view");
 		const savedStream =
 			kind === "normal"
-				? { kind, generation: 0 }
+				? { kind, generation: 0 as const }
 				: { kind, cohortId: before.cohortId, view: before.view, generation: before.generation };
 		const args = {
 			membershipId: f.db.membershipId,
@@ -698,7 +697,6 @@ describe("saved placement foundation", () => {
 				organizationId: slot.organizationId,
 				workspaceId: slot.workspaceId,
 				cohortId: null,
-				generation: slot.generation,
 			};
 			expect(validate(validator, active, { db: ctx.db }), "the slot schema accepts the active producer shape").toBe(
 				true,
@@ -708,10 +706,8 @@ describe("saved placement foundation", () => {
 				"the slot schema accepts an idle slot without view fields",
 			).toBe(true);
 			for (const fields of [active, idle])
-				expect(
-					validate(validator, { ...fields, searchGeneration: 1 }, { db: ctx.db }),
-					"the slot schema rejects the old search counter",
-				).toBe(false);
+				for (const field of ["generation", "placementGeneration", "searchGeneration"])
+					expect(validate(validator, { ...fields, [field]: 1 }, { db: ctx.db }), `rejects old ${field}`).toBe(false);
 			const { visibleView: _view, ...missingView } = active;
 			const { migrationDirection: _direction, ...missingDirection } = active;
 			expect(validate(validator, missingView, { db: ctx.db }), "an active slot requires its visible view").toBe(false);

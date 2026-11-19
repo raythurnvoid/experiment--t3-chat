@@ -5449,7 +5449,6 @@ describe("plugins Phase 0", () => {
 					runId: "999999files_transfer_runs" as Id<"files_transfer_runs">,
 					itemId: "999999files_transfer_items" as Id<"files_transfer_items">,
 				},
-				slotGeneration: 1,
 				fence: 1,
 				attemptFence: 1,
 				workId: null,
@@ -5498,7 +5497,6 @@ describe("plugins Phase 0", () => {
 			if (slot)
 				await ctx.db.patch("files_move_workspace_slots", slot._id, {
 					cohortId,
-					generation: 1,
 					visibleView: "after",
 					migrationDirection: "to_normal",
 				});
@@ -5507,7 +5505,6 @@ describe("plugins Phase 0", () => {
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
 					cohortId,
-					generation: 1,
 					visibleView: "after",
 					migrationDirection: "to_normal",
 				});

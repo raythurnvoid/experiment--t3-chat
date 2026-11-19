@@ -14,7 +14,6 @@ import {
 } from "../server/files-index.ts";
 import { files_content_heads_db_for_head, files_content_heads_db_flush } from "../server/files-content-heads.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
-import { files_saved_index_run_is_publishing } from "../server/files-saved-index.ts";
 import {
 	files_pending_overlay_db_has_saved_scope_job,
 	files_pending_overlay_db_schedule_saved_scope,
@@ -585,7 +584,7 @@ async function finish(ctx: MutationCtx, run: Run) {
 		.withIndex("by_run", (q) => q.eq("runId", run._id))
 		.unique();
 	if (input) await ctx.db.delete("files_index_inputs", input._id);
-	const publishing = files_saved_index_run_is_publishing(run);
+	const publishing = run.admitted;
 	if (publishing) {
 		const slot = await slot_for(ctx, run);
 		await ctx.db.replace("files_move_workspace_slots", slot._id, {
@@ -650,7 +649,7 @@ export const advance = internalMutation({
 			!run.aborting &&
 			(!(await ctx.db.get("files_nodes", run.fileNodeId)) || (!run.published && !(await workspace_live(ctx, run))))
 		) {
-			const publishing = files_saved_index_run_is_publishing(run);
+			const publishing = run.admitted;
 			if (publishing) {
 				const slot = await slot_for(ctx, run);
 				await ctx.db.patch("files_move_workspace_slots", slot._id, {

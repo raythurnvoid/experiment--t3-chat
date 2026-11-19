@@ -78,7 +78,6 @@ async function fixture(args?: { staged?: string; unstaged?: string; selected?: "
 			organizationId: slot.organizationId,
 			workspaceId: slot.workspaceId,
 			cohortId: null,
-			generation: slot.generation,
 		});
 		const claims = await ctx.db
 			.query("files_move_slot_claims")
