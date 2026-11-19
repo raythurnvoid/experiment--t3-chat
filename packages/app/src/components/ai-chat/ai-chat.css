@@ -20,7 +20,7 @@
 
 			overscroll-behavior: contain;
 
-			box-shadow: 0 8px 24px oklch(0 0 0 / 0.5);
+			box-shadow: 0 8px 24px oklch(0.3 0.04 55 / 0.225);
 
 			@media (prefers-reduced-motion: no-preference) {
 				transition: translate 200ms ease;
@@ -28,6 +28,10 @@
 				@starting-style {
 					translate: -100% 0;
 				}
+			}
+
+			:where(.dark) & {
+				box-shadow: 0 8px 24px oklch(0 0 0 / 0.5);
 			}
 		}
 	}
@@ -53,7 +57,11 @@
 		inset: 0;
 		z-index: 10;
 
-		background: oklch(0 0 0 / 0.6);
+		background: oklch(0.3 0.04 55 / 0.27);
+
+		:where(.dark) & {
+			background: oklch(0 0 0 / 0.6);
+		}
 	}
 
 	.AiChat-main {

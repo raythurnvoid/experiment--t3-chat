@@ -43,6 +43,8 @@
 		"@convex-dev/rate-limiter": "workspace:*",
 		"@convex-dev/workpool": "^0.4.16",
 		"@floating-ui/dom": "^1.8.0",
+		"@fontsource-variable/cinzel": "^5.3.0",
+		"@fontsource-variable/eb-garamond": "^5.3.0",
 		"@headless-tree/core": "workspace:*",
 		"@headless-tree/react": "workspace:*",
 		"@hello-pangea/dnd": "^18.0.0",

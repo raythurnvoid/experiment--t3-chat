@@ -1,5 +1,5 @@
 import "./file-editor-plain-text.css";
-import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
+import { app_monaco_THEME_NAME } from "@/lib/app-monaco-config.ts";
 import {
 	files_u8_to_array_buffer,
 	files_monaco_execute_edits_with_read_only_fallback,
@@ -1023,7 +1023,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 							<Editor
 								height="100%"
 								language={monacoLanguageId}
-								theme={app_monaco_THEME_NAME_DARK}
+								theme={app_monaco_THEME_NAME}
 								options={editorOptions}
 								onMount={handleOnMount}
 							/>

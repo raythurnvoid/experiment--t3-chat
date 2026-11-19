@@ -284,7 +284,7 @@ vi.mock("@/lib/files-yjs-snapshot.ts", () => ({ files_yjs_preload_snapshot: prel
 // The Properties dialog mounts Monaco editors when it opens. Monaco cannot run in happy-dom, and these
 // tests do not read the editors.
 vi.mock("@monaco-editor/react", () => ({ Editor: () => null }));
-vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME_DARK: "app-dark" }));
+vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME: "app-files-monaco-theme" }));
 
 beforeEach(() => {
 	createNode.mockReset();

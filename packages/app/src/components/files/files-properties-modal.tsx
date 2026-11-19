@@ -30,7 +30,7 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
+import { app_monaco_THEME_NAME } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_format_size } from "@/lib/files.ts";
 import { cn, sx } from "@/lib/utils.ts";
@@ -212,7 +212,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 				height={facts_height(lines.length)}
 				loading={skeleton}
 				language="yaml"
-				theme={app_monaco_THEME_NAME_DARK}
+				theme={app_monaco_THEME_NAME}
 				value={lines.join("\n")}
 				options={FACTS_EDITOR_OPTIONS}
 			/>
@@ -249,7 +249,7 @@ const FilesPropertiesModalLockedFacts = memo(function FilesPropertiesModalLocked
 			<MyModalMonacoEditor
 				height={facts_height(lines.length)}
 				language="yaml"
-				theme={app_monaco_THEME_NAME_DARK}
+				theme={app_monaco_THEME_NAME}
 				value={lines.join("\n")}
 				options={FACTS_EDITOR_OPTIONS}
 			/>
@@ -1094,7 +1094,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 							/>
 						}
 						language="yaml"
-						theme={app_monaco_THEME_NAME_DARK}
+						theme={app_monaco_THEME_NAME}
 						value={metadata.draftYaml}
 						options={editorOptions}
 						onMount={handleOnMount}

@@ -8,7 +8,7 @@
 
 	/* Focus ring for combobox input - matches MyInput focus behavior */
 	.MyComboboxInput:has(.MyInputControl:focus-visible) .MyInputBox {
-		outline: 2px solid var(--color-fg-12);
+		outline: 2px solid var(--color-accent-07);
 	}
 
 	/* Visible invalid state ring - matches MyInput invalid behavior */
@@ -102,21 +102,31 @@
 		}
 
 		&[aria-selected="true"] {
-			background: linear-gradient(var(--color-base-alt-1-08), var(--color-base-alt-1-07));
+			background: linear-gradient(var(--color-base-alt-1-07), var(--color-base-alt-1-08));
 			color: var(--color-fg-11);
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-alt-1-08), var(--color-base-alt-1-07));
+			}
 		}
 
 		&[data-active-item] {
-			background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-09));
+			background: linear-gradient(var(--color-base-alt-1-09), var(--color-base-alt-1-11));
 			color: var(--color-fg-11);
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-09));
+			}
 		}
 
 		&[data-active-item]:active {
-			background: linear-gradient(var(--color-base-alt-1-12), var(--color-base-alt-1-11));
+			background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-12));
 			color: var(--color-fg-12);
-			box-shadow:
-				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
-				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+			box-shadow: var(--app-shadow-pressed-1);
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-alt-1-12), var(--color-base-alt-1-11));
+			}
 		}
 	}
 

@@ -495,9 +495,9 @@ To count landmarks for a whole page, query `"html"` and filter roles — `Access
 
 ## Measure Contrast Yourself When axe Says INCOMPLETE
 
-This app writes colours as `oklch(...)` and paints panel backgrounds with `linear-gradient`. Two consequences:
+This app writes colours as `oklch(...)` and paints panels and controls with `linear-gradient`. Since the Palazzo redesign (2026-11-19), `body` and `.app-marble` surfaces (header, main sidebar) also paint a stone wash gradient over a marble tile. Two consequences:
 
-- axe cannot resolve a gradient background and reports `color-contrast` as `incomplete` ("background color could not be determined"), so those elements are neither pass nor fail until you measure them.
+- axe cannot resolve a gradient or image background and reports `color-contrast` as `incomplete` ("background color could not be determined"), so those elements are neither pass nor fail until you measure them. On a marble surface, measure against its stone colour (`--color-base-1-01` for `body`, `--app-marble-stone` for `.app-marble`): the wash covers 55-62% and the tile is faint.
 - `getComputedStyle(el).color` returns the literal `oklch(...)`, so any `rgba?\(...\)` regex parser returns null. Resolve colours through a 1x1 canvas instead, which accepts every CSS colour syntax.
 
 ```js
@@ -517,6 +517,8 @@ await window.axe.run({ include: [[".Some-selector"]] }, { runOnly: { type: "rule
 ```
 
 Its `passes[0].nodes[0].any[0].data` carries `fgColor`, `bgColor`, `contrastRatio`, `fontSize`, and `expectedContrastRatio`.
+
+To measure a component that is hard to open (the inline AI preview needs a model reply), append a probe element with its classes to `body`, read the computed colours, and remove it. First check that the component's CSS is loaded, by a property it sets (`getComputedStyle(probe).paddingTop`). A route that never imported the component has no such rule, and the probe then measures inherited defaults. Run it in both themes. Seen 2026-11-19.
 
 `Page.captureScreenshot` is not a usable fallback here: it hangs indefinitely whenever the browser window is occluded, even though `evaluate` keeps working.
 

@@ -1304,11 +1304,12 @@ const hostBase = await state.page.evaluate(() =>
 // pass: inFrame.scales === 104 && inFrame.base === hostBase
 ```
 
-Three things that look wrong and are not:
+`mode` is read from the lightness of `--color-base-1-01`, not from the host class. Since 2026-11-19
+(the Palazzo redesign) the `.dark` block swaps every scale, so a member on the light theme gets
+light scales and `light` in every frame.
 
-- The host root says `light` while every frame says `dark`. The app's palette does not swap with the
-  theme yet, so `mode` is read from the lightness of `--color-base-1-01`; a member on "light" still
-  paints dark surfaces and the frame follows the paint.
+Two things that look wrong and are not:
+
 - A frame that has been open for a while can read `scales: 104` from a theme message that arrived
   after init. The count is the same either way; read `base` to know which theme is applied.
 - The host's frame observer watches the root `class` attribute only. Changing a scale value on the host

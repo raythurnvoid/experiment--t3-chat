@@ -292,10 +292,10 @@ same class names the app's theme provider uses). `chitchat.css` reads ten of tho
 `var(--color-<scale>-NN, <fallback>)` and keeps its own literals for the rest.
 
 Since 2026-08-24 `mode` is read from the **surface colour** the host actually paints
-(`--color-base-1-01`), not from the root `.light` / `.dark` class (`plugins-ui-frame.tsx`). The
-app's palette is dark-oriented and the theme provider does not swap it, so a member on "light"
-still sees dark surfaces — and the frame correctly stays `dark` there. A run that expects the frame
-root to say `light` under the host's light theme is reading the old bug, not a regression.
+(`--color-base-1-01`), not from the root `.light` / `.dark` class (`plugins-ui-frame.tsx`). Since
+2026-11-19 (the Palazzo redesign) the `.dark` block in `app.css` swaps every scale, so under the
+host's light theme the frame gets light scales and says `light`. The class and the colour agree
+today; reading the colour keeps the frame right if they ever drift apart.
 
 Check it by reading both sides:
 

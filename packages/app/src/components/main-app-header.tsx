@@ -22,7 +22,7 @@ import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import type { AppElementId } from "@/lib/dom-utils.ts";
+import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -775,7 +775,12 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 		}) ?? false;
 
 	return (
-		<header ref={ref} id={id} className={cn("MainAppHeader" satisfies MainAppHeader_ClassNames, className)} {...rest}>
+		<header
+			ref={ref}
+			id={id}
+			className={cn("MainAppHeader" satisfies MainAppHeader_ClassNames, "app-marble" satisfies AppClassName, className)}
+			{...rest}
+		>
 			<MainAppHeaderOrganizationControls />
 			<div
 				id={"app_main_header_content" satisfies AppElementId}

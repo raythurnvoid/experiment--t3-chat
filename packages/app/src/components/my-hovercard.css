@@ -14,7 +14,7 @@
 	}
 
 	.MyHovercardAction:focus-visible {
-		outline-color: var(--color-fg-12);
+		outline-color: var(--color-accent-07);
 	}
 
 	.MyHovercardAction:hover,
@@ -25,7 +25,7 @@
 
 	/* When the disclosure has focus, show focus styles on the anchor */
 	.MyHovercardAction:has(+ .MyHovercardAction-disclosure:focus-within) {
-		outline-color: var(--color-fg-12);
+		outline-color: var(--color-accent-07);
 		background: var(--color-base-1-06);
 		color: var(--color-fg-11);
 	}
@@ -44,7 +44,7 @@
 		background: var(--color-base-1-04);
 		color: var(--color-fg-11);
 
-		box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+		box-shadow: var(--app-shadow-floating);
 
 		padding: 6px 8px;
 

@@ -1094,7 +1094,9 @@ The base and accent families also have `-alt-` scales. Check `packages/app/src/a
 
 The app theme provider supports `light`, `dark`, and `system` and applies a root `.light` or `.dark` class. For new or edited app-owned component theme behavior, use class-scoped overrides such as nested `.dark &`. Do not add `@media (prefers-color-scheme: dark)` because it ignores an explicit user theme. When touching an existing media-query override, migrate it when that rule is in scope.
 
-The custom numbered palette is dark-oriented and is not swapped by the theme provider. Low `base-1` numbers are deeper surfaces; higher numbers are lighter/elevated surfaces. Foreground scales move from dim to bright. Check existing nearby use before adding a shade.
+The app uses the Palazzo style. The light theme is the default (`:root`), and the dark theme is the `.dark` block. The `.dark` block swaps every step of the numbered palette, and each step keeps its role in both themes: low `base-1` numbers are the page, higher numbers are hover, selected, and lines. Foreground scales move from dim to strong, and fg-11 is the main text. So a component written with the scale needs no theme override. Check existing nearby use before adding a shade.
+
+Write a rule for the light theme first. When a value must differ in the dark theme (a gradient, a bevel line, a shadow color), repeat only that property in a nested `:where(.dark) & { … }` block. Do not add an `--app-*` variable only to switch a value between themes. The one exception is the `--app-shadow-*` tokens: a shadow used by more than one component is a token, and each token is one exact shadow. The Palazzo rules (fonts, rounded corners, gradients, bevels, shadows, marble, ornaments) live in "Palazzo style" in [.agents/skills/ui-design/SKILL.md](.agents/skills/ui-design/SKILL.md).
 
 ### Interaction states and child elements
 

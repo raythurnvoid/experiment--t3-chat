@@ -104,10 +104,10 @@
 		grid-template-rows: auto auto;
 
 		border: 1px solid var(--color-base-1-07);
-		background: linear-gradient(145deg, var(--color-base-1-06), var(--color-base-1-04));
+		background: linear-gradient(145deg, var(--color-base-1-04), var(--color-base-1-06));
 		box-shadow:
-			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 7%, transparent),
-			0 2px 8px color-mix(in oklch, black 18%, transparent);
+			inset 0 1px 0 oklch(1 0 0 / 0.07),
+			0 2px 8px oklch(0.3 0.04 55 / 0.081);
 		color: var(--color-fg-11);
 
 		max-width: min(520px, 100%);
@@ -124,13 +124,28 @@
 		}
 
 		&:has(> .AiChatMessageUser-edit-button:is(:hover, :focus-visible)) {
-			background: linear-gradient(145deg, var(--color-base-1-07), var(--color-base-1-05));
+			background: linear-gradient(145deg, var(--color-base-1-05), var(--color-base-1-07));
 			color: var(--color-fg-11);
+
+			:where(.dark) & {
+				background: linear-gradient(145deg, var(--color-base-1-07), var(--color-base-1-05));
+			}
 		}
 
 		&:has(> .AiChatMessageUser-edit-button:active) {
-			background: linear-gradient(145deg, var(--color-base-1-08), var(--color-base-1-06));
+			background: linear-gradient(145deg, var(--color-base-1-06), var(--color-base-1-08));
 			color: var(--color-fg-12);
+
+			:where(.dark) & {
+				background: linear-gradient(145deg, var(--color-base-1-08), var(--color-base-1-06));
+			}
+		}
+
+		:where(.dark) & {
+			background: linear-gradient(145deg, var(--color-base-1-06), var(--color-base-1-04));
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 7%, transparent),
+				0 2px 8px oklch(0 0 0 / 0.18);
 		}
 	}
 
@@ -160,7 +175,7 @@
 		border-radius: inherit;
 
 		&:focus-visible {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--color-accent-07);
 		}
 
 		.AiChatMessageUser-edit-button-box {
@@ -354,7 +369,7 @@
 
 			&:focus-visible {
 				color: var(--color-fg-09);
-				outline: 2px solid var(--color-fg-12);
+				outline: 2px solid var(--color-accent-07);
 				outline-offset: -2px;
 			}
 
@@ -535,10 +550,14 @@
 		border-color: var(--color-base-alt-1-06);
 		border-radius: 8px;
 		background: var(--color-base-alt-1-02);
-		box-shadow: inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+		box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.05);
 		color: var(--color-fg-11);
 
 		white-space: pre;
+
+		:where(.dark) & {
+			box-shadow: inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+		}
 	}
 	/* #endregion tool bash */
 

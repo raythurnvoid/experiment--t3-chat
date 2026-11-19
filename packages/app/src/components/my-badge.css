@@ -26,7 +26,7 @@
 			box-shadow 0.15s ease;
 
 		&:focus-visible {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--color-accent-07);
 		}
 
 		&[aria-invalid="true"] {

@@ -227,7 +227,7 @@ vi.mock("@monaco-editor/react", () => ({
 vi.mock("monaco-editor", () => ({ editor: {} }));
 
 // This module configures the real monaco languages at import time, which the stub above cannot serve.
-vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME_DARK: "app-dark" }));
+vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME: "app-files-monaco-theme" }));
 
 vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 	PluginsHeaderBreadcrumb: function PluginsHeaderBreadcrumb() {

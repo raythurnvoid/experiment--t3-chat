@@ -139,12 +139,10 @@ function is_dark_theme_color(color: string) {
  *
  * The values come from the root element, so they are whatever the current theme class resolves them
  * to. **The mode is read from the surface colour (`--color-base-1-01`) and not from that class**, so
- * the two halves of one message can never disagree. Today the app's numbered palette is
- * dark-oriented and the theme provider does not swap it: a member who picks "light" still sees the
- * same dark surfaces. A frame told `mode: "light"` next to those dark values would paint light
- * panels with dark text, then apply the host's dark surface and light text over them, and the page
- * would be unreadable. Reading the mode from the colour keeps the frame matching the app. When the
- * palette starts swapping, the mode follows it with no edit here.
+ * the two halves of one message can never disagree. A frame told `mode: "light"` next to dark values
+ * would paint light panels with dark text, then apply the host's dark surface and light text over
+ * them, and the page would be unreadable. The `.dark` block in `app.css` swaps every scale, so today
+ * the class and the colour agree, and reading the colour keeps that true if they ever drift apart.
  */
 function read_plugin_theme(): PluginsUiFrame_Theme {
 	const styles = getComputedStyle(document.documentElement);

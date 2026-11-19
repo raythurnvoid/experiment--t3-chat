@@ -93,7 +93,7 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
+import { app_monaco_THEME_NAME } from "@/lib/app-monaco-config.ts";
 import { format_datetime } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
@@ -1415,7 +1415,7 @@ const RoutePluginsPluginConfiguration = memo(function RoutePluginsPluginConfigur
 					<Editor
 						height="240px"
 						language="yaml"
-						theme={app_monaco_THEME_NAME_DARK}
+						theme={app_monaco_THEME_NAME}
 						value={configuration.draftYaml}
 						options={editorOptions}
 						onMount={handleOnMount}

@@ -66,7 +66,7 @@
 	/* Keep the look in sync with `my-radio-button.css`. A checkbox button and a radio button sit side by
 	   side, so they must look the same. */
 	.MyCheckboxButton:where(:has(> .MyCheckboxButton-control:focus-visible), .MyCheckboxButton-state-focus-visible) {
-		outline-color: var(--color-fg-12);
+		outline-color: var(--color-accent-07);
 	}
 
 	.MyCheckboxButton.MyButton-variant-ghost_destructive:not(
@@ -179,18 +179,24 @@
 			.MyCheckboxButton-state-checked
 		) {
 		background: linear-gradient(
-			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-04)),
-			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-03))
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-03)),
+			color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-04))
 		);
 		box-shadow:
 			inset 0 0 0 2px var(--color-accent-06),
-			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
-			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-			0 2px 4px black;
+			var(--app-shadow-bevel-1),
+			var(--app-shadow-raised);
 
 		& > .MyCheckboxButton-box {
 			border-color: var(--color-accent-06);
 			background: var(--color-accent-06);
+		}
+
+		:where(.dark) & {
+			background: linear-gradient(
+				color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-04)),
+				color-mix(in oklch, var(--color-accent-07) 10%, var(--color-base-1-03))
+			);
 		}
 	}
 	/* #endregion root */

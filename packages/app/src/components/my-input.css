@@ -112,7 +112,7 @@
 		z-index: 1;
 
 		.MyInput:has(:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible)) & {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--color-accent-07);
 		}
 
 		.MyInput-variant-floating & {

@@ -8,18 +8,27 @@
 		height: 23px;
 		min-width: 73px;
 
-		font-family: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas, "DejaVu Sans Mono", monospace;
-		font-size: 1.125rem;
+		/* A carved inscription: Cinzel capitals, cut into the stone. The shadow above each letter is the
+		   cut edge. */
+		font-family: var(--app-font-display);
+		font-size: 1rem;
 		font-weight: 700;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.06em;
+		white-space: nowrap;
+		text-transform: uppercase;
 
-		color: var(--color-accent-06);
+		color: var(--color-accent-07);
+		text-shadow: 0 -1px 0 oklch(0.3 0.04 55 / 0.203);
 
 		transition: color 0.15s ease;
+
+		:where(.dark) & {
+			text-shadow: 0 -1px 0 oklch(0 0 0 / 0.45);
+		}
 	}
 
 	.Logo:hover {
-		color: var(--color-accent-07);
+		color: var(--color-accent-08);
 	}
 
 	.Logo-mark {

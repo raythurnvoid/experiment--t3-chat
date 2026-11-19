@@ -89,7 +89,7 @@
 		outline: none;
 		user-select: none;
 
-		background: linear-gradient(var(--MySelectItem-background-start), var(--MySelectItem-background-end));
+		background: linear-gradient(var(--MySelectItem-background-end), var(--MySelectItem-background-start));
 
 		transition:
 			--MySelectItem-background-start 0.15s linear,
@@ -120,9 +120,11 @@
 			--MySelectItem-background-end: var(--color-base-alt-1-11);
 
 			color: var(--color-fg-12);
-			box-shadow:
-				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
-				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+			box-shadow: var(--app-shadow-pressed-1);
+		}
+
+		:where(.dark) & {
+			background: linear-gradient(var(--MySelectItem-background-start), var(--MySelectItem-background-end));
 		}
 	}
 	/* #endregion item */

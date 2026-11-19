@@ -172,7 +172,7 @@ vi.mock("@monaco-editor/react", async () => {
 });
 
 // This module configures the real monaco languages at import time, which the stub cannot serve.
-vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME_DARK: "app-dark" }));
+vi.mock("@/lib/app-monaco-config.ts", () => ({ app_monaco_THEME_NAME: "app-files-monaco-theme" }));
 
 vi.mock("@/components/my-tabs.tsx", () => ({
 	MyTabs: function MyTabs(props: { children?: ReactNode }) {

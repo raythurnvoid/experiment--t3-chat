@@ -14,16 +14,27 @@
 		color: var(--color-accent-08);
 	}
 
+	/* Yellow means the job waits for the person. */
 	.ActivityStatusIcon-kind-action_needed {
-		color: var(--app-status-warning);
+		color: oklch(0.62 0.13 80);
+
+		:where(.dark) & {
+			color: oklch(0.87 0.15 95);
+		}
 	}
 
 	.ActivityStatusIcon-kind-succeeded {
 		color: var(--color-green-09);
 	}
 
+	/* Lime means the job finished but left some items out, so it sits between the green of Completed
+	   and the yellow warning. */
 	.ActivityStatusIcon-kind-partial {
-		color: var(--app-status-partial);
+		color: oklch(0.58 0.13 125);
+
+		:where(.dark) & {
+			color: oklch(0.84 0.15 125);
+		}
 	}
 
 	.ActivityStatusIcon-kind-failed {

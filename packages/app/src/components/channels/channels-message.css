@@ -23,7 +23,7 @@
 			background: var(--color-base-1-03);
 		}
 		&:focus-visible {
-			outline: 2px solid var(--color-fg-12);
+			outline: 2px solid var(--color-accent-07);
 			outline-offset: -2px;
 		}
 		&[data-grouped="true"] {

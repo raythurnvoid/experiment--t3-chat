@@ -1,4 +1,6 @@
 import "./app.css";
+import "./app-fonts.css";
+import "@fontsource-variable/cinzel";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import { app_convex } from "./lib/app-convex-client.ts";
@@ -91,7 +93,9 @@ if (url_is_share_path(router.state.location.pathname)) {
 					clerkJSVersion={CLERK_JS_VERSION}
 					afterSignOutUrl="/"
 					// iOS zooms the page in when a focused input has text under 16px, and Clerk's inputs are smaller.
+					// The sign-in card also takes the Palazzo reading face and cut-stone corners.
 					appearance={{
+						variables: { fontFamily: "var(--app-font-sans)", borderRadius: "2px" },
 						elements: { formFieldInput: { fontSize: "16px" }, otpCodeFieldInput: { fontSize: "16px" } },
 					}}
 				>

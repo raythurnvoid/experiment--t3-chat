@@ -9,7 +9,7 @@
 		max-width: none;
 
 		&[data-focus-visible] {
-			outline: 2px solid var(--color-fg-12);
+			outline: 2px solid var(--color-accent-07);
 			outline-offset: 2px;
 		}
 	}
@@ -463,7 +463,7 @@
 		/* Removing a row moves focus here, because the button that had it is gone. Show it, so the
 		   keyboard user can see where they landed. Same outline as the other focused lists. */
 		&:focus-visible {
-			outline: 2px solid var(--color-fg-12);
+			outline: 2px solid var(--color-accent-07);
 			outline-offset: 2px;
 		}
 	}

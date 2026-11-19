@@ -136,7 +136,7 @@
 			}
 
 			&:focus-visible {
-				outline: 2px solid var(--color-fg-12);
+				outline: 2px solid var(--color-accent-07);
 				outline-offset: 2px;
 				border-radius: 4px;
 			}
@@ -169,14 +169,21 @@
 		border: 1px solid var(--color-base-alt-1-08);
 		border-radius: 8px;
 
-		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		background: linear-gradient(var(--color-base-alt-1-04), var(--color-base-alt-1-05));
 		box-shadow:
 			inset 0 1px 2px oklch(1 0 0 / 0.16),
-			0 2px 4px oklch(0 0 0 / 0.28);
+			0 2px 4px oklch(0.3 0.04 55 / 0.126);
 
 		& .ChannelsFeedMessage-preview {
 			-webkit-line-clamp: 2;
 			max-height: 48px;
+		}
+
+		:where(.dark) & {
+			background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+			box-shadow:
+				inset 0 1px 2px oklch(1 0 0 / 0.16),
+				0 2px 4px oklch(0 0 0 / 0.28);
 		}
 	}
 	/* #endregion messages */
@@ -206,8 +213,8 @@
 	/* #endregion skeleton */
 
 	/* #region activity item */
-	/* The cards sit on top of the cool popover surface. So they use the cool alt grays, one step
-	   brighter than the popover, with their own gradient and shadow. */
+	/* The cards sit on top of the popover surface. So they use the alt stone scale, a few
+	   steps above the popover, with their own gradient and shadow. */
 	.AppNotificationsActivityItem {
 		display: flex;
 		flex-direction: column;
@@ -218,10 +225,17 @@
 		border-radius: 8px;
 		overflow: hidden;
 
-		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		background: linear-gradient(var(--color-base-alt-1-04), var(--color-base-alt-1-05));
 		box-shadow:
 			inset 0 1px 2px oklch(1 0 0 / 0.16),
-			0 2px 4px oklch(0 0 0 / 0.28);
+			0 2px 4px oklch(0.3 0.04 55 / 0.126);
+
+		:where(.dark) & {
+			background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+			box-shadow:
+				inset 0 1px 2px oklch(1 0 0 / 0.16),
+				0 2px 4px oklch(0 0 0 / 0.28);
+		}
 	}
 
 	.AppNotificationsActivityItem-header {
@@ -340,7 +354,7 @@
 	}
 
 	.AppNotificationsActivityItem-target:focus-visible {
-		outline: 2px solid var(--color-fg-12);
+		outline: 2px solid var(--color-accent-07);
 		outline-offset: -2px;
 		background: var(--color-base-alt-1-06);
 	}
@@ -374,10 +388,17 @@
 		border-radius: 8px;
 
 		/* Match the activity cards: one step brighter than the popover. */
-		background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+		background: linear-gradient(var(--color-base-alt-1-04), var(--color-base-alt-1-05));
 		box-shadow:
 			inset 0 1px 2px oklch(1 0 0 / 0.16),
-			0 2px 4px oklch(0 0 0 / 0.28);
+			0 2px 4px oklch(0.3 0.04 55 / 0.126);
+
+		:where(.dark) & {
+			background: linear-gradient(var(--color-base-alt-1-05), var(--color-base-alt-1-04));
+			box-shadow:
+				inset 0 1px 2px oklch(1 0 0 / 0.16),
+				0 2px 4px oklch(0 0 0 / 0.28);
+		}
 	}
 
 	/* Center the icon on the title and meta rows, like the status icon of a job card. */

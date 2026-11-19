@@ -45,7 +45,7 @@
 	}
 
 	.MyRadioSurface-state-focus-visible {
-		outline: 2px solid var(--color-fg-12);
+		outline: 2px solid var(--color-accent-07);
 	}
 
 	.MyRadioSurface-state-disabled {

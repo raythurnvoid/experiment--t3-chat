@@ -20,7 +20,7 @@ export type AppElementId =
  * Global class names defined in app.css that can be used across components.
  * Use with `satisfies AppClassName` for type-safe class name usage.
  */
-export type AppClassName = "app-doc" | "app-font-monospace" | "app-scrollable" | "app-scrollable-fits";
+export type AppClassName = "app-doc" | "app-font-monospace" | "app-marble" | "app-scrollable" | "app-scrollable-fits";
 
 export type AppDataTestId = "";
 

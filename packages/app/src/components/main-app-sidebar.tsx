@@ -45,6 +45,7 @@ import {
 } from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
+import type { AppClassName } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
@@ -507,6 +508,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 			id={id}
 			className={cn(
 				"MainAppSidebar" satisfies MainAppSidebar_ClassNames,
+				"app-marble" satisfies AppClassName,
 				mainAppSidebarCollapsed && ("MainAppSidebar-state-collapsed" satisfies MainAppSidebar_ClassNames),
 				className,
 			)}

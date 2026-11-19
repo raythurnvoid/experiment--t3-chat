@@ -65,7 +65,7 @@ import {
 	type app_convex_FunctionReturnType,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
-import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
+import { app_monaco_THEME_NAME } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppAgentSnapshot_CustomAttributes, AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
@@ -1000,7 +1000,7 @@ const RouteApiKeysCreateModalEditor = memo(function RouteApiKeysCreateModalEdito
 					/>
 				}
 				language="json"
-				theme={app_monaco_THEME_NAME_DARK}
+				theme={app_monaco_THEME_NAME}
 				value={text}
 				options={editorOptions}
 				onMount={handleOnMount}

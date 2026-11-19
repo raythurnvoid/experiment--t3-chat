@@ -15,8 +15,15 @@
 		gap: 4px;
 		border-bottom: 1px solid var(--color-fg-02);
 		flex-shrink: 0;
+		/* A panel title, carved in Cinzel capitals like `.MySidebarTitle`. */
 		& h1 {
 			flex: 1;
+
+			font-family: var(--app-font-display);
+			font-size: 1rem;
+			font-weight: 600;
+			letter-spacing: 0.1em;
+			text-transform: uppercase;
 		}
 	}
 	.ChannelsSidebar-content {
@@ -46,15 +53,23 @@
 			color: var(--color-fg-08);
 		}
 		& > a:hover {
-			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+			background: linear-gradient(var(--color-base-1-04), var(--color-base-1-05));
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+			}
 		}
 		& > a[aria-current="page"] {
 			color: var(--color-fg-11);
-			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-06));
 			box-shadow: inset 3px 0 var(--color-accent-07);
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			}
 		}
 		& > a:focus-visible {
-			outline: 2px solid var(--color-fg-12);
+			outline: 2px solid var(--color-accent-07);
 			outline-offset: -2px;
 		}
 	}
@@ -124,15 +139,23 @@
 			overflow: hidden;
 		}
 		& .MySidebarListItemPrimaryActionLink:hover {
-			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+			background: linear-gradient(var(--color-base-1-04), var(--color-base-1-05));
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+			}
 		}
 		& .MySidebarListItemPrimaryActionLink[aria-current="page"] {
 			color: var(--color-fg-11);
-			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-06));
 			box-shadow: inset 3px 0 var(--color-accent-07);
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			}
 		}
 		& .MySidebarListItemPrimaryActionLink:focus-visible {
-			outline: 2px solid var(--color-fg-12);
+			outline: 2px solid var(--color-accent-07);
 			outline-offset: -2px;
 		}
 	}

@@ -1,7 +1,7 @@
 import "./file-editor-diff.css";
 import { Check, Undo2 } from "lucide-react";
 import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
-import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
+import { app_monaco_THEME_NAME } from "@/lib/app-monaco-config.ts";
 import { CoalescedRunner, usePromiseValue } from "@/lib/async.ts";
 import React, { memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -2490,7 +2490,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				<div className={"FileEditorDiff-editor" satisfies FileEditorDiff_ClassNames}>
 					<DiffEditor
 						height="100%"
-						theme={app_monaco_THEME_NAME_DARK}
+						theme={app_monaco_THEME_NAME}
 						onMount={handleOnMount}
 						// `onMount` swaps in our own models, so keep the wrapper's first models empty.
 						original=""
@@ -4093,7 +4093,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 				<div className={"FileEditorDiffNonCollab-editor" satisfies FileEditorDiffNonCollab_ClassNames}>
 					<DiffEditor
 						height="100%"
-						theme={app_monaco_THEME_NAME_DARK}
+						theme={app_monaco_THEME_NAME}
 						onMount={handleOnMount}
 						// `onMount` swaps in our own models, so keep the wrapper's first models empty.
 						original=""

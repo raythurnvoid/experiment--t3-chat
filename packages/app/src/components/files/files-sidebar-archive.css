@@ -21,7 +21,11 @@
 		padding: 4px 8px;
 
 		&[aria-current="page"] {
-			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-06));
+
+			:where(.dark) & {
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			}
 		}
 	}
 

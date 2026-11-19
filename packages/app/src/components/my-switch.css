@@ -39,7 +39,7 @@
 			outline-color 0.15s ease;
 
 		&:has(+ .MySwitchControl:focus-visible) {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--color-accent-07);
 		}
 
 		&:has(+ .MySwitchControl:not(:disabled, [aria-disabled="true"]):hover) {

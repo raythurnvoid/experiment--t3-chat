@@ -3,10 +3,15 @@
 		position: fixed;
 		inset: 0;
 
-		background: black;
+		/* Black in the dark theme, a warm brown veil in the light theme. */
+		background: oklch(0.3 0.04 55 / 0.45);
 
 		filter: opacity(0.8);
 		backdrop-filter: blur(2px);
+
+		:where(.dark) & {
+			background: black;
+		}
 	}
 
 	.MyModalPopover {
@@ -29,19 +34,20 @@
 		border-radius: 12px;
 		border: 1px solid var(--color-base-1-05);
 
-		background: linear-gradient(var(--color-base-1-03), var(--color-base-1-02));
+		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-03));
 		color: var(--color-fg-11);
 
-		box-shadow:
-			inset 0 1px 2px oklch(1 0 0 / 0.2),
-			0 4px 6px oklch(0 0 0 / 0.3),
-			0 8px 10px oklch(0 0 0 / 0.18);
+		box-shadow: var(--app-shadow-popover);
 
 		outline: none;
 
 		/* Paint containment cuts off anything that goes past the dialog edge. So a Monaco editor in a
 		   dialog must be a `MyModalMonacoEditor`, which moves its popups and menus to the top layer. */
 		contain: content;
+
+		:where(.dark) & {
+			background: linear-gradient(var(--color-base-1-03), var(--color-base-1-02));
+		}
 	}
 
 	.MyModalHeader {

@@ -2,7 +2,7 @@
 import EditorWorker from "monaco-editor/editor/editor.worker?worker";
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
-import { app_colors_css_vars } from "@/assets/ts/app-colors-css-vars.ts";
+import { app_colors_css_vars, app_colors_css_vars_dark } from "@/assets/ts/app-colors-css-vars.ts";
 
 // If you later need other languages, add these:
 // import JsonWorker from "monaco-editor/languages/features/json/json.worker?worker";
@@ -114,32 +114,17 @@ function hex_with_alpha(hex: string, alpha01: number) {
 
 type app_monaco_ColorKey = keyof typeof app_colors_css_vars;
 
-const app_monaco_get_color_hex = ((/* iife */) => {
-	function value(key: app_monaco_ColorKey, fallbackHex: string) {
-		return app_colors_css_vars[key]?.hex ?? fallbackHex;
-	}
+/**
+ * Build the Monaco theme from one theme's color map (dark or light).
+ */
+function app_monaco_theme_data(
+	colors: Partial<Record<app_monaco_ColorKey, { hex: string }>>,
+	base: monaco.editor.BuiltinTheme,
+): monaco.editor.IStandaloneThemeData {
+	const app_monaco_get_color_hex = (key: app_monaco_ColorKey, fallbackHex: string) => colors[key]?.hex ?? fallbackHex;
 
-	const cache = new Map<string, string>();
-
-	return function app_monaco_get_color_hex(key: app_monaco_ColorKey, fallbackHex: string) {
-		const cacheKey = `${key}|${fallbackHex}`;
-		const cachedValue = cache.get(cacheKey);
-		if (cachedValue) {
-			return cachedValue;
-		}
-
-		const result = value(key, fallbackHex);
-		cache.set(cacheKey, result);
-		return result;
-	};
-})();
-
-// Monaco requires: /^[a-z0-9\-]+$/i (no underscores)
-export const app_monaco_THEME_NAME_DARK = "app-files-monaco-theme-dark";
-
-try {
-	monaco.editor.defineTheme(app_monaco_THEME_NAME_DARK, {
-		base: "vs-dark",
+	return {
+		base,
 		inherit: true,
 		rules: [],
 		colors: {
@@ -195,11 +180,47 @@ try {
 
 			"editorWhitespace.foreground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.35),
 		},
-	});
-	monaco.editor.setTheme(app_monaco_THEME_NAME_DARK);
-} catch (err) {
-	console.error("app_monaco_register_ai_docs_dark_theme: failed to define/apply theme", err);
+	};
 }
+
+// Monaco requires: /^[a-z0-9\-]+$/i (no underscores)
+export const app_monaco_THEME_NAME = "app-files-monaco-theme";
+
+const app_monaco_apply_theme = ((/* iife */) => {
+	let appliedDark: boolean | null = null;
+
+	/**
+	 * Follow the theme class that `ThemeProvider` (and the early script in index.html) puts on `<html>`.
+	 * All editors share one Monaco theme, so defining it again under the same name and applying it
+	 * repaints every open editor. Its static colors cannot read the CSS `var()` tokens, so they come from
+	 * the generated color maps.
+	 */
+	return function app_monaco_apply_theme() {
+		const dark = document.documentElement.classList.contains("dark");
+		if (dark === appliedDark) {
+			return;
+		}
+
+		appliedDark = dark;
+		try {
+			monaco.editor.defineTheme(
+				app_monaco_THEME_NAME,
+				dark
+					? app_monaco_theme_data(app_colors_css_vars_dark, "vs-dark")
+					: app_monaco_theme_data(app_colors_css_vars, "vs"),
+			);
+			monaco.editor.setTheme(app_monaco_THEME_NAME);
+		} catch (err) {
+			console.error("app_monaco_apply_theme: failed to define/apply theme", err);
+		}
+	};
+})();
+
+app_monaco_apply_theme();
+new MutationObserver(app_monaco_apply_theme).observe(document.documentElement, {
+	attributes: true,
+	attributeFilter: ["class"],
+});
 
 // Ensure @monaco-editor/react and direct `monaco-editor` imports share the exact same Monaco instance.
 // This prevents subtle runtime errors when passing models between the two.

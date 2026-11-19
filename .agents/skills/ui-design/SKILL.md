@@ -22,7 +22,7 @@ Use this scale for new and restyled UI. It is the size in CSS `px`.
 
 - Do not go below 13px. Use 13px only for compact items, not for sentences someone has to read.
 - When text grows, widen its container by the same ratio, so lines that fit on one line still do.
-- Buttons keep the `MyButton` size (`0.875rem`, 14px).
+- Buttons keep the `MyButton` size (`0.875rem`, 14px). The accent and destructive buttons use 13px Cinzel capitals (see "Palazzo style" below).
 - When a value must match another element (a Monaco line height, a placeholder on top of an editor), change both together.
 
 The Properties modal (`packages/app/src/components/files/files-properties-modal.css`) follows this scale. Use it as the reference.
@@ -45,6 +45,97 @@ Choice buttons (`MyRadioButton` and `MyCheckboxButton` with a label and a descri
 - The description is `--color-fg-08` in both states. Do not dim it more, because it would be too hard to read.
 - Use `MyRadioButtonLabel` and `MyRadioButtonDescription`, or `MyCheckboxButtonContent`, `MyCheckboxButtonLabel` and `MyCheckboxButtonDescription`. Do not write a local label class for them.
 - A disabled button dims its label and description with the rest of the button.
+
+## Palazzo style
+
+The app is a mix of two styles. From Palazzo it takes the skin: warm stone colors, cloudy marble,
+Roman capitals, and a few carved ornaments in the frame. From the app's original style it keeps the
+shapes and the depth: rounded corners, gradients, bevel lines, and drop shadows. The user chose
+Palazzo on 2026-11-19, with two themes: the dark theme (palazzo at night) and the light theme
+(palazzo in the sun). The same day the user asked for this mix: the app must not copy the square,
+flat look of the user's other Palazzo apps (Busy Peasy and Only Whispers). The style changes the
+skin, not where things are.
+
+Fonts:
+
+- Reading text is EB Garamond (`--app-font-sans`). Code stays monospace.
+- Cinzel capitals (`--app-font-display`) are only for short labels the app writes: the logo, panel
+  titles ("AI Chat", "Files", "Messages"), main nav items, and the accent and destructive buttons.
+  Plugin page nav labels count as nav items: a manifest caps them at 40 characters, and the nav must
+  look like one list.
+- Never put Cinzel on user content: file names, chat titles, people, organization names, values in a
+  select. Cinzel has only capitals, and canvas text measuring (Pretext) uses the reading face.
+- EB Garamond is drawn 12% larger through `@font-face size-adjust` in `src/app-fonts.css`, so its
+  small letters are as tall as other fonts. Use `size-adjust`, not `font-size-adjust`, because
+  canvas text ignores `font-size-adjust`.
+
+Shapes and states:
+
+- Keep the original rounded corners (for example 6px on rows and buttons, 8px on the organization
+  switcher, 12px on dialogs). Do not make controls square.
+- A raised control or card has a two-step gradient, a light line on top, a dark line at the bottom,
+  and a small drop shadow. A pressed control gets an inner shadow. Hover, selected, and active states
+  are one or two steps higher on the scale, as in the original style.
+- Write each rule for the light theme first, then repeat only the parts that differ in a nested
+  `:where(.dark) & { … }` block at the end of the same rule. Do not add `--app-*` variables that only
+  switch a value between themes. This is a user decision (2026-11-19). The shadow tokens below are the
+  one exception.
+- The light theme mirrors the steps, so the gradient lists them the other way around. Light:
+  `linear-gradient(<lower step>, <higher step>)`, top line `oklch(1 0 0 / N)`, bottom line
+  `oklch(0.55 0.04 60 / N)`, shadows in warm brown `oklch(0.3 0.04 55 / N)`. Dark:
+  `linear-gradient(<higher step>, <lower step>)`, top line
+  `color-mix(in oklch, var(--color-fg-11) N%, transparent)`, bottom line
+  `color-mix(in oklch, var(--color-base-1-02) N%, transparent)`, shadows `oklch(0 0 0 / N)`.
+- Shadows that more than one component uses are `--app-shadow-*` tokens in `app.css`: `bevel-1` to
+  `-3`, `pressed-1` and `-2`, `raised`, `lifted`, `floating`, `popover`, `outline`, `hairline`. Each token
+  holds its light value in `:root` and its dark value in `.dark`, so a rule that uses only tokens needs
+  no dark block. Combine them in one list: `box-shadow: var(--app-shadow-bevel-1), var(--app-shadow-raised);`.
+  Keep rings (`inset 0 0 0 2px var(--color-…)`) first in the list, because the first shadow paints on top.
+- One token is one exact shadow, the same everywhere (a user decision, 2026-11-19). Use a token only
+  where the old value matches it exactly in both themes. A shadow that differs a little gets its own
+  token or stays hardcoded; never round it to the nearest token without asking, because that changes how
+  the app looks. A shadow used by only one component stays in that component. In a numbered family, a
+  higher number is stronger: the bevel's bottom line is darker, and pressed-2 is deeper. Do not name
+  tokens with a rank across different shapes (the user found `shadow-0` to `-5` unclear).
+- Use `:where(.dark) &`, not `.dark &`. `:where()` adds no specificity, so a later variant or state
+  rule (for example a disabled or ghost button) still wins in the dark theme, as it does in the light
+  one. Always nest the dark rule with `&`; never write a separate top-level `:where(.dark) …` rule
+  (a user decision, 2026-11-19). `&` cannot stand for a pseudo-element, so end the selector at the
+  element and nest both parts: `&::before { … }` and `:where(.dark) &::before { … }`.
+- An inline style (for example the toaster's) cannot use the class. Pick the value from
+  `resolved_theme` of `useThemeContext()` instead. A shadow token works inline as it is
+  (`boxShadow: "var(--app-shadow-floating)"`), because the root's `.dark` class switches it.
+- Focus is a 2px accent ring (`--color-accent-07`).
+- Orange means "active" or "press me". Do not use it as decoration.
+- The primary button is a dark orange fill with near-white text, and the destructive button a dark
+  red one. The fills come from the scale: `accent-06` to `-08` and `red-10` to `-12` in the light
+  theme. The scale is mirrored in the dark theme, so the dark block picks lower steps (`accent-04` to
+  `-02`, `red-06` to `-04`) to keep the fill dark. Each state rule (normal, hover, pressed) uses the
+  scale variables directly and has its own dark block, like the other button variants. Do not wrap
+  scale steps in component variables only to save dark blocks. The bevel uses fixed white and black lines.
+- Take every color from the scale (a user decision, 2026-11-19). When a component needs a different
+  step in the dark theme, pick it in a dark block; do not add a fixed color or an `--app-*` color.
+  The user removed `--app-accent-deep` and the other fixed button colors for this reason.
+
+Marble and ornaments:
+
+- The window is marble under a stone wash (the `body` rule in `app.css`). The header and the main
+  sidebar add the `app-marble` class. An owner may set `--app-marble-stone` (base-1-03 by default)
+  and must not set its own `background`. Keep marble off boxes that scroll, because a fixed background repaints on scroll.
+- The app has no ornaments (carved edges, columns, mouldings). An ornament must not take space from
+  content, and the app is dense, so there is no room for one. The user removed a Roman column on
+  the main sidebar's edge and an 8px egg-and-dart moulding under the header for this reason
+  (2026-11-19). The header's bottom edge is only its shadow. This is a product rule.
+
+Themes:
+
+- The light theme is the default. `:root` holds the light theme colors and `.dark` the dark theme
+  ones. The root also gets a `.light` class, but no CSS reads it. Every step keeps its role in both
+  themes: base step 01 is the page, higher base steps are hover, selected, and lines; fg-11 is the
+  main text in both. So a component written with the scale works in both themes without extra rules.
+- fg-02 to fg-04 are also divider lines, so in the light theme they stay a warm line color.
+- After a color change, run `generate:app-colors` (Monaco and plugin frames read the generated map),
+  then run the contrast check: text at least 4.5:1, placeholders at least 3:1, in both themes.
 
 ## Setting text stays fixed
 
@@ -145,3 +236,6 @@ Only the agent chat has a phone layout. Other pages keep the desktop layout on a
 - No sentence is smaller than 15px. No text at all is smaller than 13px.
 - Each block has one bright line at most, usually its label or heading.
 - Paired controls look the same (for example `MyRadioButton` and `MyCheckboxButton`, which must stay in sync).
+- The change looks right in both themes, dark and light.
+- No Cinzel on user content. The rule is written for the light theme, and a `:where(.dark) &` block repeats only what differs, so the light edge stays on top in both themes.
+- A shadow that matches an `--app-shadow-*` token exactly, in both themes, uses the token.

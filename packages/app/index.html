@@ -11,6 +11,17 @@
 				history.replaceState(history.state, "", location.pathname);
 			}
 		</script>
+		<script>
+			// Set the theme class before the first paint, so the light theme never flashes dark. Keep the storage
+			// key and the rule equal to `ThemeProvider` (src/components/theme-provider.tsx), which takes over later.
+			try {
+				const mode = localStorage.getItem("ai-chat-theme-mode");
+				const dark = mode === "dark" || (mode !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+				document.documentElement.classList.add(dark ? "dark" : "light");
+			} catch {
+				// Storage can be blocked. The provider still sets the class after it mounts.
+			}
+		</script>
 		<!-- GitHub Pages cannot set headers. Send only the origin, never a page path, to other sites. -->
 		<meta name="referrer" content="strict-origin-when-cross-origin" />
 		<link rel="icon" type="image/svg+xml" href="/press-logo.svg" />
@@ -24,8 +35,10 @@
 			name="viewport"
 			content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
 		/>
-		<!-- The chat surface color, `--color-base-1-02` in app.css. -->
-		<meta name="theme-color" content="oklch(0.18 0.002 85)" />
+		<!-- The chat surface color, `--color-base-1-02` in app.css, for the dark and the light theme.
+		     `ThemeProvider` writes the chosen theme's color into both tags after it mounts. -->
+		<meta name="theme-color" media="(prefers-color-scheme: dark)" content="oklch(0.18 0.014 60)" />
+		<meta name="theme-color" media="(prefers-color-scheme: light)" content="oklch(0.962 0.011 82)" />
 		<link rel="manifest" href="/manifest.webmanifest" />
 		<title>Bonobo Senate</title>
 	</head>

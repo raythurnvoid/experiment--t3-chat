@@ -162,11 +162,14 @@ function post_ready(nonce: string) {
 //
 // The shadcn aliases in the same file (`--color-accent: var(--accent)`, `--color-border`, …) have
 // no two-digit step and stay out, as they must.
+//
+// Read only the `.dark` block, which holds the dark theme. `:root` holds the light theme with the same
+// names, and the tests below paint the host dark.
 const APP_COLOR_SCALES: Record<string, string> = Object.fromEntries(
 	[
-		...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(
-			/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu,
-		),
+		.../\n\.dark \{\n[\s\S]*?\n\}\n/u
+			.exec(readFileSync(join(process.cwd(), "src", "app.css"), "utf8").replace(/\r\n/g, "\n"))![0]
+			.matchAll(/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu),
 	].map((match) => [match[1], match[2]]),
 );
 
@@ -503,10 +506,9 @@ describe("RoutePluginsPluginPage", () => {
 
 		expect(latest_init_message()?.theme.mode).toBe("dark");
 
-		// The app's numbered palette is dark-oriented and the theme provider does not swap it, so a
-		// member who picks "light" still sees the same dark surfaces — measured in the running app on
-		// 2026-08-24, where the app's own body stayed `oklch(0.14 …)` under `.light`. Nothing the
-		// frame paints with changed, so it hears nothing.
+		// Move only the class and keep the colours. In the app the `.dark` block swaps every scale, so
+		// the two move together, but the frame must follow the colours it paints with. Nothing it
+		// paints with changed, so it hears nothing.
 		//
 		// When the mode came from the class instead, this sent `mode: "light"` beside those dark
 		// values: the frame painted its own light panels and dark text, then read the host's dark

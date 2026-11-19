@@ -155,7 +155,7 @@ vi.mock("monaco-editor", () => ({
 }));
 
 vi.mock("@/lib/app-monaco-config.ts", () => ({
-	app_monaco_THEME_NAME_DARK: "app-files-monaco-theme-dark",
+	app_monaco_THEME_NAME: "app-files-monaco-theme",
 }));
 
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";

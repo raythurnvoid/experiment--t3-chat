@@ -66,6 +66,14 @@ export const ThemeProvider = ({ children }: ThemeProvider_Props) => {
 
 		// Also set data attribute for potential styling
 		root.setAttribute("data-theme", resolved_theme);
+
+		// Paint the browser and installed-app title bar in the page color of the chosen theme. The
+		// `theme-color` tags in index.html choose by the system theme, so without this a user who picked
+		// the other theme would see a bar of the wrong color.
+		const page_color = getComputedStyle(root).getPropertyValue("--color-base-1-02").trim();
+		for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+			meta.setAttribute("content", page_color);
+		}
 	}, [resolved_theme]);
 
 	return <ThemeContext.Provider value={{ mode, resolved_theme, set_mode }}>{children}</ThemeContext.Provider>;

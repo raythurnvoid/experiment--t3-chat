@@ -22,7 +22,7 @@
 			display: contents;
 		}
 		&:focus-within > .MyInputBox {
-			outline-color: var(--color-fg-12);
+			outline-color: var(--color-accent-07);
 		}
 		&[data-formatting="true"] {
 			max-height: max(216px, 35cqh);
