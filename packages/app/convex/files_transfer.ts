@@ -1429,6 +1429,10 @@ async function db_insert_item(
 	});
 }
 
+function copy_admission_paused(kind: Doc<"files_transfer_runs">["kind"]): boolean {
+	return kind === "copy";
+}
+
 async function db_start(
 	ctx: MutationCtx,
 	args: {
@@ -1591,7 +1595,7 @@ async function db_start(
 		return Result({ _yay: { runId: previous._id, activityId: activity._id } });
 	}
 
-	if (args.kind === "copy")
+	if (copy_admission_paused(args.kind))
 		return Result({ _nay: { message: "Copy is briefly paused for an update. Try again in a moment." } });
 
 	if (!args.rename) {
@@ -2719,7 +2723,7 @@ export const retry_remaining = mutation({
 				},
 			});
 
-		if (run.kind === "copy")
+		if (copy_admission_paused(run.kind))
 			return Result({ _nay: { message: "Copy is briefly paused for an update. Try again in a moment." } });
 
 		if (!run.rename && (await files_transfer_status_db_get_current_activity(ctx, run)))
