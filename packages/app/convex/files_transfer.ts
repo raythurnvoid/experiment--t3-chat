@@ -1591,6 +1591,9 @@ async function db_start(
 		return Result({ _yay: { runId: previous._id, activityId: activity._id } });
 	}
 
+	if (args.kind === "copy")
+		return Result({ _nay: { message: "Copy is briefly paused for an update. Try again in a moment." } });
+
 	if (!args.rename) {
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: membership.userId });
 		if (rateLimit) {
@@ -2715,6 +2718,9 @@ export const retry_remaining = mutation({
 					activityId: (await files_transfer_status_db_require_activity(ctx, successor._id))._id,
 				},
 			});
+
+		if (run.kind === "copy")
+			return Result({ _nay: { message: "Copy is briefly paused for an update. Try again in a moment." } });
 
 		if (!run.rename && (await files_transfer_status_db_get_current_activity(ctx, run)))
 			return Result({ _nay: { message: "A transfer is already running in this workspace" } });
