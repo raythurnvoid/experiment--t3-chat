@@ -1044,7 +1044,7 @@ Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is co
 
 # Apartments plugin (`plugins/bonobo-plugin-apartments`)
 
-Draft 0.1.0, published 2026-11-20 (see "Releases"). Repository `bonobo-plugin-apartments`; its README
+Draft 0.1.1, published 2026-11-20 (see "Releases"). Repository `bonobo-plugin-apartments`; its README
 holds the flat file shape for the writer, the views, and the build and release steps. It copies the
 Gallery layout. It pins SDK 0.28.0 from the mirror.
 
@@ -1137,6 +1137,8 @@ argument and answers both screen reads with its summary. The host works with bot
 (`3f2b7907169da0eff78426e9516db69f063327b4`, version doc `hn7zcmsm6n188rqp677bq0x9kn8jkace`) is the
 first plugin to pin it. It was published with a passed review and installed in
 `chitchat-qa/xfer-qa-0914`, where the live checks of `files/query` ran on fake flats in `/qa-flats`.
+Apartments 0.1.1 (`756ea30`, version doc `hn7gtx63md4g3w2z4n6fvdbrsh8jjfd6`) reloads the list on
+every Show click, also when the view did not change. It replaced 0.1.0 in the same workspace.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
