@@ -1,4 +1,9 @@
-import { files_sort_field_is_built_in, files_sort_field_is_valid, files_sort_text_key } from "./files-sort.ts";
+import {
+	files_sort_field_is_built_in,
+	files_sort_field_is_valid,
+	files_sort_text_key,
+	files_sort_value_key,
+} from "./files-sort.ts";
 
 export const files_table_DEFAULT_COLUMNS = ["name", "updated_by", "updated"];
 export const files_table_MAX_COLUMNS = 8;
@@ -10,7 +15,8 @@ export type files_table_Filter =
 	| { kind: "date"; field: "updated" | "created"; op: "on" | "before" | "after"; start: number; end: number }
 	| { kind: "size"; field: "size"; op: "is" | "at_least" | "at_most"; value: number }
 	| { kind: "size"; field: "size"; op: "missing" }
-	| { kind: "text"; field: string; op: "is" | "starts_with"; value: string }
+	| { kind: "text"; field: string; op: "is"; value: string | number | boolean }
+	| { kind: "text"; field: string; op: "starts_with"; value: string }
 	| { kind: "text"; field: string; op: "present" };
 
 export function files_table_column_is_valid(field: string) {
@@ -75,9 +81,13 @@ export function files_table_filter_is_valid(filter: files_table_Filter) {
 				files_sort_field_is_valid(filter.field) &&
 				(filter.op === "present" ||
 					("value" in filter &&
-						filter.value.length >= 1 &&
-						filter.value.length <= 1024 &&
-						(filter.op === "is" || !files_table_starts_with_ends_in_digit(filter.value))))
+						// An "is" filter can also ask for a number or a boolean. A stored number is never NaN
+						// or Infinity, so such a value could match nothing.
+						(typeof filter.value === "string"
+							? filter.value.length >= 1 &&
+								filter.value.length <= 1024 &&
+								(filter.op === "is" || !files_table_starts_with_ends_in_digit(filter.value))
+							: typeof filter.value === "boolean" || Number.isFinite(filter.value))))
 			);
 	}
 }
@@ -118,8 +128,9 @@ export function files_table_filter_takes_name_prefix(filter: { field: string; op
 }
 
 /**
- * Check one row against a filter the same way the index range does: `is` and `starts with` compare
- * the stored sort key (`files_sort_text_key`), so case, accents and leading zeros are ignored.
+ * Check one row against a filter the same way the index range does. `is` compares the stored sort
+ * key (`files_sort_value_key`) with its type, so the number 3 does not match the text "3". For text,
+ * case, accents and leading zeros are ignored. `starts with` matches text values only.
  */
 export function files_table_filter_matches(args: {
 	filter: files_table_Filter;
@@ -160,7 +171,7 @@ export function files_table_filter_matches(args: {
 			if (!("value" in filter)) return scalar !== null;
 			if (scalar === null) return false;
 			return filter.op === "is"
-				? files_sort_text_key(String(scalar)) === files_sort_text_key(filter.value)
-				: files_sort_text_key(String(scalar)).startsWith(files_sort_text_key(filter.value));
+				? files_sort_value_key(scalar) === files_sort_value_key(filter.value)
+				: typeof scalar === "string" && files_sort_text_key(scalar).startsWith(files_sort_text_key(filter.value));
 	}
 }

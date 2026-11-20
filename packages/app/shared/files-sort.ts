@@ -32,7 +32,7 @@ export type files_sort_Sort = files_sort_Clause[];
  * One clause key part. A present one-field sort keeps its full index suffix.
  * Raw index suffixes stay inside server cursors.
  */
-export type files_sort_Key = Array<string | number | null>;
+export type files_sort_Key = Array<string | number | boolean | null>;
 
 export type files_sort_RowKey = {
 	parts: Array<files_sort_Key | null>;
@@ -93,17 +93,35 @@ export function files_sort_text_key(text: string) {
 }
 
 /**
- * The text sort value of one field, from the values the metadata extraction found for it, or null
- * when the field has no plain value (a frontmatter map, an empty list, a tagged value).
+ * The sort key of one custom field value. The key keeps the type of the stored value.
  *
- * Every value sorts as text: a number as `String(value)` and a boolean as `true` or `false`. A list
+ * - A stored number sorts as a number. `-0` becomes `0`, because an index puts `-0` before `0`.
+ * - A stored boolean sorts as a boolean, `false` before `true`.
+ * - Everything else is text and uses `files_sort_text_key`. A quoted `"850"` or `"true"` is text.
+ *
+ * Never read the characters of a string to guess a type. The metadata parsers decide the type.
+ *
+ * A Convex index orders the keys of one field as numbers, then `false`, then `true`, then text.
+ * Descending is the exact reverse.
+ *
+ * The metadata parsers never store NaN or Infinity as a number, so this function does not check
+ * for them.
+ */
+export function files_sort_value_key(value: string | number | boolean) {
+	if (typeof value === "string") {
+		return files_sort_text_key(value);
+	}
+
+	return value === 0 ? 0 : value;
+}
+
+/**
+ * The sort value of one field, from the values the metadata extraction found for it, or null when
+ * the field has no plain value (a frontmatter map, an empty list, a tagged value).
+ *
+ * The key comes from `files_sort_value_key`, so a number and a boolean keep their type. A list
  * uses its first item. The extraction keeps list items in document order, and `maybe_date` values
  * are skipped because they only repeat a string value as a time.
- *
- * TODO: find a real number order. Whole numbers from 0 up sort right. A decimal splits into two
- * digit runs, so `12.5` sorts before `12.25`. A minus sign is only a character, so `-5` sorts
- * before `-10`. The public `/api/v1/files/query` folder mode shows this order to plugins. A real
- * number order needs a number key in the folder table index.
  */
 export function files_sort_value_of(values: files_metadata_Value[]) {
 	const value = values.find((metadataValue) => metadataValue.valueKind !== "maybe_date");
@@ -111,7 +129,7 @@ export function files_sort_value_of(values: files_metadata_Value[]) {
 		return null;
 	}
 
-	return { sortValue: files_sort_text_key(String(value.value)), displayValue: value.value };
+	return { sortValue: files_sort_value_key(value.value), displayValue: value.value };
 }
 
 /**
@@ -127,7 +145,7 @@ export function files_sort_key_of(args: {
 		extension: string | null;
 		contentByteSize: number | null;
 	};
-	metadataParts: ReadonlyMap<string, string | null>;
+	metadataParts: ReadonlyMap<string, string | number | boolean | null>;
 }): files_sort_RowKey {
 	const { sort, facts, metadataParts } = args;
 

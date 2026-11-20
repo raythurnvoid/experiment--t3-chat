@@ -235,7 +235,7 @@ describe("files_table_filter_matches", () => {
 		if (scalar !== "") {
 			expect(
 				files_table_filter_matches({
-					filter: { kind: "text", field: "metadata.status", op: "is", value: String(scalar) },
+					filter: { kind: "text", field: "metadata.status", op: "is", value: scalar },
 					facts: FACTS,
 					scalar,
 				}),

@@ -93,17 +93,17 @@ Committed `field` docs, of both sources, also carry the folder table's sort fiel
 `nodeKind`, `isRestrictedScopeRoot`, `name`, `sortName`, `sortValue`, and `sortDisplayValue` (built
 by `files_metadata_committed_field_sort_fields` in `files_metadata_db.ts`). Value docs and pending docs never carry
 them. `sortValue` uses the short search value through `files_sort_value_of` in `shared/files-sort.ts`: a
-number as `String(value)`, a boolean as `true`/`false`, a list by its first item, `maybe_date`
-skipped. A key with no plain value (a frontmatter map parent) has no `sortValue`, so the file sorts
-with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code points.
+stored number stays a number, a stored boolean stays a boolean, every other value is a text key, a
+list uses its first item, and `maybe_date` is skipped (see "Folder Table Sort Keys"). A key with no
+plain value (a frontmatter map parent) has no `sortValue`, so the file sorts with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code points.
 `sortDisplayValueIsPreview` is true when the string is cut or the field has more plain values.
 An absent flag means false, so a complete short value needs no stored flag.
 Every writer that
 changes a node's name, parent, or restriction also patches these fields on its committed field docs.
 A restrict or unrestrict patches trashed docs too, because a restore does not rewrite the flag. See the `files-explorer-tree` skill, "Folder Contents".
 
-Sort is text only, so dates sort in time order only when they share one format and time zone. A
-later date sort mode would reuse the `maybe_date` companion that search already writes, so search
+A date is a string, so it sorts as text. Dates sort in time order only when they share one format
+and time zone. A later date sort mode would reuse the `maybe_date` companion that search already writes, so search
 and sort keep one date parser.
 
 Saved files keep `metadata.*` docs as `sourceKind: "committed"`, even during a pending content edit.
@@ -435,11 +435,27 @@ the order each filter sets.
 A metadata filter reads only committed field docs, through the same index as a metadata sort,
 `by_org_ws_source_archive_docKind_field_parent_restricted_sort`:
 
-- `is` reads one `sortValue` (`files_sort_text_key` of the value), in name order. A
-  `name starts with` next to it is one more range on `sortName`.
-- `starts with` reads a `sortValue` range up to `string_prefix_upper_bound`, in value order. The
-  value cannot end in a digit, because the key writes a number with its length first.
-- `present` reads every doc with a value (`sortValue >= ""`), in value order.
+- `is` reads one `sortValue` (`files_sort_value_key` of the value), in name order. A
+  `name starts with` next to it is one more range on `sortName`. It is strict by type: the number
+  `3` and the text `"3"` are two values.
+- `starts with` reads a range of text `sortValue`s up to `string_prefix_upper_bound`, in value
+  order. It never matches a number or a boolean. The value cannot end in a digit, because the text
+  key writes a digit run with its length first.
+- `present` reads every doc with a value (`sortValue > null`), in value order. A doc with no value
+  has no key, and that sorts before `null`. Every stored key sorts after `null`.
+
+The filter bar decides the type of an `is` value (`files_folder_table_query_to_filter`):
+
+- An unquoted value is a number only when `String(Number(text)) === text` and the number is finite.
+  This is the Properties dialog rule. So `metadata.rooms:3` and `:2.5` ask for numbers, and
+  `:01234`, `:850.0`, `:+5` and `:0x1F` ask for text.
+- An unquoted `true`, `True`, `TRUE`, `false`, `False` or `FALSE` is a boolean (the YAML 1.2 core
+  list, `files_search_query_BOOLEAN_LITERALS`).
+- A quoted value is always text: `metadata.rooms:"3"`, `metadata.ideal:"true"`. The bar's "Filter
+  syntax" list shows this form.
+- Frontmatter reads more spellings as numbers than the dialog does (`850.0`, `+5`, `0x1F`, see the
+  table in "Folder Table Sort Keys"). To find such a number, type the form it prints as (`850`,
+  `5`, `31`). A typed `01234` finds only text values; before typed keys it also found the number 1234.
 
 There is no metadata `missing` filter: finding the rows without a key would need a scan. Pending
 edits never change a filter result.
@@ -457,11 +473,46 @@ The row key is `{ parts, nameKey }` from `shared/files-sort.ts`, with one part: 
 (`[sortValue, sortName, name]` for a metadata key). A null part sorts last in either direction,
 by name A to Z.
 
-Known limit (TODO in the `files_sort_value_of` JSDoc in `shared/files-sort.ts`): numbers sort as text.
-Whole numbers from 0 up sort right. A decimal splits into two digit runs, so `12.5` sorts before
-`12.25`. A minus sign is only a character, so `-5` sorts before `-10`. The public
-`/api/v1/files/query` folder mode shows this order to plugins. A real number order needs a number
-key in the folder table index.
+## The key keeps the type of the stored value
+
+`files_sort_value_key` in `shared/files-sort.ts` builds the key. The rule is strict:
+
+- A stored JS number sorts as a number. `-0` is stored as `0`, because an index puts `-0` before `0`.
+- A stored JS boolean sorts as a boolean.
+- Everything else is text and uses `files_sort_text_key`. A quoted `"850"` or `"true"` is text.
+
+The sort code never reads the characters of a string to guess a type. The metadata parsers decide
+the type, and they never store NaN or Infinity as a number.
+
+Order inside one field, ascending: **numbers, `false`, `true`, text**. Descending is the exact
+reverse. This is the order a Convex index gives values of different types, so the mixed order needs
+no extra index. Decided 2026-11-20: the mixed order is accepted. The public
+`/api/v1/files/query` folder mode shows the same order to plugins.
+
+- Numbers are in number order: `-10, -5, 0, 2, 12.25, 12.5`.
+- A whole number above 2^53 is stored as the nearest float64, so two different big numbers can
+  become equal. Then the name decides, like any tie.
+- Dates are strings in YAML 1.2 core. They keep the text key, which sorts ISO dates of one format
+  in time order.
+
+Which source text becomes which stored value (measured on `yaml` 2.9.1 with the app's parser
+options). The Properties dialog keeps the typed text when a number does not print back as the same
+text (`scalar_entry_value` in `shared/files-metadata.ts`); frontmatter has no such check.
+
+| Source text | Frontmatter (in the file) | Properties dialog | JSON (agent tool) |
+| --- | --- | --- | --- |
+| `850`, `12.25`, `-5`, `1e-7` | number | number | number |
+| `850.0`, `8.5e2` | number 850 | text | number 850 |
+| `-0` | number (key `0`) | text `-0` | number (key `0`) |
+| `+5`, `0x1F`, `0o17`, `017`, `.5`, `5.` | number (5, 31, 15, 17, 0.5, 5) | text | syntax error |
+| `1.10` | number 1.1 | text `1.10` | number 1.1 |
+| `1e21` | number | text | number |
+| `1_000` | text | text | syntax error |
+| `.inf`, `-.inf`, `.nan`, `1e400` | no value (the row is missing) | text | syntax error or refused |
+| `9007199254740993` | number 9007199254740992 | text | number 9007199254740992 |
+| `"850"`, `'850'` | text `850` | text `850` | text `850` |
+| `true`, `True`, `TRUE`, `false`, `False`, `FALSE` | boolean | boolean | `true` / `false` only |
+| `yes`, `no`, `on`, `off`, `tRue`, `"true"` | text | text | text or syntax error |
 
 # Public Field Query
 

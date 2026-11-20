@@ -3049,9 +3049,11 @@ describe("files/query", () => {
 		const ids = await seed_query_files(
 			t,
 			fixture,
+			// A number value: the cursor must keep the type of the last item's key, or the copy of the
+			// previous page's last file is not skipped.
 			Array.from({ length: 6 }, (_, index) => ({
 				path: `listings/z-${index}.md`,
-				metadata: [{ key: "status", value: "open" }],
+				metadata: [{ key: "status", value: 7 }],
 			})),
 		);
 		// A Move is copying these files' docs, like the read budget test in `files_tree.budgets.test.ts`.
@@ -3435,7 +3437,42 @@ describe("files/query", () => {
 		expect(tags.body.items.map((item) => item.path)).toEqual(["/other/tags.md"]);
 	});
 
-	test("folder mode with eq true returns only the files whose value reads as true", async () => {
+	test("folder mode orders numbers, booleans and text across pages, and eq is strict by type", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const values = [-10, -5, 0, 12.25, 12.5, 850, false, true, "850", "n/a"];
+		// Seed in another order than the expected one, so the order comes from the keys.
+		await seed_query_files(
+			t,
+			fixture,
+			values.map((value, index) => ({ path: `listings/f-${index}.md`, metadata: [{ key: "rent", value }] })).reverse(),
+		);
+		const session = await mint_session_token(fixture);
+		const body = { mode: "folder", path: "/listings", field: "metadata.rent", fields: ["metadata.rent"] };
+
+		// Pages of 2 put a page boundary between the last number and `false`, and between `true` and the
+		// first text.
+		const pages: Array<Array<string | number | boolean | null | undefined>> = [];
+		let cursor: string | null = null;
+		do {
+			const page = await query_files(t, session.token, { ...body, limit: 2, cursor });
+			expect(page.status, JSON.stringify(page.body)).toBe(200);
+			pages.push(page.body.items.map((item) => item.fields["metadata.rent"]?.value));
+			cursor = page.body.cursor;
+			expect(pages.length).toBeLessThan(10);
+		} while (cursor !== null);
+		expect(pages.flat(), "the full order: numbers, false, true, text").toEqual(values);
+
+		const eq_paths = async (eq: string | number) => {
+			const page = await query_files(t, session.token, { ...body, match: { eq } });
+			expect(page.status, JSON.stringify(page.body)).toBe(200);
+			return page.body.items.map((item) => item.path);
+		};
+		expect(await eq_paths(850), "eq 850 finds the number only").toEqual(["/listings/f-5.md"]);
+		expect(await eq_paths("850"), 'eq "850" finds the text only').toEqual(["/listings/f-8.md"]);
+	});
+
+	test("folder mode with eq true returns only the files whose value is the boolean true", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		await seed_query_files(t, fixture, [
@@ -3455,8 +3492,18 @@ describe("files/query", () => {
 			match: { eq: true },
 		});
 		expect(page.status, JSON.stringify(page.body)).toBe(200);
-		// Folder mode compares values by the folder table's text sort key (see "Field queries" in the
-		// public-api skill). So the string "true" matches too, but false, 1 and another key do not.
-		expect(page.body.items.map((item) => item.path)).toEqual(["/listings/a.md", "/listings/c.md", "/listings/f.md"]);
+		// Folder mode compares values by the folder table's sort key, which keeps the type of the stored
+		// value (see "Field queries" in the public-api skill). So only the boolean true matches. The
+		// text "true", false, 1 and another key do not.
+		expect(page.body.items.map((item) => item.path)).toEqual(["/listings/a.md", "/listings/f.md"]);
+
+		const text = await query_files(t, session.token, {
+			mode: "folder",
+			path: "/listings",
+			field: "metadata.ideal",
+			match: { eq: "true" },
+		});
+		expect(text.status, JSON.stringify(text.body)).toBe(200);
+		expect(text.body.items.map((item) => item.path)).toEqual(["/listings/c.md"]);
 	});
 });

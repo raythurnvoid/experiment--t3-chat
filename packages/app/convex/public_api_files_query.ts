@@ -108,23 +108,26 @@ async function get_pinned_membership(
  * The place of a field doc in the folder order: `[sortValue, sortName, name, _creationTime, _id]`
  * (see `files_tree.list_children_by_field`).
  */
-type FolderKey = Array<string | number>;
+type FolderKey = Array<string | number | boolean>;
 
 const folder_cursor_schema = z.object({
 	lastKey: z
-		.array(z.union([z.string(), z.number()]))
+		.array(z.union([z.string(), z.number(), z.boolean()]))
 		.length(5)
 		.nullable(),
 	/**
 	 * The last file the caller got, with `[sortValue, sortName, name]`. Null until a page has a row.
+	 * `sortValue` keeps its type, so a number key is compared as a number.
 	 */
-	lastItem: z.object({ nodeId: z.string(), key: z.array(z.string()).length(3) }).nullable(),
+	lastItem: z
+		.object({ nodeId: z.string(), key: z.array(z.union([z.string(), z.number(), z.boolean()])).length(3) })
+		.nullable(),
 });
 
 type FolderPageArgs = PageArgs & {
 	kind: Doc<"files_nodes">["kind"];
 	field: string;
-	match: { kind: "eq" | "prefix"; value: string } | null;
+	match: { kind: "eq"; value: string | number | boolean } | { kind: "prefix"; value: string } | null;
 	order: "asc" | "desc";
 };
 
@@ -356,7 +359,7 @@ async function read_folder_page(ctx: ActionCtx, args: FolderPageArgs) {
 	}
 
 	const last = page.at(-1);
-	if (last) lastItem = { nodeId: last.nodeId, key: last.key.slice(0, 3).map(String) };
+	if (last) lastItem = { nodeId: last.nodeId, key: last.key.slice(0, 3) };
 
 	return Result({
 		_yay: {
@@ -663,12 +666,15 @@ export async function public_api_files_query_http(args: {
 					"range works in search mode only. In folder mode, sort by the field and stop paging at your bound.",
 				);
 			}
+			// `eq` keeps its type, because the stored sort key does: the number 850 and the text "850" are
+			// two values.
 			const folderMatch = !match
 				? null
 				: "eq" in match
-					? { kind: "eq" as const, value: String(match.eq) }
+					? { kind: "eq" as const, value: match.eq }
 					: { kind: "prefix" as const, value: match.prefix };
-			if (folderMatch) {
+			// Only a text value has the limits below. A number or a boolean is its own key.
+			if (folderMatch && typeof folderMatch.value === "string") {
 				if (folderMatch.value.length < 1 || folderMatch.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH) {
 					return await invalid_input(
 						`A match value must have 1 to ${files_metadata_SEARCH_VALUE_MAX_LENGTH} characters.`,

@@ -1054,8 +1054,10 @@ It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" 
 - Each view is one folder-mode query on one frontmatter field, and the table columns come back in
   `fields`. A page can be empty while `isDone` is false, so "Load more" follows the cursor a few
   times until it has rows.
-- Numbers sort as text in folder mode, so the README tells the writer to use whole numbers or one
-  decimal place for every sorted field.
+- Folder mode keeps the stored type of a value. A YAML number sorts in number order, and
+  `eq: true` (the "Ideal" view) finds only a YAML boolean. So the writer must write the sorted
+  fields as plain numbers and `ideal` as `true` or `false`, never in quotes. A quoted `"850"` is
+  text and sorts after every number.
 - The page stores only the folder path in `localStorage`, because all plugin frames share one
   origin.
 - Test data: `scripts/seed-qa-flats.mjs` writes fake flats with a personal API key, only into a

@@ -754,7 +754,7 @@ export const files_sort_validator = v.array(
 	v.object({ field: v.string(), direction: v.union(v.literal("asc"), v.literal("desc")) }),
 );
 
-const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.null()));
+const files_sort_key_validator = v.array(v.union(v.string(), v.number(), v.boolean(), v.null()));
 
 export const files_sort_row_key_validator = v.object({
 	parts: v.array(v.union(files_sort_key_validator, v.null())),
@@ -779,12 +779,14 @@ export const files_table_filter_validator = v.union(
 		value: v.number(),
 	}),
 	v.object({ kind: v.literal("size"), field: v.literal("size"), op: v.literal("missing") }),
+	// "is" asks for one stored value with its type: the number 3 and the text "3" are two values.
 	v.object({
 		kind: v.literal("text"),
 		field: v.string(),
-		op: v.union(v.literal("is"), v.literal("starts_with")),
-		value: v.string(),
+		op: v.literal("is"),
+		value: v.union(v.string(), v.number(), v.boolean()),
 	}),
+	v.object({ kind: v.literal("text"), field: v.string(), op: v.literal("starts_with"), value: v.string() }),
 	v.object({ kind: v.literal("text"), field: v.string(), op: v.literal("present") }),
 );
 
@@ -864,10 +866,12 @@ const files_metadata_committed_sort_fields = {
 	/** `files_sort_text_key(name)`. */
 	sortName: v.optional(v.string()),
 	/**
-	 * `files_sort_value_of(values).sortValue`. Unset when the key has no plain value, such as a
-	 * frontmatter map, so the row sorts as missing.
+	 * `files_sort_value_of(values).sortValue`. A stored number or boolean keeps its type, and every
+	 * other value is a text key. So one field orders as numbers, `false`, `true`, then text.
+	 *
+	 * Unset when the key has no plain value, such as a frontmatter map, so the row sorts as missing.
 	 */
-	sortValue: v.optional(v.string()),
+	sortValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 	/**
 	 * A short copy of the first plain value, shown in table cells. Set together with `sortValue`.
 	 */

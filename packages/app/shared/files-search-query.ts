@@ -79,6 +79,7 @@ export const files_search_query_SYNTAX_EXAMPLES: ReadonlyArray<{
 	{ label: "Size or date", example: "file.size:>=1024", inputs: ["table"] },
 	{ label: "No extension", example: "!file.extension:*", inputs: ["table"] },
 	{ label: "Spaces in values", example: 'metadata.key:"two words"', inputs: ["search", "table"] },
+	{ label: "A number or true/false as text", example: 'metadata.rooms:"3"', inputs: ["table"] },
 	{ label: "In a folder", example: "report file.path:/tasks/**", inputs: ["search"] },
 	{ label: "Only this folder", example: "report file.path:/tasks/*", inputs: ["search"] },
 	{ label: "Exact path", example: "file.path:/tasks/a.md", inputs: ["search"] },
@@ -143,7 +144,7 @@ const FIELD_NAMESPACE_REGEX = /^(?:file|frontmatter|metadata)\./u;
 // a number or a boolean (`.5`, `1e3`, `0x10`, `True`) can be typed the same way in a filter.
 // `Number()` reads every spelling here, the hex and octal ones included.
 const NUMBER_LITERAL_REGEX = /^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|0o[0-7]+|0x[0-9a-fA-F]+)$/u;
-const BOOLEAN_LITERALS = new Map([
+export const files_search_query_BOOLEAN_LITERALS = new Map([
 	["true", true],
 	["True", true],
 	["TRUE", true],
@@ -745,7 +746,7 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 				if (match.quoted) {
 					break;
 				}
-				const booleanValue = BOOLEAN_LITERALS.get(match.value);
+				const booleanValue = files_search_query_BOOLEAN_LITERALS.get(match.value);
 				if (NUMBER_LITERAL_REGEX.test(match.value)) {
 					plans.push({ op: "eq", fieldPath, value: Number(match.value) });
 				} else if (booleanValue !== undefined) {

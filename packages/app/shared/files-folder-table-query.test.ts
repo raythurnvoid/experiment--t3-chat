@@ -3,6 +3,7 @@ import {
 	files_folder_table_query_clean,
 	files_folder_table_query_close_open_quote,
 	files_folder_table_query_field_text,
+	files_folder_table_query_format_text_value,
 	files_folder_table_query_forms,
 	files_folder_table_query_get_add_problem,
 	files_folder_table_query_MAX_LENGTH,
@@ -14,11 +15,7 @@ import {
 	files_folder_table_query_with_sort,
 	type files_folder_table_query_FilterToken,
 } from "./files-folder-table-query.ts";
-import {
-	files_search_query_format_value,
-	files_search_query_parse,
-	files_search_query_SYNTAX_EXAMPLES,
-} from "./files-search-query.ts";
+import { files_search_query_parse, files_search_query_SYNTAX_EXAMPLES } from "./files-search-query.ts";
 import { files_table_filter_is_valid } from "./files-table.ts";
 
 // A fixed day span, so the tests do not depend on the time zone.
@@ -42,6 +39,7 @@ describe("files_folder_table_query_parse_token", () => {
 			field: "name",
 			op: "starts_with",
 			value: "report",
+			quoted: false,
 		});
 		expect(parse_filter("metadata.status:open")).toMatchObject({ field: "metadata.status", op: "is", value: "open" });
 		expect(parse_filter("metadata.status:op*")).toMatchObject({ op: "starts_with", value: "op" });
@@ -105,9 +103,11 @@ describe("files_folder_table_query_parse_token", () => {
 	});
 
 	test("reads a value the bar formats back as the same exact value", () => {
-		for (const value of ["report", "a:b", "my report", 'say "hi"', "op*", ">2"]) {
-			const token = parse_filter(`metadata.x:${files_search_query_format_value(value)}`);
+		// A stored text `3` or `true` must stay text, not become the number or the boolean.
+		for (const value of ["report", "a:b", "my report", 'say "hi"', "op*", ">2", "3", "true"]) {
+			const token = parse_filter(`metadata.x:${files_folder_table_query_format_text_value(value)}`);
 			expect(token).toMatchObject({ op: "is", value });
+			expect(files_folder_table_query_to_filter(token, get_day_bounds)).toMatchObject({ op: "is", value });
 		}
 	});
 
@@ -352,6 +352,12 @@ describe("files_folder_table_query_to_filter", () => {
 			["file.size:>=1024", { kind: "size", field: "size", op: "at_least", value: 1024 }],
 			["!file.size:*", { kind: "size", field: "size", op: "missing" }],
 			["metadata.status:open", { kind: "text", field: "metadata.status", op: "is", value: "open" }],
+			// An unquoted value is a number or a boolean only when the Properties dialog would store one.
+			["metadata.rooms:2.5", { kind: "text", field: "metadata.rooms", op: "is", value: 2.5 }],
+			["metadata.ideal:True", { kind: "text", field: "metadata.ideal", op: "is", value: true }],
+			['metadata.rooms:"3"', { kind: "text", field: "metadata.rooms", op: "is", value: "3" }],
+			["metadata.zip:01234", { kind: "text", field: "metadata.zip", op: "is", value: "01234" }],
+			["metadata.rent:850.0", { kind: "text", field: "metadata.rent", op: "is", value: "850.0" }],
 			["metadata.status:op*", { kind: "text", field: "metadata.status", op: "starts_with", value: "op" }],
 			["frontmatter.due:*", { kind: "text", field: "frontmatter.due", op: "present" }],
 		];

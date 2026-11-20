@@ -399,13 +399,16 @@ and `find` also keep raw name order.
   name A to Z.
 - A metadata sort shows only the rows that have the key. The table says "Rows without <key> are
   hidden." Finding the rows without a key would need a scan.
-- Metadata values sort as text through `files_sort_text_key` in `packages/app/shared/files-sort.ts`:
-  case and accents are ignored, and digit runs compare by value (`file2` before `file10`). A number
-  sorts as `String(value)`, a boolean as `true`/`false`, a list by its first item. The raw name
-  breaks ties, so the order is total.
-- Known limits of text sort: decimals compare digit run by digit run (`1.5` after `1.25`), a minus
-  sign is text (`-5` is not below `3`), and dates sort in time order only when they use the same
-  format and time zone. Locale alphabets are not handled (Swedish `å` sorts with `a`, not after `z`).
+- Metadata values sort by `files_sort_value_key` in `packages/app/shared/files-sort.ts`. The key
+  keeps the type of the stored value: a stored number sorts as a number, a stored boolean as a
+  boolean, and everything else as text. One field orders as numbers, `false`, `true`, then text;
+  descending is the exact reverse. A quoted `"850"` is text and sorts with the text values. A list
+  sorts by its first item. The raw name breaks ties, so the order is total. The full rule is in
+  "Folder Table Sort Keys" of the `file-metadata` skill.
+- Text values use `files_sort_text_key`: case and accents are ignored, and digit runs compare by
+  value (`file2` before `file10`). Known limits of text sort: dates sort in time order only when
+  they use the same format and time zone, and locale alphabets are not handled (Swedish `å` sorts
+  with `a`, not after `z`).
 - `file.extension` uses its raw lowercase extension. Dates and file sizes use numeric values.
 - The column options menu sorts: each of its two Sort items sets one field and one direction. It
   writes the sort into the URL as a `sort_by:` token (see "Table filter and sort bar").
@@ -780,9 +783,14 @@ and `find` also keep raw name order.
   on or before, after, and on or after one local calendar day, written `2026-09-04`. `file.size`
   offers is, at least, at most, more than, less than, and missing. Metadata offers is, starts with,
   and present. An applied key can stay hidden as a column.
-- `is` and `starts with` on names and metadata compare the stored sort key
+- A metadata `is` is strict by type. An unquoted `3` or `2.5` asks for the stored number, an
+  unquoted `true` or `false` for the stored boolean, and a quoted value (`metadata.rooms:"3"`)
+  always for text. A text that does not print back as the same number (`01234`, `850.0`) stays
+  text. `starts with` matches text values only. See "Folder Table Filter" in the `file-metadata`
+  skill. The "Filter syntax" list in the bar shows the quoted form.
+- `is` and `starts with` on names and text values compare the stored sort key
   (`files_sort_text_key`): case and accents are ignored, and digit runs compare by value. The key
-  writes a number with its length first (`2` is `012`, `10` is `0210`), so a `starts with` value
+  writes a digit run with its length first (`2` is `012`, `10` is `0210`), so a `starts with` value
   cannot end in a digit: the bar says "'Starts with' cannot end with a number here. Remove the last
   digits, or use an exact value". The check reads the key, so a digit followed by an accent mark is refused
   too. A `starts with` range ends at `string_prefix_upper_bound` of the key.

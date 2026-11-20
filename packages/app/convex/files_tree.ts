@@ -10,11 +10,12 @@ import {
 	type RegisteredQuery,
 } from "convex/server";
 import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
-import { compareValues, v, type Infer } from "convex/values";
+import { compareValues, v, type Infer, type Value } from "convex/values";
 import { files_ROOT_ID, type files_DirectoryView, type files_IndexDirectoryView } from "../shared/files.ts";
 import {
 	files_sort_is_valid,
 	files_sort_text_key,
+	files_sort_value_key,
 	type files_sort_Key,
 	type files_sort_RowKey,
 } from "../shared/files-sort.ts";
@@ -1063,7 +1064,7 @@ export const list_tree_children_sorted = query({
 			const tail: Parameters<typeof files_index_range_apply>[1] = [];
 			// "is" reads one value. Its rows are in name order, so the name prefix is one more range.
 			if (filter?.kind === "text" && filter.op === "is") {
-				tail.push(["eq", "sortValue", files_sort_text_key(filter.value)]);
+				tail.push(["eq", "sortValue", files_sort_value_key(filter.value)]);
 				if (namePrefix) {
 					tail.push(["gte", "sortName", namePrefix.start]);
 					if (namePrefix.end !== null) tail.push(["lt", "sortName", namePrefix.end]);
@@ -1074,8 +1075,9 @@ export const list_tree_children_sorted = query({
 				tail.push(["gte", "sortValue", start]);
 				if (end !== null) tail.push(["lt", "sortValue", end]);
 			}
-			// Leave out docs with no value, such as a frontmatter map.
-			else tail.push(["gte", "sortValue", ""]);
+			// Leave out docs with no value, such as a frontmatter map. Such a doc has no key, and that
+			// sorts before `null`. Every stored key (a number, a boolean or text) sorts after `null`.
+			else tail.push(["gt", "sortValue", null]);
 
 			const fieldPage = await db_page_children_by_field(ctx, {
 				tenant: membership,
@@ -1308,9 +1310,10 @@ export const list_tree_children_sorted = query({
 
 /**
  * The place of one field doc in the order: `[sortValue, sortName, name, _creationTime, _id]`. The
- * last two parts are the field doc's own, so every doc has its own key.
+ * last two parts are the field doc's own, so every doc has its own key. `sortValue` is a number, a
+ * boolean or a text key.
  */
-const children_by_field_key_validator = v.array(v.union(v.string(), v.number()));
+const children_by_field_key_validator = v.array(v.union(v.string(), v.number(), v.boolean()));
 
 /**
  * One native page of one folder's children that have a custom field, for the public
@@ -1344,11 +1347,12 @@ export const list_children_by_field = internalQuery({
 		 */
 		field: v.string(),
 		/**
-		 * `eq` reads one value in name order. `prefix` reads a value range in value order. Null reads
-		 * every child that has a value, in value order.
+		 * `eq` reads one value in name order. It is strict by type: the number 850 and the text "850"
+		 * are two values. `prefix` reads a range of text values in value order. Null reads every child
+		 * that has a value, in value order.
 		 */
 		match: v.union(
-			v.object({ kind: v.literal("eq"), value: v.string() }),
+			v.object({ kind: v.literal("eq"), value: v.union(v.string(), v.number(), v.boolean()) }),
 			v.object({ kind: v.literal("prefix"), value: v.string() }),
 			v.null(),
 		),
@@ -1399,12 +1403,9 @@ export const list_children_by_field = internalQuery({
 		const filter: files_table_Filter =
 			args.match === null
 				? { kind: "text", field: args.field, op: "present" }
-				: {
-						kind: "text",
-						field: args.field,
-						op: args.match.kind === "eq" ? "is" : "starts_with",
-						value: args.match.value,
-					};
+				: args.match.kind === "eq"
+					? { kind: "text", field: args.field, op: "is", value: args.match.value }
+					: { kind: "text", field: args.field, op: "starts_with", value: args.match.value };
 		const table = get_table_read_args({
 			kind: args.kind,
 			sort: [{ field: files_table_filter_order_field(filter), direction: args.order }],
@@ -1419,16 +1420,24 @@ export const list_children_by_field = internalQuery({
 		}
 
 		// The window of the match, as the lowest and the highest key. An empty end means no limit.
-		let start: string[] = [""];
-		let end: string[] = [];
+		//
+		// With no match, read every doc that has a value. A doc with no value has no key, and that sorts
+		// before `null`. Every stored key (a number, a boolean or text) sorts after `null`. So the
+		// window starts right after `null`.
+		let start: Value[] = [null];
+		let startInclusive = false;
+		let end: Value[] = [];
 		let endInclusive = false;
 		if (args.match?.kind === "eq") {
-			start = [files_sort_text_key(args.match.value)];
+			start = [files_sort_value_key(args.match.value)];
+			startInclusive = true;
 			end = start;
 			endInclusive = true;
 		} else if (args.match?.kind === "prefix") {
-			start = [files_sort_text_key(args.match.value)];
-			const prefixEnd = string_prefix_upper_bound(start[0]!);
+			const prefixStart = files_sort_text_key(args.match.value);
+			const prefixEnd = string_prefix_upper_bound(prefixStart);
+			start = [prefixStart];
+			startInclusive = true;
 			end = prefixEnd === null ? [] : [prefixEnd];
 		}
 		// Go on after the last key. One bound per field, so the seek replaces one side of the window.
@@ -1442,7 +1451,7 @@ export const list_children_by_field = internalQuery({
 			order: args.order,
 			start: args.seek.lastKey && args.order === "asc" ? args.seek.lastKey : start,
 			end: args.seek.lastKey && args.order === "desc" ? args.seek.lastKey : end,
-			startInclusive: !(args.seek.lastKey && args.order === "asc"),
+			startInclusive: args.seek.lastKey && args.order === "asc" ? false : startInclusive,
 			endInclusive: args.seek.lastKey && args.order === "desc" ? false : endInclusive,
 		});
 		const tail = phases[args.seek.phase];
@@ -1655,9 +1664,11 @@ export const list_tree_children_shared = query({
 				return node ? files_saved_index_db_get_table_field(ctx, { fileNode: node, field: metadataField }) : null;
 			}),
 		);
-		const start = filter.op === "present" ? null : files_sort_text_key(filter.value);
-		const end = filter.op === "starts_with" ? string_prefix_upper_bound(start!) : null;
-		const matches = (sortValue: string | undefined) =>
+		const start = filter.op === "present" ? null : files_sort_value_key(filter.value);
+		const end = filter.op === "starts_with" ? string_prefix_upper_bound(files_sort_text_key(filter.value)) : null;
+		// "is" compares the key with its type. A number or boolean key sorts before every text key, so
+		// it never passes the `starts with` bounds.
+		const matches = (sortValue: string | number | boolean | undefined) =>
 			sortValue !== undefined &&
 			(filter.op === "present" ||
 				(filter.op === "is"

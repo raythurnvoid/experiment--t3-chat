@@ -1954,7 +1954,7 @@ describe("folder table sort fields", () => {
 					...shared,
 					fieldPath: "metadata.count",
 					archiveOperationId: undefined,
-					sortValue: "0212",
+					sortValue: 12,
 					sortDisplayValue: 12,
 				},
 			]),
@@ -2091,7 +2091,7 @@ describe("folder table sort fields", () => {
 			sortValue: "042026-019-014",
 			sortDisplayValue: "2026-09-04",
 		});
-		expect(byField.get("frontmatter.meta.size")).toMatchObject({ sortValue: "017", sortDisplayValue: 7 });
+		expect(byField.get("frontmatter.meta.size")).toMatchObject({ sortValue: 7, sortDisplayValue: 7 });
 		// `t.run` drops undefined fields from its result, so check that the keys are gone.
 		expect(byField.get("frontmatter.meta")).not.toHaveProperty("sortValue");
 		expect(byField.get("frontmatter.meta")).not.toHaveProperty("sortDisplayValue");
@@ -2326,6 +2326,49 @@ describe("list_tree_children_sorted", () => {
 			}),
 		]);
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
+	});
+
+	test("a metadata key orders text, booleans and numbers across pages, and is matches one type", async () => {
+		const { insert_children, set_metadata, read_table } = await seed_folder_table();
+		const children: Array<[string, files_metadata_Entry["value"]]> = [
+			["minus-10.md", -10],
+			["text-na.md", "n/a"],
+			["n-12-5.md", 12.5],
+			["yes.md", true],
+			["n-850.md", 850],
+			["text-850.md", "850"],
+			["minus-5.md", -5],
+			["no.md", false],
+			["n-12-25.md", 12.25],
+			["zero.md", 0],
+		];
+		const ids = await insert_children(children.map(([name]) => ({ name, kind: "file" as const, updatedAt: 1 })));
+		await set_metadata(ids.map((id, index) => [id, [{ key: "rent", value: children[index]![1] }]]));
+
+		// `read_table` reads pages of 2, so pages cross from text to booleans and from booleans to
+		// numbers. Descending is the exact reverse of: numbers, false, true, text.
+		expect(
+			await read_table({ field: "metadata.rent", direction: "desc" }),
+			"the number and boolean rows are in the pages",
+		).toEqual([
+			"text-na.md",
+			"text-850.md",
+			"yes.md",
+			"no.md",
+			"n-850.md",
+			"n-12-5.md",
+			"n-12-25.md",
+			"zero.md",
+			"minus-5.md",
+			"minus-10.md",
+		]);
+		expect(
+			await read_table(
+				{ field: "name", direction: "asc" },
+				{ filter: { kind: "text", field: "metadata.rent", op: "is", value: 850 } },
+			),
+			"is 850 finds only the number file",
+		).toEqual(["n-850.md"]);
 	});
 
 	// 9 keys make 18 metadata docs: more than Archive and Restore patch in their own mutation, so a

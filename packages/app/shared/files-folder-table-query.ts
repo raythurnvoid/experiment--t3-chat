@@ -17,8 +17,11 @@
 // request builder takes that function from the caller, and this file stays free of the clock.
 import { files_metadata_parse_maybe_date } from "./files-metadata.ts";
 import {
+	files_search_query_BOOLEAN_LITERALS,
 	files_search_query_close_open_quote,
+	files_search_query_format_value,
 	files_search_query_parse_field,
+	files_search_query_quote,
 	files_search_query_read_token,
 	files_search_query_split_tokens,
 } from "./files-search-query.ts";
@@ -98,6 +101,11 @@ export type files_folder_table_query_FilterToken = {
 	 * `1025` and `file.updated:<=2026-09-04` holds `2026-09-05`.
 	 */
 	value: string | null;
+	/**
+	 * True when the value was written in quotes, like `metadata.rooms:"3"`. A quoted value of a
+	 * metadata or frontmatter "is" filter is text. An unquoted one can be a number or a boolean.
+	 */
+	quoted: boolean;
 };
 
 export type files_folder_table_query_SortToken = {
@@ -364,7 +372,17 @@ export function files_folder_table_query_parse_token(
 		return { token: null, problem: filter.problem };
 	}
 
-	return { token: { kind: "filter", raw, field: field.field, op: filter.op, value: filter.value }, problem: null };
+	return {
+		token: {
+			kind: "filter",
+			raw,
+			field: field.field,
+			op: filter.op,
+			value: filter.value,
+			quoted: read.match.op === "eq" && read.match.quoted,
+		},
+		problem: null,
+	};
 }
 
 /**
@@ -516,6 +534,22 @@ export function files_folder_table_query_to_sort(parsed: Pick<files_folder_table
 }
 
 /**
+ * The stored value an unquoted "is" value asks for.
+ *
+ * It is a boolean or a number only when the Properties dialog would store one: a YAML 1.2 boolean
+ * spelling, or a number that prints back as the same text. So `01234` and `850.0` stay text, like
+ * in the dialog.
+ */
+function read_unquoted_value(text: string) {
+	const booleanValue = files_search_query_BOOLEAN_LITERALS.get(text);
+	if (booleanValue !== undefined) {
+		return booleanValue;
+	}
+
+	return Number.isFinite(Number(text)) && String(Number(text)) === text ? Number(text) : text;
+}
+
+/**
  * The table filter a filter token asks for, or null when there is none. `getDayBounds` turns a
  * day like `2026-09-04` into the start and the end of that local day. It is a parameter because
  * the browser knows the time zone and this file does not.
@@ -543,12 +577,26 @@ export function files_folder_table_query_to_filter(
 			op === "missing"
 				? { kind: "size", field, op }
 				: { kind: "size", field, op: op as "is" | "at_least" | "at_most", value: Number(value) };
+	} else if (op === "present") {
+		filter = { kind: "text", field, op };
+	} else if (op === "starts_with") {
+		filter = { kind: "text", field, op, value: value! };
 	} else {
-		filter =
-			op === "present"
-				? { kind: "text", field, op }
-				: { kind: "text", field, op: op as "is" | "starts_with", value: value! };
+		// "is" asks for one stored value with its type. A quoted value is always text.
+		filter = { kind: "text", field, op: "is", value: token.quoted ? value! : read_unquoted_value(value!) };
 	}
 
 	return filter !== null && files_table_filter_is_valid(filter) ? filter : null;
+}
+
+/**
+ * Write a stored text value as the value of an "is" token, like `files_search_query_format_value`.
+ *
+ * Quote it also when the bare text would ask for a number or a boolean. Without the quotes, a
+ * picked text value `3` or `true` would find no row.
+ */
+export function files_folder_table_query_format_text_value(value: string) {
+	return typeof read_unquoted_value(value) === "string"
+		? files_search_query_format_value(value)
+		: files_search_query_quote(value);
 }

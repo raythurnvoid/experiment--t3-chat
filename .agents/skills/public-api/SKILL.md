@@ -488,8 +488,11 @@ Folder mode reads the direct children of `path` (default `/`) that have the fiel
 
 - No `match`: every child with a value, in value order. `{ eq }`: one value, in name order. `{ prefix }`: one value range, in value order. `{ exists: true }` is the same as no `match`. `range` answers 400: it works in search mode only.
 - `order` is `"asc"` (default) or `"desc"`. `kind` is `"file"` (default) or `"folder"`.
-- Values compare by the folder table sort key (`files_sort_text_key`): no case and no accents. So `eq: "Open"` also matches `open`. Number order has the limits in "Folder Table Sort Keys" of the file-metadata skill.
-- A `prefix` that ends in a digit answers 400, because a digit run is stored with its length. The message says to add the next character (for example `2026-`). A match value whose sort key has 256 code points or more answers 400, because stored keys are cut at that length. A match value must have 1 to 1,024 characters (400).
+- Values compare by the folder table sort key (`files_sort_value_key`), which keeps the type of the stored value. See "Folder Table Sort Keys" in the file-metadata skill.
+- Order inside one field, ascending: numbers in number order, then `false`, then `true`, then text. `desc` is the exact reverse. Text compares with no case and no accents.
+- `eq` is strict by type. `eq: 850` finds the stored number, `eq: "850"` the stored text, `eq: true` the stored boolean and `eq: "true"` the stored text. A text `eq` still ignores case and accents, so `eq: "Open"` also matches `open`.
+- `prefix` matches text values only. A number or a boolean never matches a prefix.
+- A `prefix` that ends in a digit answers 400, because a digit run is stored with its length. The message says to add the next character (for example `2026-`). A text match value whose sort key has 256 code points or more answers 400, because stored keys are cut at that length. A text match value must have 1 to 1,024 characters (400). A number or a boolean `eq` has no such limits.
 - The page lists only the area of the folder itself. A child that is its own restricted root is left out, also when the caller can open it. This keeps one index range per page. Use search mode to find such a file.
 
 Paging is by seek, not by a native cursor. During a Move or an index run a field doc moves between the normal docs and the view docs, and a native cursor of one source would skip it. So each round reads every source again after the last key, and the action merges the rows. One request makes at most 8 rounds, plus up to 2 rounds read again after a view change. A page can be short, or empty, while `isDone` is false.
@@ -518,6 +521,8 @@ Search mode runs the search box's custom-field walk (`files_pending_overlay_list
 ## Cursor, values and errors
 
 The cursor is sealed like the `files/list` cursor, with the purpose `files_query`. Its scope is the caller, the person, the subject, the path, `field`, the mode, `match`, `order`, `kind`, the membership lifetime and the folder id (search mode adds the search generation). `limit` and `fields` are not in the scope, so a caller can change them between pages. A cursor that does not open answers 400 `invalid_cursor` with `This query cursor changed. Start a new page.`
+
+One-time effect of the typed sort key (2026-11-20): the scope holds `match` with its type. Before, a number or boolean `eq` was kept as text (`"850"`, `"true"`). So a folder cursor made before that deploy with a number or boolean `eq` answers 400 `invalid_cursor` once, and the caller starts a new page. Every other old cursor still opens.
 
 The values step runs after the page of ids is known. `internal.files_metadata.get_query_items` reads at most 10 items per query (`files_metadata_QUERY_ITEMS_CHUNK`) and checks each item again for the subject. An item that is gone or no longer readable is left out. Each field costs one read: every writer inserts a file's field doc before its value docs, so the field doc is the first doc of its range. The comment on the constants in `shared/files-metadata.ts` has the measured cost.
 

@@ -58,7 +58,7 @@ describe("files_sort_text_key", () => {
 });
 
 describe("files_sort_value_of", () => {
-	const text_value = (value: files_metadata_Value["value"]) =>
+	const sort_value = (value: files_metadata_Value["value"]) =>
 		files_sort_value_of([
 			typeof value === "string"
 				? { fieldPath: "metadata.x", valueKind: "string", value }
@@ -67,17 +67,28 @@ describe("files_sort_value_of", () => {
 					: { fieldPath: "metadata.x", valueKind: "boolean", value },
 		])!.sortValue;
 
-	test("sorts numbers and booleans as text", () => {
-		expect(text_value(1000)).toBe(files_sort_text_key("1000"));
-		expect(text_value(true)).toBe("true");
-		expect(text_value(false)).toBe("false");
-		// Whole numbers sort by value, because digit runs do.
-		expect(compareValues(text_value(9), text_value(10))).toBe(-1);
+	test("sorts numbers by value, then false, true, and text", () => {
+		const values = ["n/a", true, 12.5, "850", -5, false, 12.25, 850, -10, 2, 0];
+		expect([...values].sort((a, b) => compareValues(sort_value(a), sort_value(b)))).toEqual([
+			-10,
+			-5,
+			0,
+			2,
+			12.25,
+			12.5,
+			850,
+			false,
+			true,
+			"850",
+			"n/a",
+		]);
+		// An index puts -0 before 0, so both get the same key.
+		expect(Object.is(sort_value(-0), 0)).toBe(true);
 	});
 
 	test("sorts ISO dates in one format in time order", () => {
-		expect(compareValues(text_value("2026-09-04"), text_value("2026-10-01"))).toBe(-1);
-		expect(compareValues(text_value("2026-09-04T09:00Z"), text_value("2026-09-04T10:00Z"))).toBe(-1);
+		expect(compareValues(sort_value("2026-09-04"), sort_value("2026-10-01"))).toBe(-1);
+		expect(compareValues(sort_value("2026-09-04T09:00Z"), sort_value("2026-09-04T10:00Z"))).toBe(-1);
 	});
 
 	test("uses the first list item and skips maybe_date values", () => {

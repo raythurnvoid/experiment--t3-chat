@@ -59,6 +59,7 @@ import {
 	files_folder_table_query_close_open_quote,
 	files_folder_table_query_FILE_FIELDS,
 	files_folder_table_query_field_text,
+	files_folder_table_query_format_text_value,
 	files_folder_table_query_forms,
 	files_folder_table_query_get_add_problem,
 	files_folder_table_query_MAX_LENGTH,
@@ -71,7 +72,6 @@ import {
 	type files_folder_table_query_Token,
 } from "../../../../shared/files-folder-table-query.ts";
 import {
-	files_search_query_format_value,
 	files_search_query_split_tokens,
 	files_search_query_SYNTAX_EXAMPLES,
 	files_search_query_typing_token,
@@ -1139,7 +1139,10 @@ export const FileNodeViewFolderFilterBar = memo(function FileNodeViewFolderFilte
 											prefix={typedValueDebounced}
 											typed={typedValue}
 											stale={typedValue !== typedValueDebounced}
-											onPick={(value) => pickToken(`${stage.field}:${files_search_query_format_value(value)}`)}
+											// The list holds stored text values only, so a picked `3` or `true` must stay text.
+											onPick={(value) =>
+												pickToken(`${stage.field}:${files_folder_table_query_format_text_value(value)}`)
+											}
 										/>
 									</CatchBoundary>
 								</MyComboboxGroup>
