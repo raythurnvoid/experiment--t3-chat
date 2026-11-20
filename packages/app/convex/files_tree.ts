@@ -1075,8 +1075,8 @@ export const list_tree_children_sorted = query({
 				tail.push(["gte", "sortValue", start]);
 				if (end !== null) tail.push(["lt", "sortValue", end]);
 			}
-			// Leave out docs with no value, such as a frontmatter map. Such a doc has no key, and that
-			// sorts before `null`. Every stored key (a number, a boolean or text) sorts after `null`.
+			// Leave out docs with no value, such as a frontmatter map. Their missing key sorts before
+			// `null`, and every stored key sorts after it.
 			else tail.push(["gt", "sortValue", null]);
 
 			const fieldPage = await db_page_children_by_field(ctx, {

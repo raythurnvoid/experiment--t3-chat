@@ -95,7 +95,8 @@ by `files_metadata_committed_field_sort_fields` in `files_metadata_db.ts`). Valu
 them. `sortValue` uses the short search value through `files_sort_value_of` in `shared/files-sort.ts`: a
 stored number stays a number, a stored boolean stays a boolean, every other value is a text key, a
 list uses its first item, and `maybe_date` is skipped (see "Folder Table Sort Keys"). A key with no
-plain value (a frontmatter map parent) has no `sortValue`, so the file sorts with the missing rows. `sortDisplayValue` is a typed preview of at most 256 code points.
+plain value (a frontmatter map parent) has no `sortValue`, so the file sorts with the missing rows.
+`sortDisplayValue` is a typed preview of at most 256 code points.
 `sortDisplayValueIsPreview` is true when the string is cut or the field has more plain values.
 An absent flag means false, so a complete short value needs no stored flag.
 Every writer that
@@ -455,7 +456,7 @@ The filter bar decides the type of an `is` value (`files_folder_table_query_to_f
   syntax" list shows this form.
 - Frontmatter reads more spellings as numbers than the dialog does (`850.0`, `+5`, `0x1F`, see the
   table in "Folder Table Sort Keys"). To find such a number, type the form it prints as (`850`,
-  `5`, `31`). A typed `01234` finds only text values; before typed keys it also found the number 1234.
+  `5`, `31`). A typed `01234` finds only text values.
 
 There is no metadata `missing` filter: finding the rows without a key would need a scan. Pending
 edits never change a filter result.

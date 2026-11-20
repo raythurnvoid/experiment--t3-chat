@@ -522,8 +522,6 @@ Search mode runs the search box's custom-field walk (`files_pending_overlay_list
 
 The cursor is sealed like the `files/list` cursor, with the purpose `files_query`. Its scope is the caller, the person, the subject, the path, `field`, the mode, `match`, `order`, `kind`, the membership lifetime and the folder id (search mode adds the search generation). `limit` and `fields` are not in the scope, so a caller can change them between pages. A cursor that does not open answers 400 `invalid_cursor` with `This query cursor changed. Start a new page.`
 
-One-time effect of the typed sort key (2026-11-20): the scope holds `match` with its type. Before, a number or boolean `eq` was kept as text (`"850"`, `"true"`). So a folder cursor made before that deploy with a number or boolean `eq` answers 400 `invalid_cursor` once, and the caller starts a new page. Every other old cursor still opens.
-
 The values step runs after the page of ids is known. `internal.files_metadata.get_query_items` reads at most 10 items per query (`files_metadata_QUERY_ITEMS_CHUNK`) and checks each item again for the subject. An item that is gone or no longer readable is left out. Each field costs one read: every writer inserts a file's field doc before its value docs, so the field doc is the first doc of its range. The comment on the constants in `shared/files-metadata.ts` has the measured cost.
 
 Before the answer leaves, the route resolves the same bearer again and compares tenant, account, credential, subject and scopes (`public_api_has_same_authority`). A key or a session that lost its rights during the read gets 401. A scheduled run gets the recheck described in "Scheduled plugin API calls".

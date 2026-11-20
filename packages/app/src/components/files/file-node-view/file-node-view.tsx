@@ -193,6 +193,7 @@ import {
 } from "../../../../shared/files-metadata.ts";
 import {
 	files_folder_table_query_field_text,
+	files_folder_table_query_format_text_value,
 	files_folder_table_query_parse,
 	files_folder_table_query_to_filter,
 	files_folder_table_query_to_sort,
@@ -4863,12 +4864,16 @@ function get_folder_filter_day_bounds(day: string) {
  */
 function get_folder_filter_label(filter: files_table_Filter | null, namePrefix: string | null) {
 	if (filter === null) return "No filter";
+	// Write a custom field's text value as it is typed in the bar, so the text "3" and the number 3 get
+	// different labels.
 	const value =
 		filter.kind === "date"
 			? new Date(filter.start).toLocaleDateString("en-CA")
-			: "value" in filter
-				? String(filter.value)
-				: "";
+			: filter.kind === "text" && filter.op === "is" && typeof filter.value === "string"
+				? files_folder_table_query_format_text_value(filter.value)
+				: "value" in filter
+					? String(filter.value)
+					: "";
 	const label = `${files_folder_table_query_field_text(filter.field)} ${filter.op.replace("_", " ")}${value ? ` ${value}` : ""}`;
 	return namePrefix === null
 		? label

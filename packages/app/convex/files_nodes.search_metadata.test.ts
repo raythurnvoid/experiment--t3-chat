@@ -2328,7 +2328,7 @@ describe("list_tree_children_sorted", () => {
 		expect(first.page[0]).not.toHaveProperty("sortFieldValue");
 	});
 
-	test("a metadata key orders text, booleans and numbers across pages, and is matches one type", async () => {
+	test("a metadata key orders text, booleans and numbers across pages, and `is` is strict by type", async () => {
 		const { insert_children, set_metadata, read_table } = await seed_folder_table();
 		const children: Array<[string, files_metadata_Entry["value"]]> = [
 			["minus-10.md", -10],
@@ -2349,7 +2349,7 @@ describe("list_tree_children_sorted", () => {
 		// numbers. Descending is the exact reverse of: numbers, false, true, text.
 		expect(
 			await read_table({ field: "metadata.rent", direction: "desc" }),
-			"the number and boolean rows are in the pages",
+			"descending order: text, true, false, numbers",
 		).toEqual([
 			"text-na.md",
 			"text-850.md",

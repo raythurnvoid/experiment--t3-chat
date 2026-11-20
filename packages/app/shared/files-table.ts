@@ -41,7 +41,7 @@ export function files_table_updated_by_text(displayName: string | null) {
 }
 
 /**
- * True when a `starts with` value cannot be one index range. The sort key writes a number with its
+ * True when a `starts with` value cannot be one index range. The text key writes a digit run with its
  * length first (`2` is `012`, `10` is `0210`), so a prefix that ends in a digit does not match the
  * longer numbers. Check the key, not the text: accent marks after a digit are dropped from the key.
  */
@@ -107,8 +107,8 @@ export function files_table_filter_order_field(filter: { field: string; op: stri
 }
 
 /**
- * The metadata key the table reads, or null: a text filter's field, else a metadata sort's field.
- * An "is" text filter reads the name order, so the sort alone does not say it.
+ * The metadata key the table reads, or null: a custom field filter's field, else a metadata sort's
+ * field. An "is" custom field filter reads the name order, so the sort alone does not say it.
  */
 export function files_table_metadata_field(args: {
 	sort: { field: string } | null;

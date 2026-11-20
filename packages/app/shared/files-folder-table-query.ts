@@ -538,7 +538,7 @@ export function files_folder_table_query_to_sort(parsed: Pick<files_folder_table
  *
  * It is a boolean or a number only when the Properties dialog would store one: a YAML 1.2 boolean
  * spelling, or a number that prints back as the same text. So `01234` and `850.0` stay text, like
- * in the dialog.
+ * in the dialog. Keep this rule in step with `scalar_entry_value` in `shared/files-metadata.ts`.
  */
 function read_unquoted_value(text: string) {
 	const booleanValue = files_search_query_BOOLEAN_LITERALS.get(text);

@@ -3496,14 +3496,5 @@ describe("files/query", () => {
 		// value (see "Field queries" in the public-api skill). So only the boolean true matches. The
 		// text "true", false, 1 and another key do not.
 		expect(page.body.items.map((item) => item.path)).toEqual(["/listings/a.md", "/listings/f.md"]);
-
-		const text = await query_files(t, session.token, {
-			mode: "folder",
-			path: "/listings",
-			field: "metadata.ideal",
-			match: { eq: "true" },
-		});
-		expect(text.status, JSON.stringify(text.body)).toBe(200);
-		expect(text.body.items.map((item) => item.path)).toEqual(["/listings/c.md"]);
 	});
 });

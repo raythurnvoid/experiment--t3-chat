@@ -62,7 +62,7 @@ describe("files_table_filter_is_valid", () => {
 
 	test.each<files_table_Filter>([
 		{ kind: "name", field: "name", op: "starts_with", value: "" },
-		// The sort key writes a number with its length first, so a prefix that ends in a digit is not one range.
+		// The text key writes a digit run with its length first, so a prefix that ends in a digit is not one range.
 		{ kind: "name", field: "name", op: "starts_with", value: "file1" },
 		{ kind: "text", field: "metadata.version", op: "starts_with", value: "v2" },
 		{ kind: "extension", field: "extension", op: "is", value: "x".repeat(1025) },

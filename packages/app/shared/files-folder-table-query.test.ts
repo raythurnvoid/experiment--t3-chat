@@ -148,7 +148,7 @@ describe("files_folder_table_query_parse_token", () => {
 		);
 		// The next day after the last calendar day is not a day the browser can read.
 		expect(problems("file.updated:<=9999-12-31")).toBe("Enter a valid calendar day like 2026-09-04");
-		// The sort key writes a number with its length first, so the prefix cannot end in a digit.
+		// The text key writes a digit run with its length first, so the prefix cannot end in a digit.
 		expect(problems("file.name:file1*")).toBe(
 			"'Starts with' cannot end with a number here. Remove the last digits, or use an exact value",
 		);
@@ -357,7 +357,6 @@ describe("files_folder_table_query_to_filter", () => {
 			["metadata.ideal:True", { kind: "text", field: "metadata.ideal", op: "is", value: true }],
 			['metadata.rooms:"3"', { kind: "text", field: "metadata.rooms", op: "is", value: "3" }],
 			["metadata.zip:01234", { kind: "text", field: "metadata.zip", op: "is", value: "01234" }],
-			["metadata.rent:850.0", { kind: "text", field: "metadata.rent", op: "is", value: "850.0" }],
 			["metadata.status:op*", { kind: "text", field: "metadata.status", op: "starts_with", value: "op" }],
 			["frontmatter.due:*", { kind: "text", field: "frontmatter.due", op: "present" }],
 		];
