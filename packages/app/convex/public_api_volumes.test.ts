@@ -8,6 +8,7 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import {
 	test_convex,
 	test_drain_billing_usage_event_outbox,
+	test_finish_file_index,
 	test_mocks_fill_db_with,
 	test_run_with_flush,
 } from "./setup.test.ts";
@@ -20,6 +21,8 @@ import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_cr
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_create.ts";
 import { public_api_http_read_file } from "./public_api.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";
+import { public_api_files_query_http } from "./public_api_files_query.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { getFunctionName } from "convex/server";
 import * as server from "./_generated/server.js";
 import { r2_create_asset_key } from "./r2_assets.ts";
@@ -1341,6 +1344,70 @@ describe("scheduled Files response authority", () => {
 		// The file is still there, so losing the grant makes it locked, not missing.
 		expect(sawIo, "personal consent test must reach file I/O before revoking access").toBe(true);
 		expect(response.status, "scheduled Files responses must repeat personal file consent").toBe(403);
+		expect((await calls(f)).at(-1)?.status).toBe("failed");
+	});
+
+	// `plugins.test.ts` checks that the route settles its call on each answer. This test checks only the
+	// scheduled-run recheck.
+	test("query rechecks personal file consent after it read the rows", async () => {
+		const f = await fixture({ scheduled: true });
+		const file = await readable_file(f);
+		await f.t.run(async (ctx) =>
+			files_metadata_db_write_entries(ctx, {
+				fileNode: (await ctx.db.get("files_nodes", file.nodeId))!,
+				entries: [{ key: "status", value: "open" }],
+			}),
+		);
+		await test_finish_file_index(f.t, file.nodeId);
+		// Leave the workspace selection as the only consent that covers the file.
+		const rootConsent = await grant_plugin_file_access({
+			t: f.t,
+			userId: f.owner.userId,
+			membershipId: f.owner.membershipId,
+			installationId: f.installationId,
+			rootNodeId: null,
+			level: "read",
+		});
+		await reset_manage_limit(f);
+		const revoke = async (consentId: Id<"plugins_file_consents">) => {
+			const removed = await f.asOwner.mutation(api.plugins_access.revoke_file_access_as_me, {
+				membershipId: f.owner.membershipId,
+				installationId: f.installationId,
+				consentId,
+			});
+			if (removed._nay) throw new Error(removed._nay.message);
+			await reset_manage_limit(f);
+		};
+		await revoke(file.consentId);
+
+		const query = async (afterRows: () => Promise<void>) =>
+			await f.t.action(async (ctx) => {
+				const response = await public_api_files_query_http({
+					ctx: {
+						...ctx,
+						runQuery: async (...args) => {
+							const result = await ctx.runQuery(...args);
+							if (is_api_function(args[0], "files_metadata:get_query_items")) await afterRows();
+							return result;
+						},
+					},
+					request: api_request({
+						f,
+						path: "/api/v1/files/query",
+						body: { mode: "folder", field: "metadata.status" },
+					}),
+					path: "/api/v1/files/query",
+				});
+				return {
+					status: response.status,
+					paths: "items" in response.body ? (response.body.items ?? []).map((item) => item.path) : [],
+				};
+			});
+
+		expect(await query(async () => {})).toEqual({ status: 200, paths: ["/note.txt"] });
+
+		// The file is still there, so losing the consent makes it locked, not missing.
+		expect(await query(() => revoke(rootConsent._id))).toEqual({ status: 403, paths: [] });
 		expect((await calls(f)).at(-1)?.status).toBe("failed");
 	});
 });

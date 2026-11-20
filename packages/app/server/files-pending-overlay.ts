@@ -3586,6 +3586,11 @@ async function read_list_page(
 		 * "Permission denied".
 		 */
 		searchLockedRoot?: boolean;
+		/**
+		 * Metadata `prefix` and `range` only, for the public `/api/v1/files/query` route: answer
+		 * "Permission denied" to a caller who cannot open the workspace root.
+		 */
+		requireRoot?: boolean;
 		numItems: number;
 		cursor: string | null;
 	},
@@ -4039,10 +4044,13 @@ async function read_list_page(
 									...common,
 									outsideOnly: true,
 								})
-							: ctx.runQuery(internal.files_visible.internal_search_metadata_saved, {
+							: // Pass `requireRoot` here only. The places and pending queries have strict validators
+								// and would refuse the extra field.
+								ctx.runQuery(internal.files_visible.internal_search_metadata_saved, {
 									...metadataArgs,
 									...movedIn,
 									indexStream: stream.indexStream as files_IndexStream,
+									...(args.requireRoot ? { requireRoot: true } : {}),
 								})
 			) as Promise<files_visible_stream_Result>;
 		}

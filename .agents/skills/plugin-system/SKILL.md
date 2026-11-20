@@ -206,6 +206,23 @@ Edit for its sibling. Added file references need applied Read.
 - A folder a plugin creates (`plugin-folders/ensure`, a writer's folder) is a regular folder. It gets its parent's access, like a folder a person creates. The plugin cannot restrict it or choose who reads it.
 - Billing does not change. The paying user pays for plugin writes. When the balance is out, neither the person nor the plugin can write.
 
+Reading files includes reading their custom fields (see "Public Field Query" in
+`../file-metadata/SKILL.md`). A plugin with `workspace.files.read` may call
+`POST /api/v1/files/query` from a page, a file view, or a run, also a scheduled run. It needs no
+new capability. The consent texts say so: the install screen says "Read the files and folders each
+member chooses, with their metadata", and the run consent says "Read my selected files and their
+metadata".
+
+The query follows the same personal consent as every other plugin file read:
+
+- Folder mode needs applied Read on the folder itself. Choosing only a file inside it is not
+  enough, and the answer is 403 `Permission denied: <path>`.
+- A search with `prefix` or `range` reads the whole workspace, so the person must have chosen
+  **Whole workspace**. Otherwise the answer is 403 `Permission denied: /`.
+- A restricted child never shows in a folder page, also when the person chose it for the plugin.
+
+Route contract, cursors and limits: "Field queries" in `../public-api/SKILL.md`.
+
 **Design principle: consent does not change sharing.** Personal consent limits what
 a plugin may do for one person. It never chooses who can read the files it creates.
 Use ordinary Files sharing for that. Keep plugin-specific reader lists and hidden
@@ -1025,6 +1042,24 @@ Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is co
 - Media URLs (`src/media-urls.ts`): `{url, expiresAt}` values; initial loads and renewals share one 4-slot pool with per-node in-flight dedup. The `use_media_url` hook in `app.tsx` permits one automatic renewal per failure episode, resets the budget only after a successful replacement load, and offers manual Retry after renewal failure. Video renewal restores `currentTime` and paused state after `loadedmetadata` and catches rejected `play()`.
 - Accessibility: loading uses `role="status"`/`aria-live="polite"`, errors use `role="alert"`, Retry controls are real buttons, tile labels reveal on `:focus-visible` as well as hover, and `prefers-reduced-motion: reduce` disables animation/transitions. Buttons and the viewer back control are at least 44px high; the grid and media padding keep controls and tiles usable at a 360px viewport and 200% zoom.
 
+# Apartments plugin (`plugins/bonobo-plugin-apartments`)
+
+Draft (0.1.0), not published yet. Repository `bonobo-plugin-apartments`; its README holds the flat
+file shape for the writer, the views, and the build and release steps. It copies the Gallery layout.
+
+It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" in the
+`public-api` skill). Capability: `workspace.files.read` only. Host facts it depends on:
+
+- Each view is one folder-mode query on one frontmatter field, and the table columns come back in
+  `fields`. A page can be empty while `isDone` is false, so "Load more" follows the cursor a few
+  times until it has rows.
+- Numbers sort as text in folder mode, so the README tells the writer to use whole numbers or one
+  decimal place for every sorted field.
+- The page stores only the folder path in `localStorage`, because all plugin frames share one
+  origin.
+- Test data: `scripts/seed-qa-flats.mjs` writes fake flats with a personal API key, only into a
+  `qa-` folder. It creates paid data, so load `qa-data` first.
+
 # Chitchat plugin (`plugins/bonobo-plugin-chitchat`)
 
 Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Bonobo Senate. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Bonobo Senate keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
@@ -1092,10 +1127,11 @@ view, the agent named the account, folder and draft state with no tool call, a r
 removing the chip carried `pluginContext: null`, and no stored message or title held the view text.
 
 SDK 0.28.0 (NOT mirrored yet) passes `{ detail, ref }` to the context provider, so a page can answer
-the agent's screen read (`view_snapshot`) with a detailed list and refs. No plugin pins it yet:
-Gmail 0.5.0 stays on 0.27.0, whose provider ignores the argument and answers both requests with its
-summary. The host works with both. Mirror it, then re-pin and republish, when a plugin first needs
-`detail` or `ref`.
+the agent's screen read (`view_snapshot`) with a detailed list and refs. It also types the field
+query route `POST /api/v1/files/query`. Gmail 0.5.0 stays on 0.27.0, whose provider ignores the
+argument and answers both screen reads with its summary. The host works with both. The Apartments
+plugin is the first to pin 0.28.0. To release it: deploy the host, mirror SDK 0.28.0, pin that commit
+in Apartments, build twice, push the plugin repo, publish, then add it as a submodule.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
@@ -1955,6 +1991,7 @@ races between route authorization and the durable write.
 - Direct asset routes, passed-review gates, rotation/revocation, stable rate identity, expiry cleanup, and session behavior: `packages/app/convex/plugins_ui.test.ts`. File-view session mints (content-type match, restricted-node refusal, refresh re-check, own rate bucket) live in its "plugin ui file view sessions" describe, and the `connect-src` built from the served version's `uiOutboundOrigins` in its "plugin ui assets" describe.
 - UI outbound origins: manifest rules in `packages/app/shared/plugins.test.ts`, install consent in the "plugins outbound origins consent" describe in `packages/app/convex/plugins.test.ts` (that describe covers both origin lists, so its name keeps the unqualified noun).
 - The four service-grant routes (exchange, renew, seal-processing, verify-live), including the registration binding, secret rotation through the publisher mutations, registration-derived scopes, and the six-day processing deadline: `packages/app/convex/plugins_service.test.ts`. The service upload pipeline behind the sealed grant: `packages/app/convex/public_api_service_uploads.test.ts`.
+- Field queries by a plugin: the "files/query" describe in `packages/app/convex/plugins_ui.test.ts` (page by value, the chosen folder only, restricted children, the merge of normal and Move docs, cursor binding, search paging, Whole workspace prefix and range); the call slot of a run in `packages/app/convex/plugins.test.ts`; the scheduled recheck in `packages/app/convex/public_api_volumes.test.ts`. Apartments views, paging stop, frontmatter keys, the ad address check and one page render: `plugins/bonobo-plugin-apartments/src/*.test.ts(x)`.
 - File-view matching (`plugins_list_file_view_matches`): `packages/app/shared/plugins.test.ts`.
 - Host protocol fields, deadline/Retry/focus, refresh serialization, and stale-generation cancellation: `packages/app/src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx`. Real WindowProxy/load ordering still requires Chromium/Playwriter.
 - Gallery scan/media/a11y behavior: `plugins/bonobo-plugin-gallery/src/*.test.ts(x)`; Video Player URL renewal and app states: `plugins/bonobo-plugin-video-player/src/*.test.ts(x)`; SDK handshake/fetchJson and both context kinds: `packages/bonobo-plugin-sdk/frontend.test.ts`.
@@ -1966,9 +2003,10 @@ vp env exec pnpm --dir packages/app exec vitest run --project convex convex/plug
 vp env exec pnpm --dir packages/app exec vitest run --project src 'src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx'
 ```
 
-Gallery has its own `pnpm-workspace.yaml`, so pnpm stops there and does not walk up to the root workspace. The SDK is a member of the root workspace. Run both without `--ignore-workspace`:
+Gallery has its own `pnpm-workspace.yaml`, so pnpm stops there and does not walk up to the root workspace. Apartments works the same way. The SDK is a member of the root workspace. Run them without `--ignore-workspace`:
 
 ```powershell
 vp env exec pnpm --dir plugins/bonobo-plugin-gallery run test:once
+vp env exec pnpm --dir plugins/bonobo-plugin-apartments run test:once
 vp env exec pnpm --dir packages/bonobo-plugin-sdk run test:once
 ```

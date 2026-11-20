@@ -92,6 +92,7 @@ import type { plugins_data_http_routes } from "../convex/plugins_data_http_route
 import type { plugins_invoke_http_routes } from "../convex/plugins_invoke_http_routes.ts";
 import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
 import type { public_api_files_organize_http_routes } from "../convex/public_api_files_organize_http_routes.ts";
+import type { public_api_files_query_http_routes } from "../convex/public_api_files_query_http_routes.ts";
 import type { public_api_plugin_files_http_routes } from "../convex/public_api_plugin_files_http_routes.ts";
 import type { public_api_plugin_writers_http_routes } from "../convex/public_api_plugin_writers_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
@@ -178,6 +179,8 @@ export interface api_schemas_Main {
 	"/api/v1/files/read": ReturnType<typeof public_api_http_routes>["/api/v1/files/read"];
 
 	"/api/v1/files/search": ReturnType<typeof public_api_http_routes>["/api/v1/files/search"];
+
+	"/api/v1/files/query": ReturnType<typeof public_api_files_query_http_routes>["/api/v1/files/query"];
 
 	"/api/v1/files/read-only/get": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-only/get"];
 

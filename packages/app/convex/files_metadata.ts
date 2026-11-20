@@ -1,4 +1,9 @@
-import { paginationOptsValidator, paginationResultValidator, type WithoutSystemFields } from "convex/server";
+import {
+	paginationOptsValidator,
+	paginationResultValidator,
+	type RegisteredQuery,
+	type WithoutSystemFields,
+} from "convex/server";
 import { compareValues, v, type Infer } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
@@ -24,6 +29,7 @@ import {
 import { files_pending_update_db_update_index_revision } from "./files_pending_updates_db.ts";
 import { files_transfer_db_get_entry_version } from "./files_transfer.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 	access_control_subject_validator,
@@ -62,6 +68,8 @@ import {
 	files_metadata_parse_entries_yaml,
 	files_metadata_validate_remove_keys,
 	files_metadata_preflight_frontmatter,
+	files_metadata_QUERY_FIELDS_MAX,
+	files_metadata_QUERY_ITEMS_CHUNK,
 	files_metadata_search_values,
 	files_metadata_validate_entries,
 	type files_metadata_Entry,
@@ -1107,6 +1115,114 @@ export const get_field_values = query({
 		return { values, afterField, isDone };
 	},
 });
+
+/**
+ * The `files/list` item fields and the field values of a few saved nodes, for the public `/api/v1/files/query`
+ * route. The route found the nodes in an earlier query, so check each one again here: a node that
+ * is gone, archived, in another workspace or not readable by the subject now is left out.
+ *
+ * The caller is any subject: a user, a service account or a plugin pair.
+ */
+export const get_query_items = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		subject: access_control_subject_validator,
+		nodeIds: v.array(v.id("files_nodes")),
+		/**
+		 * Qualified fields, such as `metadata.status` or `frontmatter.due`.
+		 */
+		fields: v.array(v.string()),
+	},
+	returns: v.array(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			path: v.string(),
+			name: v.string(),
+			kind: doc(app_convex_schema, "files_nodes").fields.kind,
+			contentType: v.union(v.string(), v.null()),
+			updatedAt: v.number(),
+			assetId: v.union(v.id("files_r2_assets"), v.null()),
+			readOnly: v.boolean(),
+			/**
+			 * One entry per asked field, in the asked order. A list because a field name can hold any
+			 * character.
+			 */
+			fields: v.array(
+				v.object({
+					field: v.string(),
+					value: v.union(v.string(), v.number(), v.boolean(), v.null()),
+					isPreview: v.boolean(),
+				}),
+			),
+		}),
+	),
+	handler: async (ctx, args) => {
+		if (
+			args.nodeIds.length > files_metadata_QUERY_ITEMS_CHUNK ||
+			args.fields.length > files_metadata_QUERY_FIELDS_MAX ||
+			new Set(args.fields).size !== args.fields.length ||
+			args.fields.some((field) => !search_field_path_is_valid(field))
+		)
+			throw convex_error({ message: "Invalid metadata fields." });
+
+		const checker = access_control_create_file_checker(ctx, args);
+
+		const rows = await Promise.all(
+			args.nodeIds.map(async (nodeId) => {
+				const fileNode = await files_saved_placement_db_get_node(ctx.db, nodeId);
+				if (
+					!fileNode ||
+					fileNode.organizationId !== args.organizationId ||
+					fileNode.workspaceId !== args.workspaceId ||
+					fileNode.archiveOperationId !== null ||
+					!(await checker.can(fileNode, "content.read"))
+				)
+					return null;
+
+				// This read filters the field's index range and takes the first doc. The range also holds
+				// the key's value docs.
+				//
+				// Every writer inserts the field doc before the value docs of the same file and view. So
+				// the field doc is usually the first doc of its range, and the read stops after 1 doc. A file
+				// without the key has an empty range.
+				//
+				// A Move or an index run copies a file's docs between views in pages. For a short time the
+				// field doc can be in one view and some value docs in the other. Then this read goes through
+				// those value docs. The bound is the write limit of 512 index docs per file.
+				const fields = await Promise.all(
+					args.fields.map(async (field) => {
+						const metadataDoc = await files_saved_index_db_get_table_field(ctx, { fileNode, field });
+						return {
+							field,
+							value: metadataDoc?.sortDisplayValue ?? null,
+							isPreview: metadataDoc?.sortDisplayValueIsPreview ?? false,
+						};
+					}),
+				);
+
+				return {
+					nodeId: fileNode._id,
+					path: fileNode.path,
+					name: fileNode.name,
+					kind: fileNode.kind,
+					contentType: fileNode.contentType ?? null,
+					updatedAt: fileNode.updatedAt,
+					assetId: fileNode.assetId ?? null,
+					readOnly: fileNode.readOnly,
+					fields,
+				};
+			}),
+		);
+
+		return rows.filter((row) => row !== null);
+	},
+});
+
+export type files_metadata_get_query_items_Result =
+	typeof get_query_items extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 // #endregion folder table fields
 

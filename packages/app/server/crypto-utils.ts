@@ -140,6 +140,7 @@ type CursorPurpose =
 	| "files_trash_areas"
 	| "files_read"
 	| "files_search"
+	| "files_query"
 	| "files_jobs_get"
 	| "ai_chat_transcript";
 

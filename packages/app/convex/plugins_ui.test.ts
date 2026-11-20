@@ -1,4 +1,5 @@
 import { R2 } from "@convex-dev/r2";
+import { getFunctionName } from "convex/server";
 import { importSPKI, jwtVerify } from "jose";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
@@ -10,13 +11,24 @@ import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_db_yjs_push_update } from "./files_nodes.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
 import { r2 } from "./r2_client.ts";
-import { test_convex, test_mocks_fill_db_with, test_run_with_flush } from "./setup.test.ts";
+import { files_metadata_db_insert_committed, files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { grant_plugin_file_access } from "./plugins.setup.test.ts";
+import { public_api_files_query_http } from "./public_api_files_query.ts";
+import {
+	test_convex,
+	test_db_hold_move_slot,
+	test_finish_file_index,
+	test_finish_saved_scope_jobs,
+	test_mocks_fill_db_with,
+	test_run_with_flush,
+} from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
 import { files_content_type_index_fields } from "../shared/files.ts";
+import { files_metadata_QUERY_FIELDS_MAX, type files_metadata_Entry } from "../shared/files-metadata.ts";
 import { plugins_file_grants_db_ensure_pair } from "../server/plugins-file-grants.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 
@@ -2776,5 +2788,675 @@ describe("plugin ui assets", () => {
 		expect(logged).toContain(fixture.pluginVersionId);
 		expect(logged).toContain("dist/frontend/index.html");
 		expect(logged).not.toContain("plugins/gallery");
+	});
+});
+
+/**
+ * Seed saved files with custom fields, and wait until their field docs are published.
+ */
+async function seed_query_files(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+	files: Array<{ path: string; metadata: files_metadata_Entry[] }>,
+) {
+	const nodeIds = await test_run_with_flush(t, async (ctx) => {
+		const ids: Array<Id<"files_nodes">> = [];
+		for (const file of files) {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId: fixture.membership.userId,
+				parentId: "root",
+				path: file.path,
+				kind: "file",
+				contentType: "text/markdown",
+				now: Date.now(),
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			await files_metadata_db_write_entries(ctx, {
+				fileNode: (await ctx.db.get("files_nodes", created._yay))!,
+				entries: file.metadata,
+			});
+			ids.push(created._yay);
+		}
+		return ids;
+	});
+	for (const nodeId of nodeIds) await test_finish_file_index(t, nodeId);
+	return nodeIds;
+}
+
+type QueryPage = {
+	items: Array<{
+		path: string;
+		fields: Record<string, { value: string | number | boolean | null; isPreview: boolean }>;
+	}>;
+	cursor: string | null;
+	isDone: boolean;
+};
+
+async function query_files(t: ReturnType<typeof test_convex>, token: string, body: Record<string, unknown>) {
+	const response = await t.fetch("/api/v1/files/query", {
+		method: "POST",
+		headers: auth_headers(token),
+		body: JSON.stringify(body),
+	});
+	return {
+		status: response.status,
+		body: (await response.json()) as QueryPage & { message?: string; errorCode?: string },
+	};
+}
+
+async function get_folder_id(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+	path: string,
+) {
+	return await t.run(async (ctx) => {
+		const nodes = await ctx.db.query("files_nodes").collect();
+		return nodes.find((node) => node.workspaceId === fixture.membership.workspaceId && node.path === path)!._id;
+	});
+}
+
+describe("files/query", () => {
+	test.each(["asc", "desc"] as const)(
+		"folder mode pages by value past many other values, and reads only the matching rows (%s)",
+		async (order) => {
+			const t = test_convex();
+			const fixture = await install_gallery_plugin(t);
+			await seed_query_files(t, fixture, [
+				// More rows with another value than eight read rounds of this page size can pass. Half sort
+				// before "open" and half after it, so both orders must pass other values first.
+				...Array.from({ length: 60 }, (_, index) => ({
+					path: `listings/a-${String(index).padStart(2, "0")}.md`,
+					metadata: [{ key: "status", value: index % 2 === 0 ? "closed" : "pending" }],
+				})),
+				...Array.from({ length: 5 }, (_, index) => ({
+					path: `listings/z-${index}.md`,
+					metadata: [
+						{ key: "status", value: "open" },
+						{ key: "rent", value: 900 + index },
+					],
+				})),
+				{ path: "listings/no-status.md", metadata: [{ key: "rent", value: 1 }] },
+				{ path: "other/open.md", metadata: [{ key: "status", value: "open" }] },
+			]);
+			const session = await mint_session_token(fixture);
+
+			const pages: QueryPage[] = [];
+			let cursor: string | null = null;
+			do {
+				const page = await query_files(t, session.token, {
+					mode: "folder",
+					path: "/listings",
+					field: "metadata.status",
+					match: { eq: "open" },
+					order,
+					fields: ["metadata.rent"],
+					limit: 2,
+					cursor,
+				});
+				expect(page.status, JSON.stringify(page.body)).toBe(200);
+				pages.push(page.body);
+				cursor = page.body.cursor;
+				expect(pages.length).toBeLessThan(10);
+			} while (cursor !== null);
+
+			const rows = pages.map((page) => page.items.map((item) => [item.path, item.fields["metadata.rent"]?.value]));
+			// An `eq` match reads one value, in name order.
+			const expected = Array.from({ length: 5 }, (_, index) => [`/listings/z-${index}.md`, 900 + index]);
+			if (order === "desc") expected.reverse();
+			// Only the last request may be an empty page: the reader learns the end only after the last row.
+			expect(rows.at(-1)!.length === 0 ? rows.slice(0, -1) : rows).toEqual([
+				expected.slice(0, 2),
+				expected.slice(2, 4),
+				expected.slice(4),
+			]);
+			expect(pages.at(-1)!.isDone).toBe(true);
+
+			// The read must not touch the 60 rows with another value. A page of 2 reads about 20 documents:
+			// its 2 field docs and nodes, and the access and index state docs.
+			const folderId = await get_folder_id(t, fixture, "/listings");
+			const reads = await t.run(async (ctx) => {
+				const before = await ctx.meta.getTransactionMetrics();
+				const page = await ctx.runQuery(internal.files_tree.list_children_by_field, {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					subject: { kind: "plugin_pair", pairId: fixture.filePairId },
+					folderId,
+					kind: "file",
+					field: "metadata.status",
+					match: { kind: "eq", value: "open" },
+					order,
+					source: { kind: "normal", generation: 0 },
+					seek: { lastKey: null, phase: 0 },
+					numItems: 2,
+				});
+				const after = await ctx.meta.getTransactionMetrics();
+				return { rows: page?.rows.length, documents: after.documentsRead.used - before.documentsRead.used };
+			});
+			expect(reads.rows).toBe(2);
+			expect(reads.documents, "documents read for a page of 2").toBeLessThan(40);
+		},
+	);
+
+	test("a plugin page reads only the folder its person chose, and never a whole-workspace search", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileConsent: false });
+		await seed_query_files(t, fixture, [
+			{ path: "listings/one.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "other/two.md", metadata: [{ key: "status", value: "open" }] },
+		]);
+		const grant = async (rootNodeId: Id<"files_nodes">) => {
+			// plugins_manage is a token bucket with capacity 2, and the install spent one token.
+			await t.run((ctx) =>
+				ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+					name: "plugins_manage",
+					key: fixture.membership.userId,
+				}),
+			);
+			await grant_plugin_file_access({
+				t,
+				userId: fixture.membership.userId,
+				membershipId: fixture.membership.membershipId,
+				installationId: fixture.installationId,
+				rootNodeId,
+				level: "read",
+			});
+		};
+		await grant(await get_folder_id(t, fixture, "/other"));
+		const session = await mint_session_token(fixture);
+		const body = { mode: "folder", path: "/listings", field: "metadata.status" };
+
+		const refused = await query_files(t, session.token, body);
+		expect(refused.status).toBe(403);
+		expect(refused.body).toEqual({ message: "Permission denied: /listings", errorCode: "permission_denied" });
+
+		await grant(await get_folder_id(t, fixture, "/listings"));
+		const allowed = await query_files(t, session.token, body);
+		expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+		expect(allowed.body.items.map((item) => item.path)).toEqual(["/listings/one.md"]);
+
+		// A prefix reads the whole open area by value, so it needs the workspace root.
+		const prefix = await query_files(t, session.token, {
+			mode: "search",
+			field: "metadata.status",
+			match: { prefix: "op" },
+		});
+		expect(prefix.status).toBe(403);
+		expect(prefix.body).toEqual({
+			message:
+				"Permission denied: /. Prefix and range read the whole workspace and need access to /. Use eq or exists with a folder path, or folder mode.",
+			errorCode: "permission_denied",
+		});
+	});
+
+	test("a restricted child with a matching value never shows in a folder page", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const [, secretId] = await seed_query_files(t, fixture, [
+			{ path: "listings/a.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/b-secret.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/c.md", metadata: [{ key: "status", value: "open" }] },
+		]);
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.membership.membershipId,
+			nodeId: secretId!,
+		});
+		expect(restricted._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
+		await test_finish_file_index(t, secretId!);
+		// Give the plugin the restricted file too. plugins_manage is a token bucket with capacity 2, and
+		// the install spent one token.
+		await t.run((ctx) =>
+			ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
+				name: "plugins_manage",
+				key: fixture.membership.userId,
+			}),
+		);
+		await grant_plugin_file_access({
+			t,
+			userId: fixture.membership.userId,
+			membershipId: fixture.membership.membershipId,
+			installationId: fixture.installationId,
+			rootNodeId: secretId!,
+			level: "read",
+		});
+		const session = await mint_session_token(fixture);
+
+		// The plugin can open the restricted file: a search finds it.
+		const search = await query_files(t, session.token, {
+			mode: "search",
+			path: "/listings",
+			field: "metadata.status",
+			match: { eq: "open" },
+		});
+		expect(search.status, JSON.stringify(search.body)).toBe(200);
+		expect(search.body.items.map((item) => item.path)).toContain("/listings/b-secret.md");
+
+		// Folder mode still leaves it out on purpose. It reads only the area of the folder itself, so a
+		// page never depends on a row of another area.
+		const body = { mode: "folder", path: "/listings", field: "metadata.status", match: { eq: "open" }, limit: 1 };
+		const first = await query_files(t, session.token, body);
+		expect(first.status, JSON.stringify(first.body)).toBe(200);
+		expect(first.body.items.map((item) => item.path)).toEqual(["/listings/a.md"]);
+		const second = await query_files(t, session.token, { ...body, cursor: first.body.cursor });
+		expect(second.body.items.map((item) => item.path)).toEqual(["/listings/c.md"]);
+	});
+
+	test("folder mode merges the normal and the Move docs, and returns each file once", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const ids = await seed_query_files(
+			t,
+			fixture,
+			Array.from({ length: 6 }, (_, index) => ({
+				path: `listings/z-${index}.md`,
+				metadata: [{ key: "status", value: "open" }],
+			})),
+		);
+		// A Move is copying these files' docs, like the read budget test in `files_tree.budgets.test.ts`.
+		// The writes copy the shape of the real copiers (`db_sides` in `files_move_cohorts.ts` and
+		// `db_stage_page` in `files_move_content.ts`): each normal doc becomes the "before" doc, and a new
+		// "after" doc is inserted. The docs of z-0, z-1, z-2 and z-4 are copied. z-3 and z-5 are not yet.
+		const cohortId = await t.run(async (ctx) => {
+			const cohortId = await test_db_hold_move_slot(ctx, fixture.membership);
+			for (const nodeId of ids) {
+				const {
+					_id,
+					_creationTime,
+					createdBy: _createdBy,
+					readOnly: _readOnly,
+					readOnlyDecisionId: _readOnlyDecisionId,
+					moveCohortId: _moveCohortId,
+					scopeOpId: _scopeOpId,
+					...header
+				} = (await ctx.db.get("files_nodes", nodeId))!;
+				for (const view of ["before", "after"] as const) {
+					await ctx.db.insert("files_saved_places", {
+						...header,
+						organizationId: fixture.membership.organizationId,
+						workspaceId: fixture.membership.workspaceId,
+						cohortId,
+						view,
+						nodeId,
+						nodeCreationTime: _creationTime,
+						contentId: null,
+					});
+				}
+				await ctx.db.patch("files_nodes", nodeId, { moveCohortId: cohortId });
+			}
+			for (const { _id, _creationTime, ...doc } of await ctx.db.query("files_metadata_docs").collect()) {
+				if (doc.sourceKind !== "committed" || ![0, 1, 2, 4].includes(ids.indexOf(doc.fileNodeId))) continue;
+				await ctx.db.patch("files_metadata_docs", _id, { moveView: { cohortId, view: "before" } });
+				await ctx.db.insert("files_metadata_docs", { ...doc, moveView: { cohortId, view: "after" } });
+			}
+			return cohortId;
+		});
+		// The Move publishes its "after" view, like the end of `files_tree.budgets.test.ts`.
+		const publish = () =>
+			t.run(async (ctx) => {
+				await ctx.db.patch("files_move_cohorts", cohortId, { visibleView: "after", publishedAt: Date.now() });
+				const slot = (await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", fixture.membership.organizationId).eq("workspaceId", fixture.membership.workspaceId),
+					)
+					.unique())!;
+				await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView: "after" });
+			});
+		const session = await mint_session_token(fixture);
+
+		const pages: string[][] = [];
+		let cursor: string | null = null;
+		do {
+			const page = await query_files(t, session.token, {
+				mode: "folder",
+				path: "/listings",
+				field: "metadata.status",
+				limit: 2,
+				cursor,
+			});
+			expect(page.status, JSON.stringify(page.body)).toBe(200);
+			pages.push(page.body.items.map((item) => item.path));
+			cursor = page.body.cursor;
+			// Page 1 ends on z-1's "before" doc. The "after" copy of z-1 is newer, so on page 2 it comes
+			// right after the page 1 cursor.
+			if (pages.length === 1) await publish();
+			expect(pages.length).toBeLessThan(10);
+		} while (cursor !== null);
+
+		// Every page is full, in name order, and no file shows twice or goes missing.
+		expect(pages.at(-1)!.length === 0 ? pages.slice(0, -1) : pages).toEqual([
+			["/listings/z-0.md", "/listings/z-1.md"],
+			["/listings/z-2.md", "/listings/z-3.md"],
+			["/listings/z-4.md", "/listings/z-5.md"],
+		]);
+	});
+
+	test("a cursor works only for the same caller and the same request", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		await seed_query_files(t, fixture, [
+			{ path: "listings/a.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/b.md", metadata: [{ key: "status", value: "open" }] },
+		]);
+		const session = await mint_session_token(fixture);
+		const reader = await mint_reader_session(t, fixture);
+		const body = { mode: "folder", path: "/listings", field: "metadata.status", limit: 1 };
+		const first = await query_files(t, session.token, body);
+		expect(first.body.cursor, JSON.stringify(first.body)).not.toBeNull();
+
+		const invalid = { message: "This query cursor changed. Start a new page.", errorCode: "invalid_cursor" };
+		const otherCaller = await query_files(t, reader.session.token, { ...body, cursor: first.body.cursor });
+		expect(otherCaller.status).toBe(400);
+		expect(otherCaller.body).toEqual(invalid);
+		const otherMatch = await query_files(t, session.token, {
+			...body,
+			match: { eq: "open" },
+			cursor: first.body.cursor,
+		});
+		expect(otherMatch.status).toBe(400);
+		expect(otherMatch.body).toEqual(invalid);
+
+		// The same person through their own API key is another caller too.
+		await t.run((ctx) =>
+			ctx.db.patch("users", fixture.membership.userId, { clerkUserId: `clerk-${fixture.membership.userId}` }),
+		);
+		const key = await fixture.asOwner.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: fixture.membership.membershipId,
+			name: "Query key",
+			scopes: ["files:read", "files:list"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const otherPrincipal = await query_files(t, key._yay.credential, { ...body, cursor: first.body.cursor });
+		expect(otherPrincipal.status).toBe(400);
+		expect(otherPrincipal.body).toEqual(invalid);
+
+		// `fields` only picks the values to return, so it may change between pages.
+		const same = await query_files(t, session.token, {
+			...body,
+			fields: ["metadata.status"],
+			cursor: first.body.cursor,
+		});
+		expect(same.body.items.map((item) => item.path)).toEqual(["/listings/b.md"]);
+	});
+
+	test("folder mode reads a round again when the index view changes, and gives up after two changes", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		await seed_query_files(t, fixture, [
+			{ path: "listings/a.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/b.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/c.md", metadata: [{ key: "status", value: "open" }] },
+		]);
+		// A held Move slot gives the index view a cohort, and its visible view is part of the view.
+		await t.run((ctx) => test_db_hold_move_slot(ctx, fixture.membership));
+		let visibleView: "before" | "after" = "before";
+		const flip_view = () =>
+			t.run(async (ctx) => {
+				visibleView = visibleView === "before" ? "after" : "before";
+				const slot = (await ctx.db
+					.query("files_move_workspace_slots")
+					.withIndex("by_workspace", (q) =>
+						q.eq("organizationId", fixture.membership.organizationId).eq("workspaceId", fixture.membership.workspaceId),
+					)
+					.unique())!;
+				await ctx.db.patch("files_move_workspace_slots", slot._id, { visibleView });
+			});
+		const session = await mint_session_token(fixture);
+		const body = { mode: "folder", path: "/listings", field: "metadata.status" };
+
+		// Run one page through the route, and call `onList` after each index read of the page.
+		const run_page = (pageBody: Record<string, unknown>, onList: () => Promise<void>) =>
+			t.action(async (ctx) =>
+				public_api_files_query_http({
+					ctx: {
+						...ctx,
+						runQuery: async (...args) => {
+							const result = await ctx.runQuery(...args);
+							if (getFunctionName(args[0]) === "files_tree:list_children_by_field") await onList();
+							return result;
+						},
+					},
+					request: new Request("https://api.test/api/v1/files/query", {
+						method: "POST",
+						headers: auth_headers(session.token),
+						body: JSON.stringify(pageBody),
+					}),
+					path: "/api/v1/files/query",
+				}),
+			);
+		const view_changes = (count: number) => async () => {
+			if (count === 0) return;
+			count--;
+			await flip_view();
+		};
+
+		// One change: the route reads that round again, and the page is still exact.
+		const once = await run_page(body, view_changes(1));
+		expect(once.status, JSON.stringify(once.body)).toBe(200);
+		expect("items" in once.body && (once.body.items ?? []).map((item) => item.path)).toEqual([
+			"/listings/a.md",
+			"/listings/b.md",
+			"/listings/c.md",
+		]);
+
+		// Three changes in one page: the route stops and asks the caller to retry.
+		const busy = await run_page(body, view_changes(3));
+		expect(busy.status).toBe(503);
+		expect(busy.body).toEqual({ message: "Files changed during this page. Retry it.", errorCode: "listing_busy" });
+
+		// The folder changes during a page with a cursor: the cursor cannot go on from there.
+		const first = await query_files(t, session.token, { ...body, limit: 1 });
+		expect(first.body.cursor, JSON.stringify(first.body)).not.toBeNull();
+		let restricted = false;
+		const changed = await run_page({ ...body, limit: 1, cursor: first.body.cursor }, async () => {
+			if (restricted) return;
+			restricted = true;
+			const result = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: await get_folder_id(t, fixture, "/listings"),
+			});
+			expect(result._nay).toBeUndefined();
+		});
+		expect(changed.status).toBe(400);
+		expect(changed.body).toEqual({
+			message: "This query cursor changed. Start a new page.",
+			errorCode: "invalid_cursor",
+		});
+	});
+
+	test("search mode reads nothing under a restricted folder the plugin was not given", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const [, lockedFileId] = await seed_query_files(t, fixture, [
+			{ path: "listings/a.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/locked/b.md", metadata: [{ key: "status", value: "open" }] },
+			{ path: "listings/c.md", metadata: [{ key: "status", value: "open" }] },
+		]);
+		// Whole workspace consent covers the open area only. A restricted folder needs its own choice.
+		const restricted = await fixture.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: fixture.membership.membershipId,
+			nodeId: await get_folder_id(t, fixture, "/listings/locked"),
+		});
+		expect(restricted._nay).toBeUndefined();
+		await test_finish_saved_scope_jobs(t);
+		await test_finish_file_index(t, lockedFileId!);
+		const session = await mint_session_token(fixture);
+
+		// Record every folder the walk reads in, through the route's own context.
+		const framePaths: string[] = [];
+		const response = await t.action(async (ctx) =>
+			public_api_files_query_http({
+				ctx: {
+					...ctx,
+					runQuery: async (...args) => {
+						const frame = (args[1] as { frame?: { treePath: string } } | undefined)?.frame;
+						if (frame) framePaths.push(frame.treePath);
+						return await ctx.runQuery(...args);
+					},
+				},
+				request: new Request("https://api.test/api/v1/files/query", {
+					method: "POST",
+					headers: auth_headers(session.token),
+					body: JSON.stringify({ mode: "search", path: "/listings", field: "metadata.status", match: { eq: "open" } }),
+				}),
+				path: "/api/v1/files/query",
+			}),
+		);
+		expect(framePaths.length, "the walk must read the open folder").toBeGreaterThan(0);
+		expect(framePaths.filter((treePath) => treePath.startsWith("/listings/locked/"))).toEqual([]);
+		expect(response.status, JSON.stringify(response.body)).toBe(200);
+		expect("items" in response.body && (response.body.items ?? []).map((item) => item.path)).toEqual([
+			"/listings/a.md",
+			"/listings/c.md",
+		]);
+	});
+
+	test("search mode pages a match under a folder, and a whole-workspace plugin runs prefix and range", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		await seed_query_files(t, fixture, [
+			{
+				path: "listings/a.md",
+				metadata: [
+					{ key: "status", value: "open" },
+					{ key: "rent", value: 900 },
+				],
+			},
+			{
+				path: "listings/b.md",
+				metadata: [
+					{ key: "status", value: "open" },
+					{ key: "rent", value: 950 },
+				],
+			},
+			{
+				path: "listings/sub/c.md",
+				metadata: [
+					{ key: "status", value: "open" },
+					{ key: "rent", value: 1000 },
+				],
+			},
+			{ path: "listings/d.md", metadata: [{ key: "status", value: "closed" }] },
+			{
+				path: "other/e.md",
+				metadata: [
+					{ key: "status", value: "open" },
+					{ key: "rent", value: 1200 },
+				],
+			},
+		]);
+		const [tagsId] = await seed_query_files(t, fixture, [{ path: "other/tags.md", metadata: [] }]);
+		await test_run_with_flush(t, (ctx) =>
+			files_metadata_db_insert_committed(ctx, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				nodeId: tagsId!,
+				markdownContent: "---\ntags: [open, opal]\n---\n",
+			}),
+		);
+		await test_finish_file_index(t, tagsId!);
+		const session = await mint_session_token(fixture);
+
+		const body = {
+			mode: "search",
+			path: "/listings",
+			field: "metadata.status",
+			match: { eq: "open" },
+			fields: ["metadata.rent"],
+			limit: 1,
+		};
+
+		// A repeated field counts once. The list below has one field more than the limit, so it passes
+		// only when the repeat is removed first.
+		const allFields = Array.from({ length: files_metadata_QUERY_FIELDS_MAX }, (_, index) => `metadata.f${index}`);
+		const repeated = await query_files(t, session.token, { ...body, fields: [...allFields, "metadata.f0"] });
+		expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
+
+		const pages: QueryPage[] = [];
+		let cursor: string | null = null;
+		do {
+			const page = await query_files(t, session.token, { ...body, cursor });
+			expect(page.status, JSON.stringify(page.body)).toBe(200);
+			pages.push(page.body);
+			cursor = page.body.cursor;
+			expect(pages.length).toBeLessThan(10);
+		} while (cursor !== null);
+		expect(pages.at(-1)!.isDone).toBe(true);
+		expect(pages.every((page) => page.items.length <= 1)).toBe(true);
+		expect(pages.flatMap((page) => page.items.map((item) => [item.path, item.fields]))).toEqual([
+			["/listings/a.md", { "metadata.rent": { value: 900, isPreview: false } }],
+			["/listings/b.md", { "metadata.rent": { value: 950, isPreview: false } }],
+			["/listings/sub/c.md", { "metadata.rent": { value: 1000, isPreview: false } }],
+		]);
+
+		const first = await query_files(t, session.token, body);
+		const otherMatch = await query_files(t, session.token, {
+			...body,
+			match: { eq: "closed" },
+			cursor: first.body.cursor,
+		});
+		expect(otherMatch.status).toBe(400);
+		expect(otherMatch.body).toEqual({
+			message: "This query cursor changed. Start a new page.",
+			errorCode: "invalid_cursor",
+		});
+
+		// This plugin has Whole workspace consent, so it may read the whole open area by value.
+		const prefix = await query_files(t, session.token, {
+			mode: "search",
+			field: "metadata.status",
+			match: { prefix: "op" },
+		});
+		expect(prefix.status, JSON.stringify(prefix.body)).toBe(200);
+		expect(prefix.body.items.map((item) => item.path).sort()).toEqual([
+			"/listings/a.md",
+			"/listings/b.md",
+			"/listings/sub/c.md",
+			"/other/e.md",
+		]);
+		const range = await query_files(t, session.token, {
+			mode: "search",
+			field: "metadata.rent",
+			match: { range: { gte: 950 } },
+		});
+		expect(range.status, JSON.stringify(range.body)).toBe(200);
+		expect(range.body.items.map((item) => item.path)).toEqual(["/listings/b.md", "/listings/sub/c.md", "/other/e.md"]);
+
+		// A list field with two matching values gives two index rows. The file still shows once on the page.
+		const tags = await query_files(t, session.token, {
+			mode: "search",
+			field: "frontmatter.tags",
+			match: { prefix: "op" },
+		});
+		expect(tags.status, JSON.stringify(tags.body)).toBe(200);
+		expect(tags.body.items.map((item) => item.path)).toEqual(["/other/tags.md"]);
+	});
+
+	test("folder mode with eq true returns only the files whose value reads as true", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		await seed_query_files(t, fixture, [
+			{ path: "listings/a.md", metadata: [{ key: "ideal", value: true }] },
+			{ path: "listings/b.md", metadata: [{ key: "ideal", value: false }] },
+			{ path: "listings/c.md", metadata: [{ key: "ideal", value: "true" }] },
+			{ path: "listings/d.md", metadata: [{ key: "ideal", value: 1 }] },
+			{ path: "listings/e.md", metadata: [{ key: "other", value: true }] },
+			{ path: "listings/f.md", metadata: [{ key: "ideal", value: true }] },
+		]);
+		const session = await mint_session_token(fixture);
+
+		const page = await query_files(t, session.token, {
+			mode: "folder",
+			path: "/listings",
+			field: "metadata.ideal",
+			match: { eq: true },
+		});
+		expect(page.status, JSON.stringify(page.body)).toBe(200);
+		// Folder mode compares values by the folder table's text sort key (see "Field queries" in the
+		// public-api skill). So the string "true" matches too, but false, 1 and another key do not.
+		expect(page.body.items.map((item) => item.path)).toEqual(["/listings/a.md", "/listings/c.md", "/listings/f.md"]);
 	});
 });

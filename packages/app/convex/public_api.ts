@@ -2127,6 +2127,11 @@ export const get_file_read_membership = internalQuery({
 	},
 });
 
+export type public_api_get_file_read_membership_Result =
+	typeof get_file_read_membership extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 // Old active memberships may have no lifetime until their first durable job.
 export const pin_file_list_membership = internalMutation({
 	args: { membershipId: v.id("organizations_workspaces_users") },
@@ -2186,16 +2191,25 @@ export type public_api_rotate_plugin_service_grant_Result =
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
 
-function has_same_download_authority(
+/**
+ * Whether a bearer that was resolved again is still the same caller with the same rights: the same
+ * tenant, account and credential, and every scope in `scopes`. Routes that answer after slow work
+ * resolve the bearer again and compare it with this.
+ */
+export function public_api_has_same_authority(
 	initial: Extract<Principal, { kind: "user_api_key" | "public_api_grant" | "plugin_run" | "plugin_ui" }>,
 	current: Principal,
+	scopes: readonly public_api_Scope[],
 ) {
 	const currentScopes: readonly public_api_Scope[] = current.scopes;
 	if (
 		initial.organizationId !== current.organizationId ||
 		initial.workspaceId !== current.workspaceId ||
 		initial.serviceAccountId !== current.serviceAccountId ||
-		!currentScopes.includes("files:download")
+		// The same credential always has the same subject today. Compare it anyway, because every
+		// access check of the request used it.
+		JSON.stringify(initial.subject) !== JSON.stringify(current.subject) ||
+		scopes.some((scope) => !currentScopes.includes(scope))
 	) {
 		return false;
 	}
@@ -2561,7 +2575,10 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 		runId: v.id("plugins_event_runs"),
 		callId: v.id("plugins_event_run_calls"),
 		tokenHash: v.string(),
-		requiredScope: v.union(v.literal("files:read"), v.literal("files:list")),
+		/**
+		 * The route the call was claimed for. The run must still have every scope this route needs.
+		 */
+		route: v.union(v.literal("/api/v1/files/list"), v.literal("/api/v1/files/read"), v.literal("/api/v1/files/query")),
 		nodes: v.array(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
 		responseBytes: v.optional(v.number()),
 	},
@@ -2572,14 +2589,25 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 		if (run.event !== "schedule.interval.elapsed") return Result({ _yay: false });
 		if (run.apiTokenHash !== args.tokenHash || args.nodes.length > 100)
 			return Result({ _nay: { message: "File unavailable" } });
-		const live = await public_api_db_revalidate_live_plugin_run(ctx, {
-			organizationId: run.organizationId,
-			workspaceId: run.workspaceId,
-			runId: run._id,
-			now: Date.now(),
-			requiredScope: args.requiredScope,
-		});
-		if (live._nay) return Result({ _nay: { message: "File unavailable" } });
+		// `files/query` returns a list with file details, so it needs both scopes.
+		const requiredScopes: Array<"files:read" | "files:list"> =
+			args.route === "/api/v1/files/list"
+				? ["files:list"]
+				: args.route === "/api/v1/files/read"
+					? ["files:read"]
+					: ["files:read", "files:list"];
+		let live: Awaited<ReturnType<typeof public_api_db_revalidate_live_plugin_run>> | null = null;
+		for (const requiredScope of requiredScopes) {
+			live = await public_api_db_revalidate_live_plugin_run(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				runId: run._id,
+				now: Date.now(),
+				requiredScope,
+			});
+			if (live._nay) return Result({ _nay: { message: "File unavailable" } });
+		}
+		if (!live?._yay) return Result({ _nay: { message: "File unavailable" } });
 		const call = await ctx.db.get("plugins_event_run_calls", args.callId);
 		if (
 			!call ||
@@ -2590,7 +2618,7 @@ export const validate_and_finish_scheduled_file_read = internalMutation({
 			call.workspaceId !== run.workspaceId ||
 			call.installationId !== run.installationId ||
 			call.pluginVersionId !== run.pluginVersionId ||
-			call.route !== (args.requiredScope === "files:list" ? "/api/v1/files/list" : "/api/v1/files/read")
+			call.route !== args.route
 		)
 			return Result({ _nay: { message: "File unavailable" } });
 		// One checker for up to 100 files, so they share the checker's reads.
@@ -6824,7 +6852,7 @@ export async function public_api_http_read_file(args: {
 				runId: principal.runId,
 				callId: pluginCallId,
 				tokenHash: await crypto_sha256_hex(presentedToken),
-				requiredScope: "files:read",
+				route: "/api/v1/files/read",
 				nodes: [{ nodeId: source.target.id, path: requestedPath }],
 				responseBytes: length,
 			})) as public_api_validate_and_finish_scheduled_file_read_Result;
@@ -8946,7 +8974,7 @@ export async function public_api_http_download_urls(args: {
 		}
 		return { status: 401, body: await fail({ status: 401, message, errorCode: "unauthenticated" }) } as const;
 	}
-	if (!has_same_download_authority(principal, signingAuthority._yay)) {
+	if (!public_api_has_same_authority(principal, signingAuthority._yay, ["files:download"])) {
 		return {
 			status: 401,
 			body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
@@ -9048,7 +9076,7 @@ export async function public_api_http_download_urls(args: {
 		}
 		return { status: 401, body: await fail({ status: 401, message, errorCode: "unauthenticated" }) } as const;
 	}
-	if (!has_same_download_authority(principal, revalidated._yay)) {
+	if (!public_api_has_same_authority(principal, revalidated._yay, ["files:download"])) {
 		return {
 			status: 401,
 			body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),

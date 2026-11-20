@@ -1038,6 +1038,19 @@ only where a recursive read would reach it. Custom-field searches read by restri
 walk"). Accepted exception: content (text) search filters after the search
 index; its page shape can show only that some unreadable file matches, never which one.
 
+The public field query (`/api/v1/files/query`, see "Field queries" in the `public-api` skill)
+follows the same rule and never returns a locked item. Its folder mode reads only the area of the
+folder itself, so a page never depends on a row of another area. A full page ends at the last item
+it returns, so a row it drops (one a background scope job has not reached yet) cannot move where
+the next page starts. A page that stops short can still show that some rows were dropped, not
+which ones (the accepted scope-job window in "Field queries").
+
+Its search mode reads by restricted area. A `prefix` or `range` search reads the whole open area
+by value, so the route allows it only for a caller who can open the workspace root. That check runs
+inside the saved query, in the same transaction as the read (`requireRoot`). A guest's key, a
+service-bound key without root access, and a plugin without Whole workspace consent get 403
+`Permission denied: /`.
+
 **Guests.** A guest is an active member without workspace `content.read`. They open only what is
 shared with them. The workspace root is locked for them: Bash `ls /`, `ls -R /`, `find /` (also with
 `-name`), `tree /` and API `files/list` of `/` (also `recursive`) say "Permission denied" (403), so

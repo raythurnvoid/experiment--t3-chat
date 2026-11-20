@@ -622,6 +622,11 @@ export const internal_get_index_view = internalQuery({
 	},
 });
 
+export type files_visible_internal_get_index_view_Result =
+	typeof internal_get_index_view extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const internal_get_list_parent_aliases = internalQuery({
 	args: stream_args.omit("numItems", "position").fields,
 	returns: v.array(files_pending_parent_validator),
@@ -3036,6 +3041,11 @@ export const internal_search_metadata_saved = internalQuery({
 		plan: files_metadata_search_plan_validator,
 		movedIn: v.optional(moved_in_validator),
 		frame: v.optional(files_tree_walk_frame_validator),
+		/**
+		 * Refuse a caller who cannot open the workspace root. The public `/api/v1/files/query` route
+		 * sets it for `prefix` and `range`.
+		 */
+		requireRoot: v.optional(v.boolean()),
 	},
 	returns: stream_result,
 	handler: async (ctx, args) => {
@@ -3043,6 +3053,12 @@ export const internal_search_metadata_saved = internalQuery({
 		const opened = await db_stream_open(ctx, { ...args, readLimit: 2_000 });
 		if (opened._nay) return opened;
 		if (!opened._yay) return stream_done(null);
+		// `prefix` and `range` read the open area by value and drop the rows the caller cannot open. For a
+		// caller who can open the root, every row of the open area is readable, so nothing is dropped.
+		// For any other caller the page size and the cursor could hint at files they cannot open. So
+		// check the root here, in the same transaction as the read.
+		if (args.requireRoot && (await db_stream_root_locked(ctx, args, opened._yay)))
+			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const { reader, root } = opened._yay;
 		const { plan } = args;
 		const index = await files_saved_index_db_get_stream(ctx.db, args, args.indexStream ?? args.savedStream);

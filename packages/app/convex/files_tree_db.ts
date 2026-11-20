@@ -220,8 +220,7 @@ export async function files_tree_db_get_readable_node(
 	ctx: QueryCtx,
 	args: {
 		reader: {
-			membership: Doc<"organizations_workspaces_users">;
-			hasWorkspaceRead: boolean;
+			membership: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">;
 			checker: files_tree_db_FileChecker;
 		};
 		nodeId: Id<"files_nodes">;
@@ -316,8 +315,11 @@ export async function files_tree_db_get_rows(
  * A child shares the folder's access when it has the folder's pair (restricted area and "Add people"
  * root), or its own "Add people" root on top of that pair, so it needs no read. Every other child
  * gets the full check: a restricted child (its own area), and a child the scope job has not reached
- * yet. One checker serves the query, so each area and each "Add people" root is read once. The tree
- * queries pass the reader's checker, which is always a person with no plugin.
+ * yet. One checker serves the query, so each area and each "Add people" root is read once.
+ *
+ * The tree queries pass a person's checker. The public field query also passes an account's or a
+ * plugin pair's checker. The shortcut holds for them too: their grants also cover every child of a
+ * readable folder that shares its area and "Add people" root.
  */
 export async function files_tree_db_get_locked_node_ids(args: {
 	checker: files_tree_db_FileChecker;

@@ -1,12 +1,13 @@
 // Saved Files tree and table queries. Keep editor handlers out of this module.
 
-import { query, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, query, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
 	type PaginationOptions,
 	type PaginationResult,
+	type RegisteredQuery,
 } from "convex/server";
 import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { compareValues, v, type Infer } from "convex/values";
@@ -22,6 +23,7 @@ import {
 	files_table_filter_order_field,
 	files_table_filter_takes_name_prefix,
 	files_table_metadata_field,
+	type files_table_Filter,
 } from "../shared/files-table.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import app_convex_schema, {
@@ -31,24 +33,29 @@ import app_convex_schema, {
 	files_saved_stream_validator,
 	files_directory_view_validator,
 	files_index_directory_view_validator,
+	files_index_stream_validator,
 } from "./schema.ts";
 import { files_saved_placement_db_get_node } from "../server/files-saved-placement.ts";
 import { files_saved_stream_db_create, files_saved_stream_db_create_directory } from "../server/files-saved-stream.ts";
 import {
 	files_saved_index_db_get_directory,
+	files_saved_index_db_get_stream,
 	files_saved_index_db_get_table_field,
 } from "../server/files-saved-index.ts";
+import { files_index_range_apply, files_index_range_phases } from "../server/files-index-range.ts";
 import {
 	files_saved_placement_db_get_search_generation,
 	files_saved_placement_db_get_view,
 } from "../server/files-saved-placement.ts";
 import { doc } from "convex-helpers/validators";
-import { convex_error } from "../server/convex-utils.ts";
+import { convex_error, convex_invalid_cursor_error } from "../server/convex-utils.ts";
 import {
+	access_control_create_file_checker,
 	access_control_db_authorize_file_write,
 	access_control_db_authorize_membership,
 	access_control_db_filter_readable_file_nodes,
 	access_control_db_resolve_role_refs,
+	access_control_subject_validator,
 } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
 import { files_share_rows_NODE_FIELDS, files_share_rows_principal_key } from "../server/files-share-rows.ts";
@@ -59,6 +66,7 @@ import {
 	files_nodes_db_get_tree_reader,
 	files_tree_db_get_readable_node,
 	files_tree_db_get_list_rows,
+	files_tree_db_get_locked_node_ids,
 	files_tree_db_get_rows,
 	files_tree_locked_row_fields,
 	files_tree_db_page_needs_split,
@@ -508,7 +516,7 @@ export const has_drafts_in_folder = query({
 function check_tree_stream_row(
 	node: Doc<"files_nodes">,
 	args: {
-		membership: Doc<"organizations_workspaces_users">;
+		membership: Pick<Doc<"organizations_workspaces_users">, "organizationId" | "workspaceId">;
 		parentId: Doc<"files_nodes">["parentId"];
 		restricted: boolean;
 	},
@@ -578,6 +586,119 @@ function get_table_read_args(args: {
 		namePrefixStart === null ? null : { start: namePrefixStart, end: string_prefix_upper_bound(namePrefixStart) };
 
 	return { sort, filter, namePrefix, metadataField: files_table_metadata_field({ sort, filter }) };
+}
+
+/**
+ * Read one page of the children of one folder that have a custom field (metadata or frontmatter).
+ * The page comes from the field's committed field docs, which carry the node's sort fields.
+ *
+ * `tail` is one index range after the fixed fields: the value first, then the name.
+ *
+ * `rows` is null when the page must split before its per-doc reads. A row that a background job has
+ * not reached yet is left out, so `rows` can be shorter than `result.page`.
+ */
+async function db_page_children_by_field(
+	ctx: QueryCtx,
+	args: {
+		tenant: Pick<Doc<"files_nodes">, "organizationId" | "workspaceId">;
+		checker: files_tree_db_FileChecker;
+		folder: Doc<"files_nodes"> | null;
+		parentId: Doc<"files_nodes">["parentId"];
+		restricted: boolean;
+		kind: Doc<"files_nodes">["kind"];
+		metadataField: string;
+		direction: "asc" | "desc";
+		indexTag: Awaited<ReturnType<typeof files_saved_index_db_get_stream>>["tag"];
+		savedTag: Parameters<typeof files_saved_placement_db_get_node>[2];
+		tail: Parameters<typeof files_index_range_apply>[1];
+		paginationOpts: PaginationOptions;
+	},
+) {
+	const guard = args.restricted
+		? await db_shrink_split_guard(ctx, TREE_METADATA_RESTRICTED_SPLIT_GUARD)
+		: await db_open_split_guard(ctx, {
+				checker: args.checker,
+				folder: args.folder,
+				guard: TREE_METADATA_OPEN_SPLIT_GUARD,
+			});
+	const result = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) =>
+			files_index_range_apply(
+				q
+					.eq("organizationId", args.tenant.organizationId)
+					.eq("workspaceId", args.tenant.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("moveView.cohortId", args.indexTag?.cohortId)
+					.eq("moveView.view", args.indexTag?.view)
+					.eq("archiveOperationId", undefined)
+					.eq("docKind", "field")
+					.eq("fieldPath", args.metadataField)
+					.eq("parentId", args.parentId)
+					.eq("isRestrictedScopeRoot", args.restricted)
+					.eq("nodeKind", args.kind),
+				args.tail,
+			),
+		)
+		.order(args.direction)
+		.paginate({
+			...args.paginationOpts,
+			numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS, guard),
+			maximumBytesRead: 4 * 1024 * 1024,
+		});
+
+	if (files_tree_db_page_needs_split(result, guard)) {
+		return { result, rows: null };
+	}
+
+	const rows = await Promise.all(
+		result.page.map(async (fieldDoc) => {
+			const node =
+				fieldDoc.sourceKind === "committed"
+					? await files_saved_placement_db_get_node(ctx.db, fieldDoc.fileNodeId, args.savedTag)
+					: null;
+			if (!node || fieldDoc.sourceKind !== "committed") {
+				const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
+				const errorData = { fieldDocId: fieldDoc._id };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			// Archive, restrict and Move change the node first, and a background job copies the new
+			// scope onto its field docs later. Until then the row belongs to another stream, so leave
+			// it out, and the page can come back short. A node of another workspace is still a bug.
+			if (
+				node.organizationId === args.tenant.organizationId &&
+				node.workspaceId === args.tenant.workspaceId &&
+				(node.archiveOperationId !== null ||
+					node.parentId !== args.parentId ||
+					node.isRestrictedScopeRoot !== args.restricted)
+			) {
+				return null;
+			}
+			// Archive, then Restore with Keep both, can rename a node with many saved docs in the same
+			// folder before the saved scope job copies the new name. Leave the row out while that job is
+			// pending.
+			if (
+				(fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name) &&
+				fieldDoc.nodeKind === node.kind &&
+				(await files_pending_overlay_db_has_saved_scope_job(ctx, node._id))
+			) {
+				return null;
+			}
+			// The field doc copies the node's name and kind. A stale copy would put the row in the
+			// wrong place or the wrong stream, so it must fail loudly.
+			if (fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name || fieldDoc.nodeKind !== node.kind) {
+				const errorMessage = "fieldDoc sort fields are mismatched";
+				const errorData = { fieldDocId: fieldDoc._id, nodeId: node._id };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+
+			return { node, fieldDoc, sortValue: fieldDoc.sortValue ?? null };
+		}),
+	);
+
+	return { result, rows: rows.filter((row) => row !== null) };
 }
 
 /**
@@ -939,106 +1060,47 @@ export const list_tree_children_sorted = query({
 
 		// A metadata or frontmatter key: its committed field docs carry the node's sort fields.
 		if (metadataField !== null && ownerOrOpen) {
-			const guard = args.restricted
-				? await db_shrink_split_guard(ctx, TREE_METADATA_RESTRICTED_SPLIT_GUARD)
-				: await db_open_split_guard(ctx, { checker: reader.checker, folder, guard: TREE_METADATA_OPEN_SPLIT_GUARD });
-			const result = await ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_parent_restricted_sort", (q) => {
-					const fieldDocs = q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("moveView.cohortId", index?.tag?.cohortId)
-						.eq("moveView.view", index?.tag?.view)
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "field")
-						.eq("fieldPath", metadataField)
-						.eq("parentId", args.parentId)
-						.eq("isRestrictedScopeRoot", args.restricted)
-						.eq("nodeKind", args.kind);
-					// "is" reads one value. Its rows are in name order, so the name prefix is one more range.
-					if (filter?.kind === "text" && filter.op === "is") {
-						const value = fieldDocs.eq("sortValue", files_sort_text_key(filter.value));
-						if (!namePrefix) return value;
-						const fromName = value.gte("sortName", namePrefix.start);
-						return namePrefix.end === null ? fromName : fromName.lt("sortName", namePrefix.end);
-					}
-					if (filter?.kind === "text" && filter.op === "starts_with") {
-						const start = files_sort_text_key(filter.value);
-						const end = string_prefix_upper_bound(start);
-						const fromValue = fieldDocs.gte("sortValue", start);
-						return end === null ? fromValue : fromValue.lt("sortValue", end);
-					}
-					// Leave out docs with no value, such as a frontmatter map.
-					return fieldDocs.gte("sortValue", "");
-				})
-				.order(direction)
-				.paginate({
-					...args.paginationOpts,
-					numItems: Math.min(args.paginationOpts.numItems, TREE_CHILDREN_MAX_ITEMS, guard),
-					maximumBytesRead: 4 * 1024 * 1024,
-				});
+			const tail: Parameters<typeof files_index_range_apply>[1] = [];
+			// "is" reads one value. Its rows are in name order, so the name prefix is one more range.
+			if (filter?.kind === "text" && filter.op === "is") {
+				tail.push(["eq", "sortValue", files_sort_text_key(filter.value)]);
+				if (namePrefix) {
+					tail.push(["gte", "sortName", namePrefix.start]);
+					if (namePrefix.end !== null) tail.push(["lt", "sortName", namePrefix.end]);
+				}
+			} else if (filter?.kind === "text" && filter.op === "starts_with") {
+				const start = files_sort_text_key(filter.value);
+				const end = string_prefix_upper_bound(start);
+				tail.push(["gte", "sortValue", start]);
+				if (end !== null) tail.push(["lt", "sortValue", end]);
+			}
+			// Leave out docs with no value, such as a frontmatter map.
+			else tail.push(["gte", "sortValue", ""]);
 
-			if (files_tree_db_page_needs_split(result, guard)) {
-				return { ...files_tree_db_page_split_required(result), directoryView };
+			const fieldPage = await db_page_children_by_field(ctx, {
+				tenant: membership,
+				checker: reader.checker,
+				folder,
+				parentId: args.parentId,
+				restricted: args.restricted,
+				kind: args.kind,
+				metadataField,
+				direction,
+				indexTag: index?.tag,
+				savedTag: saved.tag,
+				tail,
+				paginationOpts: args.paginationOpts,
+			});
+			if (fieldPage.rows === null) {
+				return { ...files_tree_db_page_split_required(fieldPage.result), directoryView };
 			}
 
-			const rows = await Promise.all(
-				result.page.map(async (fieldDoc) => {
-					const node =
-						fieldDoc.sourceKind === "committed"
-							? await files_saved_placement_db_get_node(ctx.db, fieldDoc.fileNodeId, saved.tag)
-							: null;
-					if (!node || fieldDoc.sourceKind !== "committed") {
-						const errorMessage = "fieldDoc.fileNodeId points to a missing files_nodes doc";
-						const errorData = { fieldDocId: fieldDoc._id };
-						console.error(errorMessage, errorData);
-						throw should_never_happen(errorMessage, errorData);
-					}
-					// Archive, restrict and Move change the node first, and a background job copies the new
-					// scope onto its field docs later. Until then the row belongs to another stream, so leave
-					// it out, and the page can come back short. A node of another workspace is still a bug.
-					if (
-						node.organizationId === membership.organizationId &&
-						node.workspaceId === membership.workspaceId &&
-						(node.archiveOperationId !== null ||
-							node.parentId !== args.parentId ||
-							node.isRestrictedScopeRoot !== args.restricted)
-					) {
-						return null;
-					}
-					// Archive, then Restore with Keep both, can rename a node with many saved docs in the same
-					// folder before the saved scope job copies the new name. Leave the row out while that job is
-					// pending.
-					if (
-						(fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name) &&
-						fieldDoc.nodeKind === node.kind &&
-						(await files_pending_overlay_db_has_saved_scope_job(ctx, node._id))
-					) {
-						return null;
-					}
-					// The field doc copies the node's name and kind. A stale copy would put the row in the
-					// wrong place or the wrong stream, so it must fail loudly.
-					if (fieldDoc.sortName !== node.sortName || fieldDoc.name !== node.name || fieldDoc.nodeKind !== node.kind) {
-						const errorMessage = "fieldDoc sort fields are mismatched";
-						const errorData = { fieldDocId: fieldDoc._id, nodeId: node._id };
-						console.error(errorMessage, errorData);
-						throw should_never_happen(errorMessage, errorData);
-					}
-
-					return {
-						node,
-						sortKey:
-							sort.field === "name"
-								? [node.sortName, node.name]
-								: [fieldDoc.sortValue ?? null, node.sortName, node.name],
-					};
-				}),
-			);
 			const page = await table_page(
-				result,
-				rows.filter((row) => row !== null),
+				fieldPage.result,
+				fieldPage.rows.map(({ node, sortValue }) => ({
+					node,
+					sortKey: sort.field === "name" ? [node.sortName, node.name] : [sortValue, node.sortName, node.name],
+				})),
 			);
 			// An open row the scope job has not reached yet can come back locked. Its place in this order
 			// comes from its value, so leave it out until the job ends; the page can be short then.
@@ -1243,6 +1305,215 @@ export const list_tree_children_sorted = query({
 		);
 	},
 });
+
+/**
+ * The place of one field doc in the order: `[sortValue, sortName, name, _creationTime, _id]`. The
+ * last two parts are the field doc's own, so every doc has its own key.
+ */
+const children_by_field_key_validator = v.array(v.union(v.string(), v.number()));
+
+/**
+ * One native page of one folder's children that have a custom field, for the public
+ * `/api/v1/files/query` route in folder mode. It reads the same field docs as the folder table.
+ *
+ * The caller is any subject: a user, a service account or a plugin pair. The rows are the ones the
+ * subject can open. A row carries only its node id and its place in the order.
+ *
+ * Read the folder's own area only (`isRestrictedScopeRoot: false`), for every caller. In the folder
+ * table only the owner reads the restricted children by value, because other readers may not see
+ * those values. A public caller gets one rule instead: a restricted child is not in this list.
+ *
+ * Page by seek, not by a native cursor. During a Move or an index run a file's field doc moves
+ * between the normal docs and the view docs. A native cursor of one source would then skip it. So
+ * the caller sends the last key it used, and each source is read again from that key.
+ *
+ * Returns null when the subject cannot read the folder now, or when the folder is gone.
+ */
+export const list_children_by_field = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		subject: access_control_subject_validator,
+		/**
+		 * The folder to read. Null is the workspace root.
+		 */
+		folderId: v.union(v.id("files_nodes"), v.null()),
+		kind: doc(app_convex_schema, "files_nodes").fields.kind,
+		/**
+		 * A qualified field, such as `metadata.status` or `frontmatter.due`.
+		 */
+		field: v.string(),
+		/**
+		 * `eq` reads one value in name order. `prefix` reads a value range in value order. Null reads
+		 * every child that has a value, in value order.
+		 */
+		match: v.union(
+			v.object({ kind: v.literal("eq"), value: v.string() }),
+			v.object({ kind: v.literal("prefix"), value: v.string() }),
+			v.null(),
+		),
+		order: v.union(v.literal("asc"), v.literal("desc")),
+		source: files_index_stream_validator,
+		seek: v.object({
+			/**
+			 * The key of the last field doc the caller used. Null on the first page.
+			 */
+			lastKey: v.union(children_by_field_key_validator, v.null()),
+			phase: v.number(),
+		}),
+		numItems: v.number(),
+	},
+	returns: v.union(
+		v.object({
+			rows: v.array(v.object({ nodeId: v.id("files_nodes"), key: children_by_field_key_validator })),
+			/**
+			 * The key of the last field doc this call read, also when its row was left out. Null when the
+			 * call read no doc.
+			 */
+			frontier: v.union(children_by_field_key_validator, v.null()),
+			phaseCount: v.number(),
+			isDone: v.boolean(),
+			/**
+			 * The page was too large to read in one call. Ask again with fewer items.
+			 */
+			split: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const checker = access_control_create_file_checker(ctx, args);
+
+		// Check the folder in this query, on every call. The caller looked it up in another query, and
+		// access may have changed since.
+		let folder: Doc<"files_nodes"> | null = null;
+		if (args.folderId === null) {
+			if (!(await checker.can(null, "content.read"))) return null;
+		} else {
+			folder = await files_tree_db_get_readable_node(ctx, {
+				reader: { membership: args, checker },
+				nodeId: args.folderId,
+			});
+			if (!folder || folder.kind !== "folder" || folder.archiveOperationId !== null) return null;
+		}
+
+		const filter: files_table_Filter =
+			args.match === null
+				? { kind: "text", field: args.field, op: "present" }
+				: {
+						kind: "text",
+						field: args.field,
+						op: args.match.kind === "eq" ? "is" : "starts_with",
+						value: args.match.value,
+					};
+		const table = get_table_read_args({
+			kind: args.kind,
+			sort: [{ field: files_table_filter_order_field(filter), direction: args.order }],
+			filter,
+			namePrefix: null,
+			segment: "value",
+			paginationOpts: { numItems: args.numItems },
+		});
+		if (!table || table.metadataField === null) throw convex_error({ message: "Invalid table filter or page limit." });
+		if (!Number.isInteger(args.seek.phase) || args.seek.phase < 0 || (args.seek.lastKey?.length ?? 5) !== 5) {
+			throw convex_invalid_cursor_error("Invalid field list seek.");
+		}
+
+		// The window of the match, as the lowest and the highest key. An empty end means no limit.
+		let start: string[] = [""];
+		let end: string[] = [];
+		let endInclusive = false;
+		if (args.match?.kind === "eq") {
+			start = [files_sort_text_key(args.match.value)];
+			end = start;
+			endInclusive = true;
+		} else if (args.match?.kind === "prefix") {
+			start = [files_sort_text_key(args.match.value)];
+			const prefixEnd = string_prefix_upper_bound(start[0]!);
+			end = prefixEnd === null ? [] : [prefixEnd];
+		}
+		// Go on after the last key. One bound per field, so the seek replaces one side of the window.
+		//
+		// The key ends with the field doc's `_creationTime` and `_id`, which every Convex index has at its
+		// end. Names are unique among live children, but not among field docs: a trashed file's doc stays
+		// in this range until its scope job runs. Without these parts, a page that ended on that stale doc
+		// would skip a new file with the same name and value.
+		const phases = files_index_range_phases({
+			fields: ["sortValue", "sortName", "name", "_creationTime", "_id"],
+			order: args.order,
+			start: args.seek.lastKey && args.order === "asc" ? args.seek.lastKey : start,
+			end: args.seek.lastKey && args.order === "desc" ? args.seek.lastKey : end,
+			startInclusive: !(args.seek.lastKey && args.order === "asc"),
+			endInclusive: args.seek.lastKey && args.order === "desc" ? false : endInclusive,
+		});
+		const tail = phases[args.seek.phase];
+		if (!tail) return { rows: [], frontier: null, phaseCount: phases.length, isDone: true, split: false };
+
+		const parentId = folder?._id ?? files_ROOT_ID;
+		const index = await files_saved_index_db_get_stream(ctx.db, args, args.source);
+		const saved = await files_saved_stream_db_create_directory(ctx.db, args, {
+			parentId,
+			stream: args.source.kind,
+			paginationOpts: { numItems: args.numItems, cursor: null },
+		});
+		const fieldPage = await db_page_children_by_field(ctx, {
+			tenant: args,
+			checker,
+			folder,
+			parentId,
+			restricted: false,
+			kind: args.kind,
+			metadataField: table.metadataField,
+			direction: args.order,
+			indexTag: index.tag,
+			savedTag: saved.tag,
+			tail,
+			paginationOpts: { numItems: args.numItems, cursor: null },
+		});
+		if (fieldPage.rows === null) {
+			return { rows: [], frontier: null, phaseCount: phases.length, isDone: false, split: true };
+		}
+
+		for (const { node } of fieldPage.rows) {
+			check_tree_stream_row(node, { membership: args, parentId, restricted: false });
+		}
+		// The children of a readable folder share its access, so most rows need no check. A row the
+		// scope job has not reached yet can still be locked. Leave it out: its place in this order comes
+		// from its value, and a locked row shows no value.
+		const lockedIds = await files_tree_db_get_locked_node_ids({
+			checker,
+			folder,
+			fileNodes: fieldPage.rows.map((row) => row.node),
+		});
+		// The frontier is read before the access check, so it can be a doc the caller cannot open. It
+		// must never reach a caller as plain text: the route seals it inside the public cursor.
+		const last = fieldPage.result.page.at(-1);
+
+		return {
+			rows: fieldPage.rows.flatMap(({ node, fieldDoc, sortValue }) =>
+				lockedIds.has(node._id) || sortValue === null
+					? []
+					: [{ nodeId: node._id, key: [sortValue, node.sortName, node.name, fieldDoc._creationTime, fieldDoc._id] }],
+			),
+			// Every doc in this range is a committed field doc with a value. The checks only narrow the
+			// optional schema fields.
+			frontier:
+				last?.sourceKind === "committed" &&
+				last.sortValue !== undefined &&
+				last.sortName !== undefined &&
+				last.name !== undefined
+					? [last.sortValue, last.sortName, last.name, last._creationTime, last._id]
+					: null,
+			phaseCount: phases.length,
+			isDone: fieldPage.result.isDone,
+			split: false,
+		};
+	},
+});
+
+export type files_tree_list_children_by_field_Result =
+	typeof list_children_by_field extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * One page of one share stream of one folder's children, for a custom-field (metadata or

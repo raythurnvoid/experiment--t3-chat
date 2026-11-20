@@ -16,7 +16,12 @@ import {
 	test_run_with_flush,
 } from "./setup.test.ts";
 import { files_sort_text_key } from "../shared/files-sort.ts";
-import type { files_metadata_Entry } from "../shared/files-metadata.ts";
+import {
+	files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
+	files_metadata_QUERY_FIELDS_MAX,
+	files_metadata_QUERY_ITEMS_CHUNK,
+	type files_metadata_Entry,
+} from "../shared/files-metadata.ts";
 import { files_metadata_maps_db_write } from "../server/files-metadata-maps.ts";
 
 async function fixture(options: Parameters<typeof test_convex>[0] = { transactionLimits: true }) {
@@ -660,5 +665,54 @@ describe("get_field_values", () => {
 		await expect(
 			asOwner.query(api.files_metadata.list_node_fields, { membershipId: scope.membershipId, target, cursor: null }),
 		).rejects.toThrow("Metadata read exceeded its work limit");
+	});
+});
+
+describe("get_query_items", () => {
+	test("reads one doc per asked field when every field is a long list", async () => {
+		const { t, scope, child, frontmatter } = await fixture();
+		// The worst case of one values query: the most rows, each with the most asked fields, and each
+		// field a list that fills the file's index doc limit with long values.
+		const keys = Array.from({ length: files_metadata_QUERY_FIELDS_MAX }, (_, index) => `key${index}`);
+		const itemsPerKey = Math.floor((files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS - keys.length) / keys.length);
+		const yaml = keys
+			.map(
+				(key) =>
+					`${key}: [${Array.from({ length: itemsPerKey }, (_, index) => `"${"v".repeat(900)}${index}"`).join(", ")}]`,
+			)
+			.join("\n");
+		const nodeIds: Array<Id<"files_nodes">> = [];
+		for (let index = 0; index < files_metadata_QUERY_ITEMS_CHUNK; index++) {
+			const nodeId = await child({ name: `${"n".repeat(240)}-${index}.md` });
+			await frontmatter(nodeId, yaml);
+			nodeIds.push(nodeId);
+		}
+
+		const cost = await t.run(async (ctx) => {
+			const before = await ctx.meta.getTransactionMetrics();
+			const rows = await ctx.runQuery(internal.files_metadata.get_query_items, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				subject: { kind: "user", userId: scope.userId, plugin: null },
+				nodeIds,
+				fields: keys.map((key) => `frontmatter.${key}`),
+			});
+			const after = await ctx.meta.getTransactionMetrics();
+			return {
+				values: rows.flatMap((row) => row.fields).filter((field) => field.value !== null).length,
+				documents: after.documentsRead.used - before.documentsRead.used,
+				queries: after.databaseQueries.used - before.databaseQueries.used,
+				bytes: after.bytesRead.used - before.bytesRead.used,
+			};
+		});
+
+		expect(cost.values).toBe(files_metadata_QUERY_ITEMS_CHUNK * files_metadata_QUERY_FIELDS_MAX);
+		// Each file has about 500 value docs in the ranges this query reads. A read that walked them
+		// would read thousands of documents here. Measured: 261 documents, 261 reads, 287 KB.
+		expect(cost.documents, JSON.stringify(cost)).toBeLessThan(400);
+		// Stay under half of the Convex limits for one query: 4,096 reads and 16 MiB. A file in a Move
+		// or an index run has two views, which can double the field reads.
+		expect(cost.queries * 2, JSON.stringify(cost)).toBeLessThan(4096 / 2);
+		expect(cost.bytes * 2, JSON.stringify(cost)).toBeLessThan((16 * 1024 * 1024) / 2);
 	});
 });

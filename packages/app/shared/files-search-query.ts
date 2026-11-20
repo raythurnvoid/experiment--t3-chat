@@ -648,10 +648,10 @@ export function files_search_query_typing_token(text: string) {
  * The comparison a range literal means on a number line: the number itself, or the timestamp of
  * a date. A date without a time names a whole UTC day, like the `eq` case in
  * `files_search_query_to_plans` below, so `<=2026-09-30` keeps the whole 30th and `>2026-09-04`
- * starts on the 5th. `null` for a literal that is neither, which `parse_value` already reports as
- * a problem.
+ * starts on the 5th. `null` for a literal that is neither a number nor a date. The caller checks
+ * the literal first: `parse_value` here, and the range checks of `/api/v1/files/query`.
  */
-function range_bound(
+export function files_search_query_range_bound(
 	match: Extract<FilterMatch, { op: "range" }>,
 ): { comparator: (typeof match)["comparator"]; bound: number } | null {
 	if (NUMBER_LITERAL_REGEX.test(match.value)) {
@@ -722,7 +722,7 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 				plans.push({ op: "prefix", fieldPath, value: match.value });
 				break;
 			case "range": {
-				const range = range_bound(match);
+				const range = files_search_query_range_bound(match);
 				// `parse_value` already refused a literal that is neither a number nor a date.
 				if (range !== null) {
 					plans.push({

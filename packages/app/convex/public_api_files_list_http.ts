@@ -239,7 +239,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 										runId: principal.runId,
 										callId: pluginCallId,
 										tokenHash: await crypto_sha256_hex(auth._yay.presentedToken),
-										requiredScope: "files:list",
+										route: path,
 										// A locked item is listed, not read, so the run needs no read check for it.
 										nodes: result.page.flatMap((item) => (item.locked ? [] : [{ nodeId: item._id, path: item.path }])),
 									},

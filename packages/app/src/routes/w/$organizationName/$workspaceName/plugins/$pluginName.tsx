@@ -2083,6 +2083,12 @@ function format_capability_label(value: string, payerName = "the workspace owner
 		return "Run its backend when a member uses its pages and file views";
 	}
 
+	// The plain rule writes "Workspace Files Read", which sounds like every file and like content
+	// only. Each member chooses the files, and a read includes their custom fields.
+	if (value === "workspace.files.read") {
+		return "Read the files and folders each member chooses, with their metadata";
+	}
+
 	// Explain the editable labels that select the plugin's files.
 	if (value === "workspace.files.own-write") {
 		return "Create and update files and folders marked for this plugin, and move them to Trash. Members can edit their labels.";

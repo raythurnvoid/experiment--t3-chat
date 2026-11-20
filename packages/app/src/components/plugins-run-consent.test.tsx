@@ -113,7 +113,10 @@ describe("PluginsRunConsent", () => {
 			"personal run consent must not show a file proof path",
 		).toBeNull();
 		expect(screen.getByRole("checkbox", { name: "List my selected files" })).toHaveProperty("checked", true);
-		expect(screen.getByRole("checkbox", { name: "Read my selected files" })).toHaveProperty("checked", true);
+		expect(screen.getByRole("checkbox", { name: "Read my selected files and their metadata" })).toHaveProperty(
+			"checked",
+			true,
+		);
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
 		await waitFor(() =>
 			expect(consentMock, "personal run consent must not need a file proof").toHaveBeenLastCalledWith({
@@ -155,7 +158,7 @@ describe("PluginsRunConsent", () => {
 
 	test("allows a list-only grant and uses only the accepted live capabilities", async () => {
 		render(<TestConsent capabilities={["workspace.files.read", "plugin.schedule.run"]} canManage={false} />);
-		fireEvent.click(screen.getByRole("checkbox", { name: "Read my selected files" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Read my selected files and their metadata" }));
 		fireEvent.click(screen.getByRole("checkbox", { name: "Allow this plugin to run as me while I am signed out." }));
 		await waitFor(() => expect(consentMock).toHaveBeenLastCalledWith({ scopes: ["files:list"] }));
 		expect(screen.queryByRole("checkbox", { name: /Write read-only Mounts/ })).toBeNull();
@@ -248,7 +251,7 @@ describe("PluginsMyRunPermissions", () => {
 		);
 		render(<TestMyPermissions />);
 		expect(
-			screen.queryByRole("checkbox", { name: "Read my selected files" }),
+			screen.queryByRole("checkbox", { name: "Read my selected files and their metadata" }),
 			"saved personal run controls must use selected-file labels",
 		).not.toBeNull();
 		expect(

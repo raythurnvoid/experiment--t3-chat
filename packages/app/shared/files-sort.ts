@@ -7,7 +7,7 @@ import {
 	files_search_query_FIELD_PATH_MAX_LENGTH,
 } from "./files-search-query.ts";
 
-const TEXT_KEY_MAX_CODE_POINTS = 256;
+export const files_sort_TEXT_KEY_MAX_CODE_POINTS = 256;
 const DIGIT_RUN_MAX_LENGTH = 99;
 
 export const files_sort_BUILT_IN_FIELDS = ["name", "updated", "created", "extension", "size"] as const;
@@ -89,7 +89,7 @@ export function files_sort_text_key(text: string) {
 	// Cut by code points, never by UTF-16 units. Half an emoji is a lone surrogate, and Convex refuses
 	// to store it. The frontmatter writer runs in a queue that retries forever, so that throw would
 	// block every later file.
-	return Array.from(key).slice(0, TEXT_KEY_MAX_CODE_POINTS).join("");
+	return Array.from(key).slice(0, files_sort_TEXT_KEY_MAX_CODE_POINTS).join("");
 }
 
 /**
@@ -99,6 +99,11 @@ export function files_sort_text_key(text: string) {
  * Every value sorts as text: a number as `String(value)` and a boolean as `true` or `false`. A list
  * uses its first item. The extraction keeps list items in document order, and `maybe_date` values
  * are skipped because they only repeat a string value as a time.
+ *
+ * TODO: find a real number order. Whole numbers from 0 up sort right. A decimal splits into two
+ * digit runs, so `12.5` sorts before `12.25`. A minus sign is only a character, so `-5` sorts
+ * before `-10`. The public `/api/v1/files/query` folder mode shows this order to plugins. A real
+ * number order needs a number key in the folder table index.
  */
 export function files_sort_value_of(values: files_metadata_Value[]) {
 	const value = values.find((metadataValue) => metadataValue.valueKind !== "maybe_date");

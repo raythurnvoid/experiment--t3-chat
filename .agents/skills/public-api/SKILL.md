@@ -15,7 +15,7 @@ Keep AI conversations and human Messages in separate API names and scopes. AI re
 
 A credential never expands its subject's access. Personal plugin Files access uses applied consent. Check the request's subject and target, not just its scope. A personal key acts as its user; a service-bound key acts as its account. AI conversations remain creator-private even when an owner or admin has broad Files access.
 
-The HTTP wrappers are split by startup cost. `/api/v1/files/list` lives in `packages/app/convex/public_api_files_list_http.ts` and stays in the small static root graph because it is the hot plugin read path. The other `/api/v1` routes use small modules registered in `http.ts`, including `public_api_http_routes.ts` (the generic file routes), `public_api_plugin_files_http_routes.ts`, `public_api_service_uploads_http_routes.ts`, `plugins_data_http_routes.ts`, and `plugins_invoke_http_routes.ts`. Each route loads its heavy implementation (`public_api.ts` or `plugins_data_http.ts`) with a literal dynamic import only when that route runs. Shared Bearer-token authorization lives in `packages/app/convex/public_api_http_auth.ts`. Public scopes and the plugin token formats that principal resolution and HTTP authorization must agree on live in `packages/app/shared/public-api.ts`; one-consumer credential and grant details stay private to their owning Convex module.
+The HTTP wrappers are split by startup cost. `/api/v1/files/list` lives in `packages/app/convex/public_api_files_list_http.ts` and stays in the small static root graph because it is the hot plugin read path. The other `/api/v1` routes use small modules registered in `http.ts`, including `public_api_http_routes.ts` (the generic file routes), `public_api_files_query_http_routes.ts`, `public_api_plugin_files_http_routes.ts`, `public_api_service_uploads_http_routes.ts`, `plugins_data_http_routes.ts`, and `plugins_invoke_http_routes.ts`. Each route loads its heavy implementation (`public_api.ts`, `public_api_files_query.ts` or `plugins_data_http.ts`) with a literal dynamic import only when that route runs. Shared Bearer-token authorization lives in `packages/app/convex/public_api_http_auth.ts`. Public scopes and the plugin token formats that principal resolution and HTTP authorization must agree on live in `packages/app/shared/public-api.ts`; one-consumer credential and grant details stay private to their owning Convex module.
 
 Plugin UI documents and `/api/v1/*` share the Convex HTTP origin. Their iframe keeps that origin through `sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"`, so the browser sends the existing JSON plus `Authorization` request directly without a CORS preflight. Do not add a `text/plain` token envelope or route calls through the host app. External browser callers on another origin still use normal CORS behavior.
 
@@ -63,15 +63,18 @@ history stores explicit null when no pair was accepted. UI sessions always store
 Service exchange always checks its source credential and current service secret, even without
 `requestId`; that ID controls retry receipts only. Invoke mint also checks its source frame.
 
-Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` and `touch` also allow `plugin_run`, and `write` also allows a `plugin_service` grant: the route refuses any grant that is not sealed (`processing` phase) or whose path is not strictly inside its `destinationPathPrefix`, with 403 `Path is outside this grant's destination`. `read` and `list` allow `plugin_run` too — the scopes come from the installation's accepted `workspace.files.read`, and a personal run uses its pair's applied file consent (`principal.subject`). A selected folder does not cross a restricted boundary. `download-urls` allows the plugin kinds too. Ordinary service grants reach write, moving one file to Trash, and sealed uploads. Registered writer requests also reach the folder/access/inspection/generation contracts below with a current service secret. A `plugin_ui` token may read and list plugin documents but never write them — a page that needs to write goes through its own backend or a service grant. Three separate checks enforce that, and they are not redundant: `resolve_principal`'s `returns` validator makes `plugin_data:write` unrepresentable for a page token, every write route leaves `plugin_ui` out of `allowedKinds`, and `refuse_page_principal` refuses the kind inside the mutation itself. The in-transaction one is what a caller reaching the mutation directly, or one wrong edit to an `allowedKinds` list, still runs into. A page session can belong to an anonymous identity and is the first thing a scripting bug in a plugin reaches, so a write door there would turn one such bug into stored data that plugin backends later act on with their own secrets.
+Routes restrict kinds with `allowedKinds`; a valid token of a disallowed kind gets 403. `write-many` and `upload-urls` are `user_api_key` only. `write` and `touch` also allow `plugin_run`, and `write` also allows a `plugin_service` grant: the route refuses any grant that is not sealed (`processing` phase) or whose path is not strictly inside its `destinationPathPrefix`, with 403 `Path is outside this grant's destination`. `read`, `list` and `query` allow `plugin_run` too — the scopes come from the installation's accepted `workspace.files.read`, and a personal run uses its pair's applied file consent (`principal.subject`). A selected folder does not cross a restricted boundary. `download-urls` allows the plugin kinds too. Ordinary service grants reach write, moving one file to Trash, and sealed uploads. Registered writer requests also reach the folder/access/inspection/generation contracts below with a current service secret. A `plugin_ui` token may read and list plugin documents but never write them — a page that needs to write goes through its own backend or a service grant. Three separate checks enforce that, and they are not redundant: `resolve_principal`'s `returns` validator makes `plugin_data:write` unrepresentable for a page token, every write route leaves `plugin_ui` out of `allowedKinds`, and `refuse_page_principal` refuses the kind inside the mutation itself. The in-transaction one is what a caller reaching the mutation directly, or one wrong edit to an `allowedKinds` list, still runs into. A page session can belong to an anonymous identity and is the first thing a scripting bug in a plugin reaches, so a write door there would turn one such bug into stored data that plugin backends later act on with their own secrets.
 
 # Scheduled plugin API calls
 
 A stored scheduled event uses its pinned user, direct consent grant, and membership lifetime.
 Effective scopes intersect that grant with live accepted capabilities and current user access.
-Scheduled runs get no baseline Files write/download or Activity opt-in. Files read/list responses
+Scheduled runs get no baseline Files write/download or Activity opt-in. Files read/list/query responses
 repeat consent, token, call, and actual target checks after I/O in
 `public_api.validate_and_finish_scheduled_file_read`. That same transaction settles success.
+Each route passes only its own path. The recheck picks the scopes from it: `files:read` for read,
+`files:list` for list, and both for query. `plugins_runtime.consume_run_api_call` lets a scheduled run use a
+Files read scope only on these three routes, because only they have this recheck.
 KV operations keep their private-store checks. Mount writers repeat assignment checks before upload
 and final publication and bill the current live owner. Secret/outbound calls also need exact
 installation management; secret plaintext is checked after decrypt. See the scheduled plugin spec.
@@ -109,6 +112,7 @@ Every 4xx and 5xx answer of an `/api/v1` route is JSON `{ message, errorCode, ..
 | Route                         | Scope              | Notes                                                                                                                                                                                      |
 | ----------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/api/v1/files/list`          | `files:list`       | File items carry `status` (`pending` until the R2 object is confirmed, then `ready`; `null` for folders and locked items), `size`, and `locked`. A missing or trashed folder is 404, a locked one is 403, a file is 400, and the cursor is sealed (see below). Every error carries `errorCode` |
+| `/api/v1/files/query`         | `files:read` and `files:list` | Reads saved files by one custom field: the children of one folder in value order, or a search under a folder. Returns only items the caller can open, with the asked field values. See "Field queries" below |
 | `/api/v1/files/stat`          | `files:list`       | Up to 100 paths; each is `found` (with the `files/list` item shape), `missing`, or `denied`. See "Organize routes" below |
 | `/api/v1/files/mkdir`         | `files:write`      | Up to 20 folder paths, like `mkdir -p`, all or nothing; free, no credit gate |
 | `/api/v1/files/delete`        | `files:write`      | Personal or service-bound keys; up to 200 paths, trashed through the app's Trash job with a `requestId` for retries, each bad path refused alone |
@@ -461,6 +465,68 @@ Use 1 to 200 characters of search text. An optional absolute folder path include
 
 The index searches words in saved editable text. A file can have several matching chunks. Saved edits appear after indexing. Convex ranks up to 1,024 matching chunks per search stream before the folder and file read checks. If `searchedTop` is true, readable matches may be missing. Try a more specific query.
 
+# Field queries
+
+`POST /api/v1/files/query` reads saved files by one custom field. The route is registered in `convex/public_api_files_query_http_routes.ts` and loads `convex/public_api_files_query.ts` when it runs.
+
+Callers: personal keys, keys bound to a service account, plugin pages and plugin runs (scheduled runs too). The caller needs `files:read` and `files:list` together: the route's auth check (`requiredScope`) covers `files:read`, and the route refuses a caller without `files:list` with 403 `Permission denied: this caller needs the files:list scope.` Code grants and service grants are refused, like `files/search`. Access is checked for one subject per request (`principal.subject`): the person for a personal key, the account for a bound key, the personal pair's applied consent for a plugin. Reading a file includes reading its custom fields, so plugins need only `workspace.files.read` (see "Public Field Query" in the file-metadata skill).
+
+Body: `{ mode, path?, field, match?, order?, kind?, fields?, limit?, cursor? }`.
+
+- `mode` is `"folder"` or `"search"`.
+- `field`, and each entry of `fields`, is a qualified field: `metadata.<key>` or `frontmatter.<key>`.
+- `fields` names up to 12 fields to return for each item (`files_metadata_QUERY_FIELDS_MAX`). A field named twice is returned once.
+- `limit` is 1 or more. A value over 50 is cut to 50.
+
+200 is `{ items, cursor, isDone }`. An item has `path`, `name`, `nodeId`, `kind`, `contentType`, `updatedAt`, `status`, `size` and `readOnly`, with the same meaning as a `files/list` item. It also has `fields`: one `{ value, isPreview }` per asked field. `value` is the display value the folder table shows, or `null` when the item has no such field. `isPreview` is true when a long value was cut, or when the field is a list with more than one item.
+
+The route returns only items the caller can open. It never returns a locked item. A locked row shows no value, and its place in a value order would tell the value.
+
+## Folder mode
+
+Folder mode reads the direct children of `path` (default `/`) that have the field. It reads the folder table's index, `files_metadata_docs.by_org_ws_source_archive_docKind_field_parent_restricted_sort`, through `internal.files_tree.list_children_by_field`. Almost every doc it reads is a row of the answer. It drops only rows a background scope job has not reached yet, locked rows, and a second copy of the same file during a Move. So the cost grows with the page size, not with the folder size.
+
+- No `match`: every child with a value, in value order. `{ eq }`: one value, in name order. `{ prefix }`: one value range, in value order. `{ exists: true }` is the same as no `match`. `range` answers 400: it works in search mode only.
+- `order` is `"asc"` (default) or `"desc"`. `kind` is `"file"` (default) or `"folder"`.
+- Values compare by the folder table sort key (`files_sort_text_key`): no case and no accents. So `eq: "Open"` also matches `open`. Number order has the limits in "Folder Table Sort Keys" of the file-metadata skill.
+- A `prefix` that ends in a digit answers 400, because a digit run is stored with its length. The message says to add the next character (for example `2026-`). A match value whose sort key has 256 code points or more answers 400, because stored keys are cut at that length. A match value must have 1 to 1,024 characters (400).
+- The page lists only the area of the folder itself. A child that is its own restricted root is left out, also when the caller can open it. This keeps one index range per page. Use search mode to find such a file.
+
+Paging is by seek, not by a native cursor. During a Move or an index run a field doc moves between the normal docs and the view docs, and a native cursor of one source would skip it. So each round reads every source again after the last key, and the action merges the rows. One request makes at most 8 rounds, plus up to 2 rounds read again after a view change. A page can be short, or empty, while `isDone` is false.
+
+- The seek key is `[sortValue, sortName, name, _creationTime, _id]` of the field doc. The normal doc and the view doc of one file are two docs, so the last two parts give each one its own place. A full page ends at the last item it returns, never at a doc it dropped, so a dropped row cannot move the next page. A page that stops short after 8 rounds ends at the last doc it read, which can be a dropped one (see the accepted window below).
+- The cursor also keeps the last item (`nodeId` and its first three key parts). A later copy of the same file at the same place is skipped, so a file does not show twice across a page boundary.
+- Each round reads the index view (`files_visible.internal_get_index_view`) first. When the view changed during the round, the round is read again. After more than 2 changes in one request the route answers 503 `listing_busy`.
+- The folder and the membership are checked again at the end of the page. When they changed, a first page answers 503 `listing_busy` and a page with a cursor answers 400 `invalid_cursor`.
+
+Accepted window: right after a child gets its own sharing rules, or is renamed, a background job has not updated its field doc yet. Such a row is left out until the job reaches it. The caller sees it again on a later read. This is the same window the folder table has. While many such rows wait, a page can come back short or empty with `isDone: false`, so the caller can tell that some rows were dropped, but not which ones. Every such row was readable to the caller just before.
+
+## Search mode
+
+Search mode runs the search box's custom-field walk (`files_pending_overlay_list`, mode `metadata`) on saved data with no draft user. It finds files and folders in `path` and in every folder below it, also inside restricted areas the caller can open. `match` is required. `order` and `kind` answer 400: the order is the walk's own order, not value order.
+
+- `{ eq }` and `{ exists: true }` read by path under `path`, one restricted area at a time.
+- `{ prefix }` and `{ range: { gte, gt, lte, lt } }` read the whole open area by value. So `path` must be `/` (else 400), and the caller must be able to open the workspace root. A guest's key, a service-bound key without root access, and a plugin without Whole workspace consent get 403 `Permission denied: /`. The root is checked inside the saved query, in the same transaction as the read (`requireRoot` on `files_visible.internal_search_metadata_saved`).
+- A range takes all numbers, or all ISO dates. A date without a time means the whole UTC day, like the search box.
+- A page lists a file once, even when an `eq` matches two items of a list field.
+- The walk's cursor can be long and holds paths, so it is stored in `value_store` for one day (owner: the person). The public cursor seals only its id.
+- A search page also charges its own bucket `files_query_search` (60/min, capacity 20), keyed by the person. The principal bucket of a plugin page is per person and installation, so this keeps one person's total search load bounded across plugins and keys. The search box keeps its own bucket, so a plugin cannot use up the member's search box.
+- Each search page with more pages stores one `value_store` doc. The bucket and the one-day lifetime bound how many exist.
+- A search cursor holds the workspace search generation, and every save changes it. So a cursor dies on any save in the workspace, and the next page answers 400 `invalid_cursor`. Start again from the first page. Known limit, shared with the search box.
+- `prefix` and `range` can return a file again on a later page, when two of its list values both match. Callers that join pages dedupe by `nodeId`.
+
+## Cursor, values and errors
+
+The cursor is sealed like the `files/list` cursor, with the purpose `files_query`. Its scope is the caller, the person, the subject, the path, `field`, the mode, `match`, `order`, `kind`, the membership lifetime and the folder id (search mode adds the search generation). `limit` and `fields` are not in the scope, so a caller can change them between pages. A cursor that does not open answers 400 `invalid_cursor` with `This query cursor changed. Start a new page.`
+
+The values step runs after the page of ids is known. `internal.files_metadata.get_query_items` reads at most 10 items per query (`files_metadata_QUERY_ITEMS_CHUNK`) and checks each item again for the subject. An item that is gone or no longer readable is left out. Each field costs one read: every writer inserts a file's field doc before its value docs, so the field doc is the first doc of its range. The comment on the constants in `shared/files-metadata.ts` has the measured cost.
+
+Before the answer leaves, the route resolves the same bearer again and compares tenant, account, credential, subject and scopes (`public_api_has_same_authority`). A key or a session that lost its rights during the read gets 401. A scheduled run gets the recheck described in "Scheduled plugin API calls".
+
+Errors are `{ message, errorCode }`: 400 `invalid_input` or `invalid_cursor`, 401 `unauthenticated`, 403 `permission_denied` (`Permission denied: <path>`), 404 `not_found` (`Folder not found: <path>`), 429 `rate_limited` with `retryAfterMs`, 503 `listing_busy` (the index view changed more than twice, the folder changed during a first page, or the search walk refused a first page; retry) and 503 `search_unavailable` (one page step is too large to read; retry with a smaller `limit`, the code `files/search` uses for the same case). Prefix and range without root access answer 403 with a hint to use `eq` or `exists` with a folder path, or folder mode. A readable file as `path` is 400, as in `files/list`. A plugin run's call slot is settled on every answer the route gives. An unexpected error (500) leaves it started, like `files/list`, and the run then fails as "Plugin left API calls unfinished".
+
+A scheduled run whose item changed after the run was made answers 404, the same as `files/list` and `files/read`.
+
 # Bounded file reads
 
 `POST /api/v1/files/read` accepts only `{path,cursor?}` for text and binary files. Omit the cursor or send `null` for the first page. Pass the returned cursor with the same path to continue. Paths must be canonical root-based Files paths, without aliases, traversal, empty segments, backslashes, or wildcards. `maxBytes`, `pageBytes`, offsets and lengths are not accepted. The old `read-many` and `read-bytes` routes are removed.
@@ -638,6 +704,7 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 - `public_api_files_upload_bulk` and `public_api_files_download_bulk` (120/min, cap 20 each, not sharded): `upload-urls` and `download-urls` charge `count: items.length` here once per request, after the principal charge. So a batch of N costs one principal call plus N bulk tokens, and minting upload URLs does not use the `write-many` budget.
 - When a charge loses a write conflict on every Convex retry, `rate_limiter_limit_by_key` answers a 429 with `retryAfterMs: 1000` instead of a 500. It still fails closed: nothing is let through. Only an action can see this error; a mutation reruns as a whole. This mapping lives in the shared `rate_limiter_limit_by_key`, so it applies to every action that calls it, not only the public API.
 - `public_api_plugin_data_write_bulk` (600/min, cap 100): `plugin-data/write-batch` only, charged the same way with `count: documents.length`.
+- `files_query_search` (60/min, cap 20, keyed by the person): `files/query` in search mode charges it once per page, after the principal charge. It is separate from the search box bucket `files_search_metadata`.
 - `plugins_backend_invoke` (30/min, cap 10, key `${userId}:${installationId}`): the invoke door, charged before the run is created — one busy frame cannot drain the member's invoke budget in every other plugin. Plan 5 may re-tune it; keep its constants named in `rate_limiter.ts`.
 
 `upload-urls` uses shared stored-file admission. Before allocation, check the payer's paid plan, safe size, and the full batch against remaining capacity. Free returns HTTP 403 "File uploads need a paid plan". A full cap returns HTTP 403 "This workspace has reached its storage limit".
@@ -795,6 +862,7 @@ The workspace `API keys` page (`packages/app/src/routes/w/$organizationName/$wor
 - Coverage lives in `packages/app/convex/public_api.test.ts` (route behavior, batch semantics, quota, rate buckets; locked vs missing answers in `locked and missing paths`), `packages/app/convex/http.test.ts` (root route inventory), and `packages/app/convex/r2.test.ts` (finalizer, sweeper).
 - The plugin file doors and the invoke door are covered in `packages/app/convex/plugins.publish.test.ts` (`plugins backend invoke runs`), `packages/app/convex/plugins.test.ts` (`plugins metadata file doors`) and `packages/app/convex/public_api.test.ts` (service write fence). Trash list, Trash areas and restore for keys bound to a service account are covered in `packages/app/convex/files_archive_runs.api_restore.test.ts`. Plugin Trash and plugin Restore are covered in `packages/app/convex/public_api_plugin_trash.test.ts`.
 - The plugin-data routes, the service-grant mint and resolver, and `/api/v1/auth/verify` live in `packages/app/convex/plugins_data.test.ts`. The four service-grant exchange routes live in `packages/app/convex/plugins_service.test.ts`. The api-keys page's verify button is covered in `src/routes/w/$organizationName/$workspaceName/api-keys/index.test.tsx`.
+- `files/query` is covered in `convex/plugins_ui.test.ts` (`files/query`: seek paging with a read bound in both orders, folder consent, restricted children, the merge of normal and Move docs, cursor scope, search paging, a search that never enters an unchosen restricted folder), `convex/public_api.test.ts` (the two-scope rule, a locked file never shows or changes a page, and rows in the refusal tables), `convex/files_nodes.search_metadata.test.ts` (`requireRoot`), `convex/files_metadata.test.ts` (`get_query_items` cost), `convex/files_tree.budgets.test.ts` (page guard), `convex/plugins.test.ts` (call slot) and `convex/public_api_volumes.test.ts` (scheduled recheck).
 - Focused command: `vp env exec pnpm --dir packages/app exec vitest run --project convex convex/public_api.test.ts`.
 
 # Guardrails

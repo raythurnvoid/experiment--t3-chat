@@ -224,6 +224,18 @@ const rate_limiter_CONFIG = {
 	files_pending_update_write: BULK_FILES_WRITE,
 
 	/**
+	 * One search mode page of the public `files/query` route, keyed by the person behind the call. It
+	 * runs the same walk as the search box, so it has the same limit as `files_search_metadata`. It is a separate bucket
+	 * so that a plugin or a script cannot use up the person's own search box.
+	 */
+	files_query_search: {
+		kind: "token bucket",
+		rate: 60,
+		period: MINUTE,
+		capacity: 20,
+	},
+
+	/**
 	 * One page of the search box's custom-field search. Each page walks many folders, so it is not
 	 * free like a query read. A chip can make two calls per page, and the box searches again 300 ms
 	 * after typing stops, so the capacity covers a few quick edits and "Show more" clicks.

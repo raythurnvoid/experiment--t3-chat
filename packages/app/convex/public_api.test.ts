@@ -35,6 +35,9 @@ import { get_by_path, get_file_content_materialization_state, read_file_content_
 import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { stage_trusted_yjs_update } from "./files_pending_updates.ts";
 import { delete_paths, get_paths, transfer_paths } from "./public_api_files_organize.ts";
+import { public_api_files_query_http } from "./public_api_files_query.ts";
+import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes_create_db.ts";
+import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
 import { mock_transfer_storage } from "./files_transfer.setup.test.ts";
 import { grant_plugin_file_access } from "./plugins.setup.test.ts";
 import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
@@ -2082,6 +2085,11 @@ describe("public files API", () => {
 				'Unknown request field "overwrit" in "files.1". Remove it.',
 			],
 			["/api/v1/files/list", { path: "/", recursiv: true }, 'Unknown request field "recursiv". Remove it.'],
+			[
+				"/api/v1/files/query",
+				{ mode: "folder", field: "metadata.status", match: { eq: "open", prefx: "o" } },
+				'Unknown request field "prefx" in "match". Remove it.',
+			],
 		] as const) {
 			const response = await t.fetch(path, {
 				method: "POST",
@@ -4388,6 +4396,72 @@ describe("public files API", () => {
 		}
 	});
 
+	test("files/query needs both the files:read and the files:list scope", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-query-scopes" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+
+		// The shared scope check covers `files:read`. The route itself must refuse a key without `files:list`.
+		for (const [scopes, status] of [
+			[["files:read"], 403],
+			[["files:read", "files:list"], 200],
+		] as const) {
+			const key = await asUser.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId: db.membershipId,
+				name: `Query ${scopes.join(" ")}`,
+				scopes: [...scopes],
+			});
+			if (key._nay) throw new Error(key._nay.message);
+			const response = await t.fetch("/api/v1/files/query", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ mode: "folder", field: "metadata.status" }),
+			});
+			expect(response.status, scopes.join(" ")).toBe(status);
+			if (status === 403) {
+				expect(await response.json()).toEqual({
+					message: "Permission denied: this caller needs the files:list scope.",
+					errorCode: "permission_denied",
+				});
+			}
+		}
+	});
+
+	test("files/query search pages use the person's own search bucket, and folder pages do not", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-query-search-bucket" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: db.membershipId,
+			name: "Query",
+			scopes: ["files:read", "files:list"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+
+		// Freeze the limiter clock, so the drained bucket does not refill on a slow machine.
+		vi.spyOn(Date, "now").mockReturnValue(Date.now());
+		const drained = await t.run(async (ctx) =>
+			rate_limiter_limit_by_key(ctx, { name: "files_query_search", key: db.userId, count: 20 }),
+		);
+		expect(drained).toBeNull();
+
+		const query = async (body: Record<string, unknown>) => {
+			const response = await t.fetch("/api/v1/files/query", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ field: "metadata.status", ...body }),
+			});
+			return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+		};
+		const search = await query({ mode: "search", match: { exists: true } });
+		expect(search.status).toBe(429);
+		expect(search.body).toMatchObject({ errorCode: "rate_limited", retryAfterMs: expect.any(Number) });
+		const folder = await query({ mode: "folder" });
+		expect(folder.status, JSON.stringify(folder.body)).toBe(200);
+	});
+
 	test("a key of a member without workspace read opens no open file", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-owner" });
@@ -4427,6 +4501,8 @@ describe("public files API", () => {
 		for (const request of [
 			{ path: "/api/v1/files/list", body: { path: "/" } },
 			{ path: "/api/v1/files/read", body: { path: "/notes.md" } },
+			{ path: "/api/v1/files/query", body: { mode: "folder", field: "metadata.status" } },
+			{ path: "/api/v1/files/query", body: { mode: "search", field: "metadata.status", match: { prefix: "o" } } },
 		] as const) {
 			const response = await t.fetch(request.path, {
 				method: "POST",
@@ -4442,6 +4518,138 @@ describe("public files API", () => {
 			body: JSON.stringify({ fileNodeIds: ["missing-node"] }),
 		});
 		expect(await download.json()).toMatchObject({ items: [], errors: [{ fileNodeId: "missing-node" }] });
+	});
+
+	test("files/query never shows a file the caller cannot open, and such a file never changes the page", async () => {
+		const t = test_convex();
+		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-query-owner" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: owner.userId });
+		const keyId = `pk_${"6".repeat(32)}`;
+		const secret = "7".repeat(64);
+		const credential = `${keyId}.${secret}`;
+		// A guest: a member without workspace read, who opens only what they were added to.
+		const guestUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-public-query-guest" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId,
+				active: true,
+				pendingOrganizationRemoval: false,
+				updatedAt: Date.now(),
+				displayName: "",
+				sortDisplayName: "",
+			});
+			await ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				userId,
+				name: "Guest query",
+				keyId,
+				obfuscatedValue: `${keyId}.****${secret.slice(-4)}`,
+				secretHash: await crypto_sha256_hex(secret),
+				scopes: ["files:list", "files:read"],
+				createdAt: Date.now(),
+				revokedAt: null,
+				lastUsedAt: null,
+			});
+			return userId;
+		});
+		const write = async (path: string) => {
+			const nodeId = await test_run_with_flush(t, async (ctx) => {
+				const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+					organizationId: owner.organizationId,
+					workspaceId: owner.workspaceId,
+					userId: owner.userId,
+					parentId: "root",
+					path,
+					kind: "file",
+					contentType: "text/markdown",
+					now: Date.now(),
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				await files_metadata_db_write_entries(ctx, {
+					fileNode: (await ctx.db.get("files_nodes", created._yay))!,
+					entries: [{ key: "status", value: "open" }],
+				});
+				return created._yay;
+			});
+			await test_finish_file_index(t, nodeId);
+			return nodeId;
+		};
+		await write("notes/b.md");
+		// The guest was added to `/notes`, like the "Add people" tests in `files_nodes.tree_locked_rows.test.ts`.
+		// The scope job has not reached `b.md`, which was already inside, so it stays locked for them for now.
+		await t.run(async (ctx) => {
+			const notes = (await ctx.db.query("files_nodes").collect()).find((node) => node.path === "/notes")!;
+			await ctx.db.patch("files_nodes", notes._id, { extendedScopeNodeId: notes._id, parentExtendedScopeNodeId: null });
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				resourceKind: "file",
+				resourceId: String(notes._id),
+				principalKind: "user",
+				userId: guestUserId,
+				permission: "content.read",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+		});
+		await write("notes/a.md");
+		const cId = await write("notes/c.md");
+		const body = { mode: "folder", path: "/notes", field: "metadata.status", match: { eq: "open" } };
+
+		const pages: string[][] = [];
+		let cursor: string | null = null;
+		do {
+			const response = await t.fetch("/api/v1/files/query", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify({ ...body, limit: 1, cursor }),
+			});
+			const page = (await response.json()) as { items: Array<{ path: string }>; cursor: string | null };
+			expect(response.status, JSON.stringify(page)).toBe(200);
+			pages.push(page.items.map((item) => item.path));
+			cursor = page.cursor;
+			expect(pages.length).toBeLessThan(10);
+		} while (cursor !== null);
+		// Only the last request may be an empty page.
+		expect(pages.at(-1)!.length === 0 ? pages.slice(0, -1) : pages).toEqual([["/notes/a.md"], ["/notes/c.md"]]);
+
+		// A file the caller can no longer open after the folder read is left out too.
+		let restricted = false;
+		const afterFolderRead = await t.action(async (ctx) => {
+			const response = await public_api_files_query_http({
+				ctx: {
+					...ctx,
+					runQuery: async (...args) => {
+						const result = await ctx.runQuery(...args);
+						if (!restricted && getFunctionName(args[0]) === "files_tree:list_children_by_field") {
+							restricted = true;
+							const done = await asOwner.mutation(api.files_sharing.restrict_node, {
+								membershipId: owner.membershipId,
+								nodeId: cId,
+							});
+							if (done._nay) throw new Error(done._nay.message);
+						}
+						return result;
+					},
+				},
+				request: new Request("https://api.test/api/v1/files/query", {
+					method: "POST",
+					headers: auth_headers(credential),
+					body: JSON.stringify(body),
+				}),
+				path: "/api/v1/files/query",
+			});
+			return {
+				status: response.status,
+				paths: "items" in response.body ? (response.body.items ?? []).map((item) => item.path) : [],
+			};
+		});
+		expect(restricted).toBe(true);
+		expect(afterFolderRead).toEqual({ status: 200, paths: ["/notes/a.md"] });
 	});
 
 	test("refuses a write to a viewer's API key while still allowing it to read", async () => {

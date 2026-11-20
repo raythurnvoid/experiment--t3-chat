@@ -7,7 +7,7 @@ import { Doc as YjsDoc, encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import { db_insert_file_text_content } from "./files_nodes_create.ts";
 import { files_nodes_db_archive_node, files_nodes_db_restore_node } from "./files_nodes.ts";
-import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { access_control_db_ensure_role_assignment, type access_control_Subject } from "./access_control.ts";
 import { files_metadata_db_insert_committed } from "./files_metadata_db.ts";
 import { files_pending_nodes_db_create } from "./files_pending_nodes.ts";
 import {
@@ -3806,4 +3806,45 @@ test("search_saved finds each saved file once by its content, with its best chun
 			paginationOpts: { numItems: 50, cursor: null },
 		}),
 	).rejects.toThrow(/Unauthenticated/);
+});
+
+describe("internal_search_metadata_saved", () => {
+	test("requireRoot refuses a caller who cannot open the workspace root, and reads for one who can", async () => {
+		const seeded = await seed_folder_table();
+		const { t, db } = seeded;
+		const [fileId] = await seeded.insert_children([{ name: "a.md", kind: "file", updatedAt: 1 }]);
+		await seeded.set_metadata([[fileId!, [{ key: "status", value: "open" }]]]);
+		// An account with no grant cannot open the root.
+		const serviceAccountId = await t.run((ctx) =>
+			ctx.db.insert("access_control_service_accounts", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				name: "no-root",
+				createdBy: db.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				revokedAt: null,
+			}),
+		);
+		const search = (subject: access_control_Subject, requireRoot: boolean) =>
+			t.query(internal.files_visible.internal_search_metadata_saved, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				visibilityUserId: db.userId,
+				subject,
+				folderPath: "/",
+				plan: { op: "prefix", fieldPath: "metadata.status", value: "op" },
+				numItems: 20,
+				position: { rangeStart: null, cursor: null, lastKey: null },
+				requireRoot,
+			});
+		const account = { kind: "service_account", serviceAccountId } as const;
+
+		expect((await search(account, true))._nay?.name).toBe("permission_denied");
+		// Without the flag the read is allowed and drops the rows this caller cannot open.
+		expect((await search(account, false))._nay).toBeUndefined();
+		// The person can open the root, so the same read answers with the row.
+		const owner = await search({ kind: "user", userId: db.userId, plugin: null }, true);
+		expect(owner._yay?.rows.map((row) => row.item?.path)).toEqual(["/table/a.md"]);
+	});
 });

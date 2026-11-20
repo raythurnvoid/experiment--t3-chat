@@ -457,6 +457,29 @@ The row key is `{ parts, nameKey }` from `shared/files-sort.ts`, with one part: 
 (`[sortValue, sortName, name]` for a metadata key). A null part sorts last in either direction,
 by name A to Z.
 
+Known limit (TODO in the `files_sort_value_of` JSDoc in `shared/files-sort.ts`): numbers sort as text.
+Whole numbers from 0 up sort right. A decimal splits into two digit runs, so `12.5` sorts before
+`12.25`. A minus sign is only a character, so `-5` sorts before `-10`. The public
+`/api/v1/files/query` folder mode shows this order to plugins. A real number order needs a number
+key in the folder table index.
+
+# Public Field Query
+
+`POST /api/v1/files/query` is the public door to custom fields, for API keys, plugin pages and
+plugin runs. The route spec is "Field queries" in the `public-api` skill. It reads saved data only.
+
+- Folder mode reads the same index as the folder table sort and filter above, through
+  `files_tree.list_children_by_field`. It lists only the area of the folder itself: unlike the folder
+  table, it leaves out a child that is its own restricted root, also for the owner.
+- Search mode runs the same walk as the search box below, with no draft user. `prefix` and `range`
+  need a caller who can open the workspace root.
+- The asked field values come from `files_metadata.get_query_items`, which reads the committed field
+  doc (`sortDisplayValue`), like "Folder Table Fields".
+
+Decision (2026-11-19): a caller who may read a file may read its custom fields. So `files:read` covers
+metadata, and a plugin needs only `workspace.files.read`. The consent text says "with their
+metadata". Existing installs got no new prompt, because the capability id did not change.
+
 # Search Box
 
 The Files sidebar and global search filter by metadata and frontmatter with the same language. The
@@ -799,8 +822,8 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 
 # Not Built On Purpose
 
-- No public HTTP API route. `packages/app/convex/public_api.ts` does not expose metadata. Adding it
-  is a follow-up, not an oversight.
+- No public HTTP route that writes metadata. Reading has `/api/v1/files/query` (see "Public Field
+  Query"). Writing through the public API is a follow-up, not an oversight.
 - No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and queues its
   index docs after saving the map. `read_only_set` has no quota leg either, so this is consistent —
   revisit it as a product decision, not as a hole.
@@ -817,6 +840,8 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
   mirror's own `source` value, and the publish leaving the create-time map alone.
 - `packages/app/convex/files_pending_updates.test.ts` — a save whose frontmatter the parser cannot
   read still stores the text and writes no metadata docs.
+- `packages/app/convex/plugins_ui.test.ts` (`files/query`) and `packages/app/convex/files_metadata.test.ts`
+  (`get_query_items`) — the public field query: paging by value, access, and the cost of the values read.
 - `packages/app/server/server-ai-tools.test.ts` — the `set_file_metadata` tool.
 - `packages/app/server/bash-meta-command.test.ts` — `metadata.*` field parsing.
 - `packages/app/src/components/files/files-properties-modal.test.tsx` — the Properties dialog: the

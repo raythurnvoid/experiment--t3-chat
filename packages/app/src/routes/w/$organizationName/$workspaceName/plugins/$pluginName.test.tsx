@@ -910,7 +910,7 @@ describe("RoutePluginsPlugin scheduled runs", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 		const dialog = screen.getByRole("dialog");
 		expect(
-			within(dialog).queryByRole("checkbox", { name: "Read my selected files" }),
+			within(dialog).queryByRole("checkbox", { name: "Read my selected files and their metadata" }),
 			"first install must show personal file operations",
 		).not.toBeNull();
 		expect(within(dialog).queryByRole("textbox", { name: "Readable file or folder path" })).toBeNull();

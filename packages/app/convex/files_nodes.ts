@@ -7123,6 +7123,35 @@ const search_saved_metadata_problem_validator = v.object({
 });
 
 /**
+ * Check the field and the value of one custom-field search. `folderPath` is undefined for the whole
+ * workspace. Returns null when the search can run.
+ */
+function get_search_metadata_plan_problem(
+	plan: Infer<typeof files_metadata_search_plan_validator>,
+	folderPath: string | undefined,
+) {
+	// A folder scopes `eq` and `exists` only: `prefix` and `range` put their range on the value.
+	if (
+		plan.fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH ||
+		!files_search_query_field_path_is_valid(plan.fieldPath) ||
+		(folderPath !== undefined && (plan.op === "prefix" || plan.op === "range"))
+	) {
+		return "invalid" as const;
+	}
+	// The index cuts long values, so a longer value could match a different one. Refuse it like the
+	// search box does.
+	if (
+		(plan.op === "eq" || plan.op === "prefix") &&
+		typeof plan.value === "string" &&
+		plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
+	) {
+		return "value_too_long" as const;
+	}
+
+	return null;
+}
+
+/**
  * The checks of a search box custom-field search, then the caller's tenant and search view. Null is
  * input the app never sends.
  */
@@ -7149,21 +7178,9 @@ export const get_search_saved_metadata_start = internalQuery({
 		const { membership, userAuth } = reader;
 		const plan = args.plan;
 		const folderPath = args.folderPath === "/" ? undefined : args.folderPath;
-		// A folder scopes `eq` and `exists` only: `prefix` and `range` put their range on the value.
-		if (
-			plan.fieldPath.length > files_search_query_FIELD_PATH_MAX_LENGTH ||
-			!files_search_query_field_path_is_valid(plan.fieldPath) ||
-			(folderPath !== undefined && (plan.op === "prefix" || plan.op === "range"))
-		) {
-			return null;
-		}
-		// The index cuts long values, so a longer value could match a different one. Refuse it like the
-		// search box does.
-		if (
-			(plan.op === "eq" || plan.op === "prefix") &&
-			typeof plan.value === "string" &&
-			plan.value.length > files_metadata_SEARCH_VALUE_MAX_LENGTH
-		) {
+		const planProblem = get_search_metadata_plan_problem(plan, folderPath);
+		if (planProblem === "invalid") return null;
+		if (planProblem === "value_too_long") {
 			return { kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM };
 		}
 		if (folderPath !== undefined) {
@@ -7190,6 +7207,77 @@ export const get_search_saved_metadata_start = internalQuery({
 		};
 	},
 });
+
+/**
+ * The checks of a custom-field search of the public `/api/v1/files/query` route, then the start
+ * folder and the search view. The caller is any subject: a user, a service account or a plugin pair.
+ *
+ * The subject must be able to open the start folder. `prefix` and `range` read the whole open area,
+ * so their start folder is the workspace root, and a subject who cannot open the root is refused.
+ */
+export const get_query_search_start = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		subject: access_control_subject_validator,
+		plan: files_metadata_search_plan_validator,
+		/**
+		 * A normalized path. `/` is the workspace root.
+		 */
+		folderPath: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			kind: v.literal("start"),
+			/**
+			 * Null is the workspace root.
+			 */
+			folderNodeId: v.union(v.id("files_nodes"), v.null()),
+			searchGeneration: v.number(),
+		}),
+		v.object({
+			kind: v.literal("problem"),
+			name: v.union(
+				v.literal("invalid_plan"),
+				v.literal("value_too_long"),
+				v.literal("folder_locked"),
+				v.literal("folder_missing"),
+				v.literal("not_a_folder"),
+			),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const planProblem = get_search_metadata_plan_problem(
+			args.plan,
+			args.folderPath === "/" ? undefined : args.folderPath,
+		);
+		if (planProblem === "invalid") return { kind: "problem" as const, name: "invalid_plan" as const };
+		if (planProblem === "value_too_long") return { kind: "problem" as const, name: "value_too_long" as const };
+
+		// Locked, not hidden: a folder the subject cannot open, or any path below one, is locked. Only a
+		// path in a readable folder can be missing. The root has no node: it answers `missing` when the
+		// subject can open it.
+		const access = await files_db_get_path_access(ctx, { ...args, path: args.folderPath });
+		if (access.status === "locked") return { kind: "problem" as const, name: "folder_locked" as const };
+		if (access.status === "missing" && args.folderPath !== "/") {
+			return { kind: "problem" as const, name: "folder_missing" as const };
+		}
+		if (access.status === "found" && access.node.kind !== "folder") {
+			return { kind: "problem" as const, name: "not_a_folder" as const };
+		}
+
+		return {
+			kind: "start" as const,
+			folderNodeId: access.status === "found" ? access.node._id : null,
+			searchGeneration: await files_saved_placement_db_get_search_generation(ctx.db, args),
+		};
+	},
+});
+
+export type files_nodes_get_query_search_start_Result =
+	typeof get_query_search_start extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 const search_saved_metadata_page_validator = v.object({
 	page: v.array(

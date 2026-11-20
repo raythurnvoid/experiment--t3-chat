@@ -174,6 +174,8 @@ import type * as public_api_file_archives from "../public_api_file_archives.js";
 import type * as public_api_files_list_http from "../public_api_files_list_http.js";
 import type * as public_api_files_organize from "../public_api_files_organize.js";
 import type * as public_api_files_organize_http_routes from "../public_api_files_organize_http_routes.js";
+import type * as public_api_files_query from "../public_api_files_query.js";
+import type * as public_api_files_query_http_routes from "../public_api_files_query_http_routes.js";
 import type * as public_api_http_action from "../public_api_http_action.js";
 import type * as public_api_http_auth from "../public_api_http_auth.js";
 import type * as public_api_http_routes from "../public_api_http_routes.js";
@@ -370,6 +372,8 @@ declare const fullApi: ApiFromModules<{
   public_api_files_list_http: typeof public_api_files_list_http;
   public_api_files_organize: typeof public_api_files_organize;
   public_api_files_organize_http_routes: typeof public_api_files_organize_http_routes;
+  public_api_files_query: typeof public_api_files_query;
+  public_api_files_query_http_routes: typeof public_api_files_query_http_routes;
   public_api_http_action: typeof public_api_http_action;
   public_api_http_auth: typeof public_api_http_auth;
   public_api_http_routes: typeof public_api_http_routes;

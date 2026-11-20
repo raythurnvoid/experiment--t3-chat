@@ -8777,6 +8777,50 @@ describe("plugins metadata file doors", () => {
 		]);
 	});
 
+	test("the query door settles the call slot it consumed, on both the answered and the rejected path", async () => {
+		const t = test_convex();
+		const fixture = await install_file_doors_plugin(t, [...FILE_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_file_invoke_run({ t, fixture });
+		expect(
+			(
+				await door_call({
+					t,
+					path: "/api/v1/files/plugin-folders/ensure",
+					apiToken: run.apiToken,
+					body: { path: "/probe" },
+				})
+			).status,
+		).toBe(200);
+
+		const query = (body: Record<string, unknown>) =>
+			door_call({
+				t,
+				path: "/api/v1/files/query",
+				apiToken: run.apiToken,
+				body: { mode: "folder", field: "metadata.status", ...body },
+			});
+		expect((await query({ path: "/probe" })).status).toBe(200);
+		expect((await query({ path: "/probe", match: { exists: true } })).status).toBe(200);
+		expect((await query({ path: "/probe", match: { range: { gte: 1 } } })).status).toBe(400);
+		expect((await query({ path: "/missing" })).status).toBe(404);
+
+		// A run that ends with an open call fails as "Plugin left API calls unfinished". So the door
+		// must settle its slot on every path.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => [call.route, call.status, call.errorCode])).toEqual([
+			["/api/v1/files/plugin-folders/ensure", "succeeded", undefined],
+			["/api/v1/files/query", "succeeded", undefined],
+			["/api/v1/files/query", "succeeded", undefined],
+			["/api/v1/files/query", "failed", "invalid_input"],
+			["/api/v1/files/query", "failed", "not_found"],
+		]);
+	});
+
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {
 		const t = test_convex();
 		const fixture = await install_file_doors_plugin(t);
@@ -8807,6 +8851,7 @@ describe("plugins metadata file doors", () => {
 		for (const [route, body] of [
 			["/api/v1/files/read", { path: "/probe/tail.md" }],
 			["/api/v1/files/list", { path: "/probe" }],
+			["/api/v1/files/query", { mode: "folder", path: "/probe", field: "metadata.status" }],
 		] as const) {
 			const refused = await door_call({ t, path: route, apiToken: run.apiToken, body });
 			expect([route, refused.status]).toEqual([route, 403]);

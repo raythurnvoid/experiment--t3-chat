@@ -30,7 +30,7 @@ const SCOPE_CHOICES = [
 	{
 		scope: "files:read",
 		capability: "workspace.files.read",
-		label: "Read my selected files",
+		label: "Read my selected files and their metadata",
 		management: false,
 	},
 	{

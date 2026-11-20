@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { files_metadata_db_write_entries } from "./files_metadata_db.ts";
+import { insert_installation } from "./files_share_links.setup.test.ts";
 import { insert_tree_node, seed_tree_access_fixture } from "./files_nodes.setup.test.ts";
+import { organizations_membership_lifetimes_db_ensure } from "./organizations_membership_lifetimes.ts";
 import { test_convex, test_db_hold_move_slot, test_finish_file_index, test_run_with_flush } from "./setup.test.ts";
 
 afterEach(() => {
@@ -13,7 +15,8 @@ describe("tree page read budgets", () => {
 	test.each([false, true])("file page guards cover saved views (restricted %s)", async (restricted) => {
 		const t = test_convex();
 		const f = await seed_tree_access_fixture(t);
-		const { parentId, ids } = await test_run_with_flush(t, async (ctx) => {
+		const installationId = await insert_installation({ t, db: f.owner });
+		const { parentId, ids, serviceAccountId, pairId } = await test_run_with_flush(t, async (ctx) => {
 			const now = Date.now();
 			const folder = (parentId: Id<"files_nodes">, path: string, scope?: Id<"files_nodes"> | "self") =>
 				insert_tree_node({ ctx, owner: f.owner, parentId, path, kind: "folder", scope });
@@ -28,6 +31,53 @@ describe("tree page read budgets", () => {
 				principalKind: "role",
 				role: "member",
 				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			// A service account reads the same folder through its own grant.
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				name: "budget-reader",
+				createdBy: f.owner.userId,
+				createdAt: now,
+				updatedAt: now,
+				revokedAt: null,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				resourceKind: "file",
+				resourceId: String(addedId),
+				principalKind: "service_account",
+				serviceAccountId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			// A plugin page of the admin reads the same folder through the admin's choice of it.
+			const admin = (await ctx.db.get("organizations_workspaces_users", f.admin.membershipId))!;
+			const pairId = await ctx.db.insert("plugins_file_pairs", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				installationId,
+				userId: f.admin.userId,
+				membershipId: f.admin.membershipId,
+				membershipLifetime: await organizations_membership_lifetimes_db_ensure(ctx, admin),
+				createdAt: now,
+			});
+			await ctx.db.insert("plugins_file_consents", {
+				organizationId: f.owner.organizationId,
+				workspaceId: f.owner.workspaceId,
+				pairId,
+				rootNodeId: addedId,
+				requestedLevel: "read",
+				appliedLevel: "read",
+				areaEligible: false,
+				open: true,
+				revision: 1,
+				state: "applied",
+				endedReason: null,
 				createdAt: now,
 				updatedAt: now,
 			});
@@ -73,7 +123,7 @@ describe("tree page read budgets", () => {
 				});
 				ids.push(nodeId);
 			}
-			return { parentId, ids };
+			return { parentId, ids, serviceAccountId, pairId };
 		});
 		for (const id of ids) await test_finish_file_index(t, id);
 
@@ -85,7 +135,7 @@ describe("tree page read budgets", () => {
 		let cohortId: Id<"files_move_cohorts"> | null = null;
 		let generation: 0 | string = 0;
 		const check = async (
-			field: "tree" | "name" | "metadata.status" | "shared" | "roots",
+			field: "tree" | "name" | "metadata.status" | "query" | "query_account" | "query_pair" | "shared" | "roots",
 			stream: "normal" | "cohort",
 			owner = false,
 		) => {
@@ -135,7 +185,32 @@ describe("tree page read budgets", () => {
 											principalIndex: 2,
 											filter: { kind: "text", field: "metadata.status", op: "present" },
 										})
-									: await ctx.runQuery(api.files_tree.list_tree_children_sorted, { ...sorted, restricted });
+									: field === "query" || field === "query_account" || field === "query_pair"
+										? {
+												// The `/api/v1/files/query` folder read uses the same page helper and guard.
+												page: (await ctx.runQuery(internal.files_tree.list_children_by_field, {
+													organizationId: f.owner.organizationId,
+													workspaceId: f.owner.workspaceId,
+													subject:
+														field === "query_account"
+															? { kind: "service_account", serviceAccountId }
+															: field === "query_pair"
+																? { kind: "plugin_pair", pairId }
+																: { kind: "user", userId: member.userId, plugin: null },
+													folderId: parentId,
+													kind: "file",
+													field: "metadata.status",
+													match: null,
+													order: "asc",
+													source:
+														stream === "cohort" && cohortId && view
+															? { kind: "cohort", generation, cohortId, view }
+															: { kind: "normal", generation },
+													seek: { lastKey: null, phase: 0 },
+													numItems,
+												}))!.rows.map((row) => ({ _id: row.nodeId })),
+											}
+										: await ctx.runQuery(api.files_tree.list_tree_children_sorted, { ...sorted, restricted });
 					const after = await ctx.meta.getTransactionMetrics();
 					expect(result.page.map((node) => node._id)).toEqual(ids.slice(0, numItems));
 					expect(split).toHaveBeenCalledOnce();
@@ -157,6 +232,12 @@ describe("tree page read budgets", () => {
 			await check("tree", stream);
 			await check("name", stream);
 			await check("metadata.status", stream, restricted);
+			// The query read lists only the area of the folder itself, so it has no restricted rows.
+			if (!restricted) {
+				await check("query", stream);
+				await check("query_account", stream);
+				await check("query_pair", stream);
+			}
 			if (restricted) {
 				await check("tree", stream, true);
 				await check("name", stream, true);

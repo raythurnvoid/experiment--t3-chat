@@ -62,6 +62,21 @@ export const files_metadata_FIELD_PATH_MAX_LENGTH = 160;
  */
 export const files_metadata_SEARCH_VALUE_MAX_LENGTH = 1024;
 
+/**
+ * The most fields one `/api/v1/files/query` request can ask back per item.
+ */
+export const files_metadata_QUERY_FIELDS_MAX = 12;
+
+/**
+ * The most items one internal values query reads (`files_metadata.get_query_items`).
+ *
+ * Measured 2026-11-20 in the `get_query_items` test of `convex/files_metadata.test.ts`: 10 items with
+ * 12 list fields each, every file at its index doc limit, cost 261 reads, 261 documents and 287 KB.
+ * A file in a Move or an index run has two views, which can double the field reads. That still
+ * stays far under half of the Convex limits for one query (4,096 reads, 16 MiB).
+ */
+export const files_metadata_QUERY_ITEMS_CHUNK = 10;
+
 export type files_metadata_Value =
 	| { fieldPath: string; valueKind: "string"; value: string }
 	| { fieldPath: string; valueKind: "number"; value: number }
