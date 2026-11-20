@@ -449,6 +449,28 @@ The old scratch runner is no longer available. Follow the
 [bundle-swap recipe](plugin-marketplace.md#checking-an-unpublished-plugin-build-in-the-real-frame)
 and save a new runner in the current personal task folder.
 
+### To change or reuse a frame's API calls, patch `fetch` inside the frame
+
+Seen 2026-11-20 on the Apartments page. `context.route` on `**/api/v1/files/query` and a later
+`context.unroute` both hung until the CLI timeout, and the frame's requests went out unchanged.
+
+Patch `window.fetch` in the frame instead, with `frame.evaluate` on the real `Frame` handle. Keep
+the original as `window.__qaOrigFetch` and put it back when the check ends; a frame reload also
+removes the patch.
+
+- **Test Load more with a small page.** Rewrite the JSON body's `limit` (for example to 7) for the
+  route URL. The server pages for real, so cursors and `isDone` are the real ones.
+- **Call a route straight from the frame.** Save the URL and `new Headers(init.headers)` of one
+  real frame request in window variables, then call `window.__qaOrigFetch` with them and new bodies.
+  The token stays inside the frame; return only status, error code and short results. Delete the
+  variables when done.
+- `context().on("response", …)` does see the frame's API answers, so use it to read status and
+  JSON. Remove the listener with `off` when done.
+
+A click inside this frame also stalled at "waiting for element to be visible, enabled and stable"
+while the tab was in front. Focus the button with `frame.evaluate` and press Enter with
+`page.keyboard.press`, as for a background tab above.
+
 ## A fulfilled body outlives the session that produced it, and the handler still says it fulfilled
 
 Measured 2026-08-24 on playwriter 0.4.0, swapping the Chitchat bundle at the published asset URL.

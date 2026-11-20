@@ -1044,8 +1044,9 @@ Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is co
 
 # Apartments plugin (`plugins/bonobo-plugin-apartments`)
 
-Draft (0.1.0), not published yet. Repository `bonobo-plugin-apartments`; its README holds the flat
-file shape for the writer, the views, and the build and release steps. It copies the Gallery layout.
+Draft 0.1.0, published 2026-11-20 (see "Releases"). Repository `bonobo-plugin-apartments`; its README
+holds the flat file shape for the writer, the views, and the build and release steps. It copies the
+Gallery layout. It pins SDK 0.28.0 from the mirror.
 
 It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" in the
 `public-api` skill). Capability: `workspace.files.read` only. Host facts it depends on:
@@ -1126,12 +1127,14 @@ what its pages and file views show" as new. Live check in Ask mode: the request 
 view, the agent named the account, folder and draft state with no tool call, a request after
 removing the chip carried `pluginContext: null`, and no stored message or title held the view text.
 
-SDK 0.28.0 (NOT mirrored yet) passes `{ detail, ref }` to the context provider, so a page can answer
-the agent's screen read (`view_snapshot`) with a detailed list and refs. It also types the field
-query route `POST /api/v1/files/query`. Gmail 0.5.0 stays on 0.27.0, whose provider ignores the
-argument and answers both screen reads with its summary. The host works with both. The Apartments
-plugin is the first to pin 0.28.0. To release it: deploy the host, mirror SDK 0.28.0, pin that commit
-in Apartments, build twice, push the plugin repo, publish, then add it as a submodule.
+SDK 0.28.0 was mirrored at `f7d22c421373b4e57cf9c0ff22ba97916e60a9ff`; its tree equals
+`ce2d7921:packages/bonobo-plugin-sdk`. It passes `{ detail, ref }` to the context provider, so a page
+can answer the agent's screen read (`view_snapshot`) with a detailed list and refs. It also types the
+field query route `POST /api/v1/files/query`. Gmail 0.5.0 stays on 0.27.0, whose provider ignores the
+argument and answers both screen reads with its summary. The host works with both. Apartments 0.1.0
+(`3f2b7907169da0eff78426e9516db69f063327b4`, version doc `hn7zcmsm6n188rqp677bq0x9kn8jkace`) is the
+first plugin to pin it. It was published with a passed review and installed in
+`chitchat-qa/xfer-qa-0914`, where the live checks of `files/query` ran on fake flats in `/qa-flats`.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing

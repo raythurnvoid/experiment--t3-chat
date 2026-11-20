@@ -233,3 +233,6 @@
 [submodule "references-submodules/agent-fs"]
 	path = references-submodules/agent-fs
 	url = https://github.com/desplega-ai/agent-fs.git
+[submodule "plugins/bonobo-plugin-apartments"]
+	path = plugins/bonobo-plugin-apartments
+	url = https://github.com/raythurnvoid/bonobo-plugin-apartments.git
