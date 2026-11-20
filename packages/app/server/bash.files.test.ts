@@ -3076,7 +3076,7 @@ describe("guests", () => {
 	 * A guest runner: an active member of a team workspace with no workspace role. The owner shares
 	 * only `/shared` with the guest, with write. `/open/a.md` is open to the workspace.
 	 */
-	async function create_guest_runner() {
+	async function create_guest_runner(extraFiles: Array<{ path: string; content: string }> = []) {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, { organizationName: "guest-team", workspaceName: "home" }),
@@ -3086,6 +3086,7 @@ describe("guests", () => {
 			extraFiles: [
 				{ path: "/shared/s.md", content: "shared body\n", withRealYjsSnapshot: true },
 				{ path: "/open/a.md", content: "open body\n", withRealYjsSnapshot: true },
+				...extraFiles,
 			],
 		});
 		const guest = await t.run(async (ctx) => {
@@ -3161,6 +3162,35 @@ describe("guests", () => {
 		// The shared folder lists by its own path.
 		expect((await runner.run({ command: `find ${mount}/shared` })).stdout).toBe(
 			`${mount}/shared/\n${mount}/shared/s.md\n`,
+		);
+	});
+
+	test("a guest's meta search with prefix or range is refused, also inside the shared folder", async () => {
+		const fields = "---\ntopic: atlas\namount: 5\n---\n";
+		const runner = await create_guest_runner([
+			{ path: "/open/hidden.md", content: fields },
+			{ path: "/shared/fields.md", content: fields },
+		]);
+		const denied = `meta search: Permission denied: prefix and range read the whole workspace, so they need access to ${mount}. Use eq or exists with --path <a folder shared with you>.\n`;
+
+		// These two read the open area by value, also with a folder. So the folder does not help.
+		for (const where of [`{"prefix":["frontmatter.topic","at"]}`, `{"range":["frontmatter.amount",{"gte":1}]}`]) {
+			for (const path of [mount, `${mount}/shared`]) {
+				const command = `meta search --path ${path} --where '${where}'`;
+				const result = await runner.run({ command });
+				expect(result.stdout, command).toBe("");
+				expect(result.stderr, command).toBe(denied);
+				expect(result.metadata.exitCode, command).toBe(1);
+			}
+		}
+
+		// `eq` walks the folder, so the guest still searches inside the shared folder.
+		const eq = `'{"eq":["frontmatter.topic","atlas"]}'`;
+		expect((await runner.run({ command: `meta search --path ${mount}/shared --where ${eq}` })).stdout).toBe(
+			`${mount}/shared/fields.md\n`,
+		);
+		expect((await runner.run({ command: `meta search --path ${mount} --where ${eq}` })).stderr).toBe(
+			`meta search: Permission denied: ${mount}. Pass --path <a folder shared with you>.\n`,
 		);
 	});
 

@@ -929,11 +929,12 @@ product decision, so record the answer here before changing the behaviour. An en
   and the tree pages do not give this signal (see "Files tree reads"). This is accepted for a
   caller who can open the workspace root, and inside a folder shared with a guest. A guest's name
   search of the whole workspace is refused (see "Guest search limits").
-- **Open: the agent's `meta search` with `prefix` or `range` gives a guest the same signal.** Bash
-  `meta search` (`server/bash-meta-command.ts`) does not pass `requireRoot`, so a guest's agent reads
-  the open area by value and drops the rows. With 280 hidden matches and a page of 1, the answer was
-  no rows and a next page (probe of 2026-11-20). `eq` and `exists` answer "Permission denied" at the
-  root. The fix is the search box's: pass `requireRoot` for `prefix` and `range`. Not decided yet.
+- **Closed 2026-11-20: the agent's `meta search` with `prefix` or `range` gave a guest the same
+  signal.** Bash `meta search` (`server/bash-meta-command.ts`) did not pass `requireRoot`, so a
+  guest's agent read the open area by value and dropped the rows. With 280 hidden matches and a page
+  of 1, the answer was no rows and a next page (probe of 2026-11-20). It now passes `requireRoot`
+  for `prefix` and `range`, like the search box, and a guest gets "Permission denied" (see "Guest
+  search limits").
 
 # Endpoints
 
@@ -1054,7 +1055,8 @@ which ones (the accepted scope-job window in "Field queries").
 
 Its search mode reads by restricted area. A `prefix` or `range` search reads the whole open area
 by value, so the route allows it only for a caller who can open the workspace root. That check runs
-inside the saved query, in the same transaction as the read (`requireRoot`). A guest's key, a
+inside the saved query, in the same transaction as the read (`requireRoot`). It asks about the
+workspace root, also when the search starts in a folder. A guest's key, a
 service-bound key without root access, and a plugin without Whole workspace consent get 403
 `Permission denied: /`.
 
@@ -1079,6 +1081,15 @@ A guest still searches names and `eq` / `exists` custom fields inside a folder s
 (`file.path:/folder/**`, or the open folder of a picker). `prefix` and `range` take no folder, so a
 guest cannot run them. A path, a node id, contents and public links are unchanged.
 
+The agent's Bash `meta search` follows the same limit. It passes `requireRoot` for `prefix` and
+`range`, so a guest's agent gets "Permission denied" for them, also with `--path` on a folder
+shared with the guest. The folder does not help: with a folder these two still read the whole open
+area by value and drop the rows outside it, and they do not read a restricted folder's own area at
+all. The message says to use `eq` or `exists` with `--path <a folder shared with you>`. `eq` and
+`exists` walk the folder, so they work inside a shared folder and answer "Permission denied" at
+the root, with a hint to pass `--path`. Test: "a guest's meta search with prefix or range is
+refused" in `server/bash.files.test.ts`.
+
 To lift the limit: `eq`, `exists` and names need an index of the items shared with each guest, so
 the read touches only their shares. `prefix` and `range` need a search engine that filters by
 access inside the engine.
@@ -1093,7 +1104,8 @@ they reach a shared item by its exact path. The UI root page shows nothing for t
 a custom-field filter; they use "Shared with you". Deleted shares leave that list. Guests get no
 Trash in the app or API; a readable old link still opens a preview. The UI search box refuses their name
 and custom-field searches of the whole workspace; they search inside a folder shared with them
-(see "Guest search limits"). Their
+(see "Guest search limits"). Their agent's `meta search` refuses `prefix` and `range` everywhere,
+and `eq` and `exists` at the root. Their
 agent can `cp` and `mv`: each item checks read on its source and write on its destination. Chat, the agent's file tools
 and the public API file routes need only the active membership; each file door checks the node.
 Plugins stay closed to guests: MCP tools, volume mounts (`list_bash_volume_mounts`,
@@ -1567,8 +1579,9 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
   through a few hundred levels runs out of reads.
 - Custom-field `prefix` / `range` keep value order, so they cannot walk. A member reads the open area
   only, and a folder is refused. The owner, plugin volumes and GLOBAL workspaces read every area.
-  The search box and the public route refuse a caller who cannot open the workspace root
-  (`requireRoot`).
+  The search box, the public route and Bash `meta search` refuse a caller who cannot open the
+  workspace root (`requireRoot`). Bash is the only one that runs them with a folder, and the check
+  is on the root there too.
 - `find --content-type` reads type indexes only up to the next restricted root in path order.
   It skips locked subtrees before reading their files. This keeps results complete and sorted
   while a scope job leaves children in both old and new areas. It stops at locked

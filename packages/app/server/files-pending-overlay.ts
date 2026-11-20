@@ -3582,8 +3582,9 @@ async function read_list_page(
 		 */
 		updated?: { from: number | null; to: number | null };
 		/**
-		 * Metadata `prefix` and `range` only, for the public `/api/v1/files/query` route and the UI
-		 * search box: answer "Permission denied" to a caller who cannot open the workspace root.
+		 * Metadata `prefix` and `range` only, for the public `/api/v1/files/query` route, the UI search
+		 * box and Bash `meta search`: answer "Permission denied" to a caller who cannot open the
+		 * workspace root. The check is on the root, also when `folderPath` is a folder inside.
 		 */
 		requireRoot?: boolean;
 		numItems: number;

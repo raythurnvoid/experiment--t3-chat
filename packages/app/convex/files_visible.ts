@@ -3040,8 +3040,8 @@ export const internal_search_metadata_saved = internalQuery({
 		movedIn: v.optional(moved_in_validator),
 		frame: v.optional(files_tree_walk_frame_validator),
 		/**
-		 * Refuse a caller who cannot open the workspace root. The public `/api/v1/files/query` route
-		 * and the UI search box set it for `prefix` and `range`.
+		 * Refuse a caller who cannot open the workspace root. The public `/api/v1/files/query` route,
+		 * the UI search box and Bash `meta search` set it for `prefix` and `range`.
 		 */
 		requireRoot: v.optional(v.boolean()),
 	},
@@ -3055,7 +3055,13 @@ export const internal_search_metadata_saved = internalQuery({
 		// caller who can open the root, every row of the open area is readable, so nothing is dropped.
 		// For any other caller the page size and the cursor could hint at files they cannot open. So
 		// check the root here, in the same transaction as the read.
-		if (args.requireRoot && (await db_stream_root_locked(ctx, args, opened._yay)))
+		//
+		// Check the workspace root, not the opened folder. Bash `meta search --path <folder>` runs
+		// `prefix` and `range` inside a folder, and that read still goes through the whole open area.
+		if (
+			args.requireRoot &&
+			(await db_stream_root_locked(ctx, args, { reader: opened._yay.reader, root: { parent: { kind: "root" } } }))
+		)
 			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const { reader, root } = opened._yay;
 		const { plan } = args;

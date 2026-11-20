@@ -663,6 +663,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Saved rows show their committed metadata; the user's drafts come from their draft metadata.
 		// `prefix` and `range` read the whole workspace and drop rows outside the folder, so a page can
 		// be short.
+		const readsByValue = parsed._yay.plan.op === "prefix" || parsed._yay.plan.op === "range";
 		const listed = await files_pending_overlay_list(ctx, {
 			agentSource: scope.ctxData.agentSource,
 			organizationId: scope.ctxData.organizationId,
@@ -674,10 +675,34 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			mode: "metadata",
 			plan: parsed._yay.plan,
 			order: "asc",
+			// Refuse `prefix` and `range` for a guest, also with `--path`. A guest cannot open the
+			// workspace root. These two read the whole open area by value, then drop the rows the caller
+			// cannot open. A guest's agent would get an empty page that still has a next page, and so
+			// learn that values of files the guest cannot see match. With ranges it could find a hidden
+			// number.
+			//
+			// To lift this limit, the read must touch only what the guest can open: a search engine that
+			// filters by access inside the engine, or an index of the items shared with each guest that
+			// is sorted by value.
+			requireRoot: readsByValue,
 			numItems: parsed._yay.limit,
 			cursor,
 		});
 		if (listed._nay) {
+			// The root checks give this name: `requireRoot` above for `prefix` and `range`, and the walk's
+			// own start for `eq` and `exists` at the root. Say how to fix each one.
+			//
+			// A caller who lost the workspace between two pages gets the name too. The same text is
+			// fine for them, because it still starts with "Permission denied".
+			if ("name" in listed._nay && listed._nay.name === "permission_denied") {
+				return {
+					stdout: "",
+					stderr: readsByValue
+						? `meta search: Permission denied: prefix and range read the whole workspace, so they need access to ${scope.renderShellPath("/")}. Use eq or exists with --path <a folder shared with you>.\n`
+						: `meta search: Permission denied: ${scope.renderShellPath("/")}. Pass --path <a folder shared with you>.\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
 			return { stdout: "", stderr: `meta search: ${listed._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 		}
 		const result = listed._yay;
