@@ -183,6 +183,8 @@ import {
 	files_search_query_field_path_is_valid,
 	files_search_query_FIELD_PATH_MAX_LENGTH,
 	files_search_query_FOLDER_PATH_MAX_LENGTH,
+	files_search_query_GUEST_FIELD_PROBLEM,
+	files_search_query_GUEST_NAME_PROBLEM,
 	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
 import {
@@ -6797,6 +6799,9 @@ export type files_nodes_text_search_files_Result =
  *
  * A problem comes back as the only row of a done page, because `usePaginatedQuery` shows rows only.
  * Input the app never sends gets an empty, done page.
+ *
+ * A guest (a member who cannot open the workspace root) searches names only inside a folder shared
+ * with them. Their name search of the whole workspace gets a problem row.
  */
 export const search_saved = query({
 	args: {
@@ -6844,6 +6849,7 @@ export const search_saved = query({
 				message: v.union(
 					v.literal("Folder not found"),
 					v.literal("This folder is too deep to search inside. Search a folder higher up"),
+					v.literal(files_search_query_GUEST_NAME_PROBLEM),
 				),
 			}),
 		),
@@ -7015,6 +7021,17 @@ export const search_saved = query({
 			}
 
 			if (clause.kind === "name") {
+				// Refuse a guest's name search of the whole workspace. A guest cannot open the workspace root.
+				// The read below takes a page of names from the whole workspace, then drops the rows the
+				// caller cannot open. A guest would get an empty page that still says there are more rows,
+				// and so learn that names they cannot see match the words.
+				//
+				// To lift this limit, read only what is shared with the guest: an index of the items shared
+				// with each guest, or a search engine that filters by access inside the engine.
+				if (!folder && !reader.hasWorkspaceRead) {
+					return { ...refused, page: [{ kind: "problem" as const, message: files_search_query_GUEST_NAME_PROBLEM }] };
+				}
+
 				const nodeKind = clause.nodeKind;
 				type AncestorField = Extract<keyof Doc<"files_nodes">, `ancestor${number}`>;
 				// A node is under the folder exactly when its ancestor at the folder's depth is the folder.
@@ -7119,7 +7136,11 @@ export const search_saved = query({
 
 const search_saved_metadata_problem_validator = v.object({
 	kind: v.literal("problem"),
-	message: v.union(v.literal("Folder not found"), v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM)),
+	message: v.union(
+		v.literal("Folder not found"),
+		v.literal(files_search_query_VALUE_TOO_LONG_PROBLEM),
+		v.literal(files_search_query_GUEST_FIELD_PROBLEM),
+	),
 });
 
 /**
@@ -7182,6 +7203,17 @@ export const get_search_saved_metadata_start = internalQuery({
 		if (planProblem === "invalid") return null;
 		if (planProblem === "value_too_long") {
 			return { kind: "problem" as const, message: files_search_query_VALUE_TOO_LONG_PROBLEM };
+		}
+		// Refuse a guest's custom-field search of the whole workspace, for every operation. A guest
+		// cannot open the workspace root. A search from there reads values of files the guest cannot
+		// open and drops those rows. The size of the page and its cursor would then tell the guest
+		// which hidden values exist.
+		//
+		// To lift this limit for `eq` and `exists`, read only what is shared with the guest, from an
+		// index of the items shared with each guest. `prefix` and `range` need a search engine that
+		// filters by access inside the engine.
+		if (folderPath === undefined && !reader.hasWorkspaceRead) {
+			return { kind: "problem" as const, message: files_search_query_GUEST_FIELD_PROBLEM };
 		}
 		if (folderPath !== undefined) {
 			const folderNode =
@@ -7315,6 +7347,9 @@ const search_saved_metadata_cursor_schema = z.object({
  * search` (`files_pending_overlay_list`), so it reads nothing under a folder the caller cannot open.
  * `prefix` and `range` take no folder. The rows are a snapshot, not reactive. The cursor is a
  * `value_store` id, bound to the search view.
+ *
+ * A guest (a member who cannot open the workspace root) searches only inside a folder shared with
+ * them. Their search of the whole workspace gets a problem row.
  */
 export const search_saved_metadata = action({
 	args: {
@@ -7363,8 +7398,11 @@ export const search_saved_metadata = action({
 			mode: "metadata",
 			plan: args.plan,
 			order: "asc",
-			// A guest searches from the root it cannot open, like the name search.
-			searchLockedRoot: true,
+			// `prefix` and `range` read the whole open area by value, so only a caller who can open the
+			// workspace root may run them. The start query above already refuses a guest. This check runs
+			// in the same transaction as the read, so a role change between the two calls opens no gap.
+			// `eq` and `exists` get the same check from the walk's own start.
+			requireRoot: args.plan.op === "prefix" || args.plan.op === "range",
 			numItems: Math.min(args.numItems, SEARCH_SAVED_MAX_ITEMS),
 			cursor: stored?.cursor ?? null,
 		});

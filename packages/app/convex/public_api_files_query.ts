@@ -465,7 +465,7 @@ async function read_search_page(ctx: ActionCtx, args: PageArgs & { plan: files_m
 		plan,
 		order: "asc",
 		// `prefix` and `range` read the whole open area by value. Only a caller who can open the
-		// workspace root may run them. `searchLockedRoot` stays off: that is the app's guest search.
+		// workspace root may run them.
 		requireRoot: plan.op === "prefix" || plan.op === "range",
 		numItems: args.numItems,
 		cursor: overlayCursor,

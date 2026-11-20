@@ -177,6 +177,12 @@ const FOLDER_CHILDREN_FILTER_PROBLEM = "/* works with words only. Use /** with a
 const CONTENT_FOLDER_PROBLEM = "Contents search does not work inside a folder. Remove the folder to search contents";
 // The index cuts longer metadata strings, so a longer value could match the wrong files.
 export const files_search_query_VALUE_TOO_LONG_PROBLEM = "Search values can have at most 1,024 characters" as const;
+// A guest is a member whose role cannot read the workspace's open files. The server refuses their
+// name and custom-field searches of the whole workspace with these texts.
+export const files_search_query_GUEST_NAME_PROBLEM =
+	"Guests can search names only inside a folder shared with them. Open that folder, or add it to the search, like file.path:/tasks/**" as const;
+export const files_search_query_GUEST_FIELD_PROBLEM =
+	"Guests can search custom fields only inside a folder shared with them. Add the folder to the search, like file.path:/tasks/**" as const;
 // The index keeps no docs for a longer field, so the search would always find nothing.
 const FIELD_TOO_LONG_PROBLEM = `Fields can have at most ${files_search_query_FIELD_PATH_MAX_LENGTH} characters`;
 // The server can search inside a folder only up to this many levels below the root.

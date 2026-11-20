@@ -926,7 +926,14 @@ product decision, so record the answer here before changing the behaviour. An en
   cannot open matches a content word, a public link, or a name word inside a locked folder. They
   never learn which file, its path, or its text. This is accepted: a full answer would need access
   filters inside the search index. Custom-field search (`search_saved_metadata`, through the walk)
-  and the tree pages do not give this signal (see "Files tree reads").
+  and the tree pages do not give this signal (see "Files tree reads"). This is accepted for a
+  caller who can open the workspace root, and inside a folder shared with a guest. A guest's name
+  search of the whole workspace is refused (see "Guest search limits").
+- **Open: the agent's `meta search` with `prefix` or `range` gives a guest the same signal.** Bash
+  `meta search` (`server/bash-meta-command.ts`) does not pass `requireRoot`, so a guest's agent reads
+  the open area by value and drops the rows. With 280 hidden matches and a page of 1, the answer was
+  no rows and a next page (probe of 2026-11-20). `eq` and `exists` answer "Permission denied" at the
+  root. The fix is the search box's: pass `requireRoot` for `prefix` and `range`. Not decided yet.
 
 # Endpoints
 
@@ -1051,13 +1058,42 @@ inside the saved query, in the same transaction as the read (`requireRoot`). A g
 service-bound key without root access, and a plugin without Whole workspace consent get 403
 `Permission denied: /`.
 
+**Guest search limits.** Decided 2026-11-20: guests are not a priority, so the search box limits
+what a guest can search instead of adding a complex fix. A guest cannot open the workspace root, so
+the UI search box refuses these searches of the whole workspace:
+
+- Custom fields (`files_nodes.search_saved_metadata`): all four operations (`eq`, `exists`,
+  `prefix`, `range`). The start query (`get_search_saved_metadata_start`) answers a problem row.
+  The read checks again in its own transaction: the walk's start refuses a locked root for `eq`
+  and `exists`, and `requireRoot` does for `prefix` and `range`.
+- Names (`files_nodes.search_saved`, `name` clause with no folder): a problem row. This also
+  empties a guest's `file.path` folder suggestions and the whole-workspace search of the file
+  pickers.
+
+Reason: a search from a root the caller cannot open reads rows of files they cannot see and drops
+them. The page size and the cursor then leak hidden names and values (an empty page that still
+says "more"). A page of 1 row made this exact: a guest could learn that a name word or a field
+value exists, and find a hidden number by trying ranges.
+
+A guest still searches names and `eq` / `exists` custom fields inside a folder shared with them
+(`file.path:/folder/**`, or the open folder of a picker). `prefix` and `range` take no folder, so a
+guest cannot run them. A path, a node id, contents and public links are unchanged.
+
+To lift the limit: `eq`, `exists` and names need an index of the items shared with each guest, so
+the read touches only their shares. `prefix` and `range` need a search engine that filters by
+access inside the engine.
+
+The texts are `files_search_query_GUEST_NAME_PROBLEM` and `files_search_query_GUEST_FIELD_PROBLEM`
+in `shared/files-search-query.ts`. Test: `convex/files_nodes.search_box.test.ts`.
+
 **Guests.** A guest is an active member without workspace `content.read`. They open only what is
 shared with them. The workspace root is locked for them: Bash `ls /`, `ls -R /`, `find /` (also with
 `-name`), `tree /` and API `files/list` of `/` (also `recursive`) say "Permission denied" (403), so
 they reach a shared item by its exact path. The UI root page shows nothing for them, including with
 a custom-field filter; they use "Shared with you". Deleted shares leave that list. Guests get no
-Trash in the app or API; a readable old link still opens a preview. The UI search box searches from the root
-and finds only what they can open. Their
+Trash in the app or API; a readable old link still opens a preview. The UI search box refuses their name
+and custom-field searches of the whole workspace; they search inside a folder shared with them
+(see "Guest search limits"). Their
 agent can `cp` and `mv`: each item checks read on its source and write on its destination. Chat, the agent's file tools
 and the public API file routes need only the active membership; each file door checks the node.
 Plugins stay closed to guests: MCP tools, volume mounts (`list_bash_volume_mounts`,
@@ -1505,10 +1541,10 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
   At a readable boundary the walk enters a new frame. At a locked one it lists the locked row and a
   "Permission denied" path, and reads nothing under it. A locked former root's old area stays closed,
   with no line.
-- Locked items show only when the folder that holds them is readable. Every frame root is, except the
-  workspace root: a guest with one shared folder, or an account with no grant, cannot open it. That
-  frame lists only what the caller can open, with no locked rows and no "Permission denied" lines,
-  like the folder list of the root. The walk still enters the readable roots it meets there.
+- Locked items show only when the folder that holds them is readable. Every frame root is. Only
+  the workspace root can be closed to a caller (a guest with one shared folder, or an account with
+  no grant), and no walk starts there: `internal_get_walk_start` answers "Permission denied", for
+  the search box too. The root check of a frame (`db_stream_frame_lists_locked`) stays as a guard.
 - Rows under a folder the user's drafts hide are skipped as a range: the rows stream answers the
   folder's end as its frontier (a key of only a path), so the walk does not read the rest of it.
 - The cursor holds the start folder's `treePath`, the top frame's root (`nodeId`, `treePath`) and one
@@ -1531,6 +1567,8 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
   through a few hundred levels runs out of reads.
 - Custom-field `prefix` / `range` keep value order, so they cannot walk. A member reads the open area
   only, and a folder is refused. The owner, plugin volumes and GLOBAL workspaces read every area.
+  The search box and the public route refuse a caller who cannot open the workspace root
+  (`requireRoot`).
 - `find --content-type` reads type indexes only up to the next restricted root in path order.
   It skips locked subtrees before reading their files. This keeps results complete and sorted
   while a scope job leaves children in both old and new areas. It stops at locked

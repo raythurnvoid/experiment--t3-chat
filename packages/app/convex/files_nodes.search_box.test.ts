@@ -20,6 +20,8 @@ import { files_metadata_SEARCH_VALUE_MAX_LENGTH, type files_metadata_SearchPlan 
 import {
 	files_search_query_parse,
 	files_search_query_to_plans,
+	files_search_query_GUEST_FIELD_PROBLEM,
+	files_search_query_GUEST_NAME_PROBLEM,
 	files_search_query_VALUE_TOO_LONG_PROBLEM,
 } from "../shared/files-search-query.ts";
 import {
@@ -342,9 +344,10 @@ describe("search box doors", () => {
 		expect(await search("eq", "v".repeat(limit))).toEqual(new Set());
 	});
 
-	test("search_saved hides a restricted folder from a member until they are given it", async () => {
+	test("a guest's custom-field search is refused at the root and works inside a folder shared with them", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
+		// No role: a guest.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "search" });
 
 		await reset_file_write_rate_limits(t, seeded.db.userId);
@@ -354,12 +357,24 @@ describe("search box doors", () => {
 		});
 		if (restricted._nay) throw new Error(restricted._nay.message);
 
-		const searchAsMember = () =>
-			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans: statusOpenPlans });
+		const searchAsMember = (plans: files_metadata_SearchPlan[], folderPath?: string) =>
+			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans, folderPath });
+		const guestProblem = new Set([files_search_query_GUEST_FIELD_PROBLEM]);
+		const statusExists: files_metadata_SearchPlan = { op: "exists", fieldPath: "frontmatter.status" };
 
-		// No role and no grant: the open archive file must not leak through a default
-		// workspace-wide read, and the restricted folder is not theirs either.
-		expect(await searchAsMember()).toEqual(new Set());
+		// A guest cannot open the workspace root, so every operation is refused there. The open archive
+		// file must not leak through the rows or through the page shape.
+		const rootPlans: files_metadata_SearchPlan[] = [
+			statusOpenPlans[0]!,
+			statusExists,
+			{ op: "prefix", fieldPath: "frontmatter.status", value: "op" },
+			{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 0 },
+		];
+		for (const plan of rootPlans) {
+			expect(await searchAsMember([plan]), plan.op).toEqual(guestProblem);
+		}
+		// The restricted folder is not theirs yet.
+		expect(await searchAsMember(statusOpenPlans, "/tasks")).toEqual(new Set(["Folder not found"]));
 
 		await reset_file_write_rate_limits(t, seeded.db.userId);
 		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
@@ -370,7 +385,10 @@ describe("search box doors", () => {
 		});
 		if (granted._nay) throw new Error(granted._nay.message);
 
-		expect(await searchAsMember()).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		// The share opens the folder, not the root.
+		expect(await searchAsMember(statusOpenPlans)).toEqual(guestProblem);
+		expect(await searchAsMember(statusOpenPlans, "/tasks")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(await searchAsMember([statusExists], "/tasks")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 
 		expect(
 			await search_saved_plans({
@@ -411,8 +429,9 @@ describe("search box doors", () => {
 		});
 		if (pending._nay) throw new Error(pending._nay.message);
 
+		// The member has no role, so they search inside the folder shared with them.
 		const searchAsMember = (plans: files_metadata_SearchPlan[]) =>
-			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans });
+			search_saved_plans({ asWho: member.asMember, membershipId: member.membershipId, plans, folderPath: "/tasks" });
 		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		// A draft never reaches the catalog, so even the author's suggestions skip it. (The member reads
@@ -902,10 +921,10 @@ describe("search box locked hits", () => {
 		expect(await search({ kind: "link" })).toEqual({ [archivedTaskPath]: false });
 	});
 
-	test("a name search finds a file the caller reads through Add people", async () => {
+	test("a guest's name search is refused at the root and works inside a folder they are added to", async () => {
 		const t = test_convex();
 		const seeded = { ...(await seed_search_box_fixture(t)), t };
-		// No role: the member reads only what they are added to.
+		// No role: a guest, who reads only what they are added to.
 		const member = await seed_grant_only_member({ t, db: seeded.db, suffix: "added" });
 		await restrict(seeded, seeded.openTaskId);
 		await reset_file_write_rate_limits(t, seeded.db.userId);
@@ -917,15 +936,18 @@ describe("search box locked hits", () => {
 		});
 		if (added._nay) throw new Error(added._nay.message);
 
-		// The restricted file inside the added folder stays locked, and shows because its folder is readable.
-		// The archive is in a folder the member cannot open, so it does not show.
-		expect(
-			await search_locked({
+		const search = (folderPath?: string) =>
+			search_locked({
 				asWho: member.asMember,
 				membershipId: member.membershipId,
 				clause: { kind: "name", text: "2026" },
-			}),
-		).toEqual({ [openTaskPath]: true, [fixedTaskPath]: false });
+				folderPath,
+			});
+
+		// A guest cannot open the workspace root, so a name search of the whole workspace is refused.
+		expect(await search()).toEqual({ [files_search_query_GUEST_NAME_PROBLEM]: null });
+		// The restricted file inside the added folder stays locked, and shows because its folder is readable.
+		expect(await search("/tasks")).toEqual({ [openTaskPath]: true, [fixedTaskPath]: false });
 	});
 
 	test("a name search with deep boundaries stays under the limits", async () => {
@@ -946,9 +968,10 @@ describe("search box locked hits", () => {
 		// 500 folders under `/top`, each an extended root with grants that do not name the member, so
 		// every check walks the whole chain. Hits sit at 3 depths: open files the member reads through
 		// the chain, and restricted files that are locked. Inserted directly: the search and the access
-		// check read only these fields.
+		// check read only these fields. `ancestor1` puts every node under `/top` for the folder search.
 		const hitPaths = await t.run(async (ctx) => {
-			const { _id, _creationTime, ...template } = (await ctx.db.get("files_nodes", topId))!;
+			const { _id, _creationTime, ...top } = (await ctx.db.get("files_nodes", topId))!;
+			const template = { ...top, ancestor1: topId };
 			const strangerId = await ctx.db.insert("users", { clerkUserId: null });
 			const paths = { open: [] as string[], locked: [] as string[] };
 			let parent = { _id, path: template.path };
@@ -1005,11 +1028,13 @@ describe("search box locked hits", () => {
 			cost = transaction_cost(before, await ctx.meta.getTransactionMetrics());
 			return result;
 		});
+		// The member has no role, so they search inside the folder they are added to.
 		const search = () =>
 			search_locked({
 				asWho: member.asMember,
 				membershipId: member.membershipId,
 				clause: { kind: "name", text: "deephit" },
+				folderPath: "/top",
 			});
 		const all = Object.fromEntries([
 			...hitPaths.open.map((path) => [path, false]),

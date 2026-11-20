@@ -3582,13 +3582,8 @@ async function read_list_page(
 		 */
 		updated?: { from: number | null; to: number | null };
 		/**
-		 * For the UI search box: a walk of a root the caller cannot open finds what it can read, instead of
-		 * "Permission denied".
-		 */
-		searchLockedRoot?: boolean;
-		/**
-		 * Metadata `prefix` and `range` only, for the public `/api/v1/files/query` route: answer
-		 * "Permission denied" to a caller who cannot open the workspace root.
+		 * Metadata `prefix` and `range` only, for the public `/api/v1/files/query` route and the UI
+		 * search box: answer "Permission denied" to a caller who cannot open the workspace root.
 		 */
 		requireRoot?: boolean;
 		numItems: number;
@@ -3700,7 +3695,6 @@ async function read_list_page(
 			...streamArgs,
 			...movedIn,
 			savedStream: viewStream,
-			searchLockedRoot: args.searchLockedRoot,
 		});
 	// With only `+N` the place streams follow the start frame's order, so read the start first.
 	const startOpened = timeWindow?.from === null ? await open_walk({}) : null;

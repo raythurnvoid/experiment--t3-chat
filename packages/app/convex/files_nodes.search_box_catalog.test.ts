@@ -17,6 +17,7 @@ import {
 } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { files_search_query_GUEST_FIELD_PROBLEM } from "../shared/files-search-query.ts";
 import {
 	upsert_pending_update_internal_for_test,
 	reset_file_write_rate_limits,
@@ -207,7 +208,8 @@ describe("search box doors", () => {
 			});
 		expect(await entries()).toEqual([]);
 		expect(await byPath()).toBeNull();
-		expect(await search()).toEqual(new Set());
+		// The member has no role, so their search of the whole workspace is refused.
+		expect(await search()).toEqual(new Set([files_search_query_GUEST_FIELD_PROBLEM]));
 		// Suggestions need workspace read, so a member without it gets none.
 		expect(await fields()).toEqual([]);
 		expect(await values()).toEqual([]);
@@ -230,8 +232,8 @@ describe("search box doors", () => {
 			target: { kind: "saved", id: seeded.tasksFolderId },
 			fields: ["metadata.folder-secret"],
 		});
-		// The grant opens the folder, but not the workspace-wide suggestions.
-		expect(await search()).toEqual(new Set([seeded.tasksFolderId]));
+		// The grant opens the folder, but not the search of the whole workspace or its suggestions.
+		expect(await search()).toEqual(new Set([files_search_query_GUEST_FIELD_PROBLEM]));
 		expect(await fields()).toEqual([]);
 		expect(await values()).toEqual([]);
 		expect((await set())._nay).toBeDefined();

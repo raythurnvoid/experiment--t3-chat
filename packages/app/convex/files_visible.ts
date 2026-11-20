@@ -964,8 +964,8 @@ function db_stream_saved_access(
 /**
  * Whether a walk frame lists the items the subject cannot open, as locked. Locked items show only when
  * the folder that holds them is readable. Every frame root is readable except maybe the root:
- * `internal_get_walk_start` refuses a walk of a workspace root the caller cannot open (except for the UI
- * search box), and this check covers the root of any other walk.
+ * `internal_get_walk_start` refuses a walk of a workspace root the caller cannot open, and this check
+ * covers the root of any other walk.
  */
 async function db_stream_frame_lists_locked(
 	ctx: QueryCtx,
@@ -1986,8 +1986,6 @@ export const internal_get_walk_start = internalQuery({
 	args: {
 		...stream_args.omit("numItems", "position").fields,
 		movedIn: v.optional(moved_in_validator),
-		/** The UI search box may search from a root the caller cannot open. The walk still checks each row. */
-		searchLockedRoot: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -2001,7 +1999,7 @@ export const internal_get_walk_start = internalQuery({
 		const opened = await db_stream_open(ctx, args);
 		if (opened._nay) return opened;
 		if (!opened._yay) return Result({ _yay: { root: null, start: null, areaTop: false } });
-		if (!args.searchLockedRoot && (await db_stream_root_locked(ctx, args, opened._yay)))
+		if (await db_stream_root_locked(ctx, args, opened._yay))
 			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
 		const root = opened._yay.root.parent;
@@ -3043,7 +3041,7 @@ export const internal_search_metadata_saved = internalQuery({
 		frame: v.optional(files_tree_walk_frame_validator),
 		/**
 		 * Refuse a caller who cannot open the workspace root. The public `/api/v1/files/query` route
-		 * sets it for `prefix` and `range`.
+		 * and the UI search box set it for `prefix` and `range`.
 		 */
 		requireRoot: v.optional(v.boolean()),
 	},

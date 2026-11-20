@@ -32,7 +32,8 @@ export type FilesSearchSavedRow = Exclude<FilesSearchSavedResult, { kind: "probl
 
 /**
  * One search list: its rows once each by node id, how far it loaded, and the problem the server
- * answered instead of rows (a folder that is missing or too deep), or null.
+ * answered instead of rows (a folder that is missing or too deep, a guest's search of the whole
+ * workspace), or null.
  */
 export type FilesSearchSavedList = {
 	rows: FilesSearchSavedRow[];

@@ -574,7 +574,8 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
 
 - `files_nodes.search_saved({ membershipId, clause, folderPath?, paginationOpts })` is the
   saved-only door (`convex/files_nodes.ts`) for names, contents, paths and links. The box shows no
-  drafts, not even the caller's own.
+  drafts, not even the caller's own. A guest's name search with no folder gets a problem row (see
+  the guest bullet below).
 - `files_nodes.search_saved_metadata({ membershipId, searchGeneration?, plan, folderPath?, numItems,
   cursor })` is the custom-field door, an action. A chip with two plans is two calls. It runs the
   walk of Bash `meta search` (`files_pending_overlay_list` in metadata mode, saved rows only), so
@@ -595,9 +596,20 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
   owners, old proposal revisions, preparing drafts, and hidden destinations never produce a result.
 - `list_search_fields`, `get_search_field` and `list_search_values` are the suggestion doors. They
   read the catalog, not the source docs. See "Suggestions".
-- A member whose role has no workspace-wide `content.read` still finds files in folders shared with
-  them: `search_saved` checks each hit with the readable-nodes filter for the caller instead of
-  refusing. The other way round holds too: a member whose role reads the workspace never gets a
+- A guest (a member whose role has no workspace-wide `content.read`) searches only inside a folder
+  shared with them. With no folder (or `/`), `search_saved` answers a name search with the problem
+  row `files_search_query_GUEST_NAME_PROBLEM`, and `search_saved_metadata` answers every operation
+  with `files_search_query_GUEST_FIELD_PROBLEM`. Inside a shared folder a guest searches names, and
+  `eq` and `exists` custom fields. `prefix` and `range` take no folder, so a guest cannot run them.
+  The search box also passes `requireRoot` for `prefix` and `range`, like the public route, so the
+  read itself refuses a caller who cannot open the root.
+
+  Reason: a search from a root the caller cannot open reads rows they cannot see and drops them, so
+  the page size and the cursor leak hidden names and values. Decided 2026-11-20: limit the guest
+  feature instead of building a complex fix. The reason and what could lift the limit are in
+  "Guest search limits" in the `access-control` skill.
+- Contents, paths, node ids and links still check each hit with the readable-nodes filter for the
+  caller. A member whose role reads the workspace never gets a
   file of a restricted folder from `search_saved` or `search_saved_metadata` until it is shared with them. The suggestion
   doors follow the same rule by area: a member reads the keys and values of one area they can open
   (the area rule in "Suggestions"), so a value of a file they cannot open is never suggested.
@@ -709,7 +721,8 @@ and values from the catalog. Each read is one index range, so it costs the same 
     restricted area R reads `parentId: R` and needs `content.read` on R itself. Added people inside R
     open only part of R, so they get nothing there, like a guest in an open folder. A missing path or
     one that is not a folder gets the same empty, done page or null. A typed filter still searches
-    (`search_saved_metadata` checks each row). `list_folder_fields` keeps its folder gate, so a guest keeps the
+    inside a folder the caller can open; a guest's search of the whole workspace is refused (see
+    "Search Box"). `list_folder_fields` keeps its folder gate, so a guest keeps the
     Columns keys of a shared folder.
   - **Folder sent by the browser.** The search box sends the folder of its `file.path` chip
     (`search_path_filter`, `/` without one); the folder filter bar sends the table folder's path.
