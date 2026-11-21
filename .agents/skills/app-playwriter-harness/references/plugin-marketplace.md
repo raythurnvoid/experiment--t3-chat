@@ -146,6 +146,8 @@ checking loaded image sizes. Verified on 2026-11-06.
 - Before clicking, check that no open dialog backdrop covers the page. The org/workspace switcher is a frequent blocker — close it with its own `Cancel`. Do not treat `querySelector('[role="dialog"]')` as proof a dialog is open (see `known-hazards.md`: many dialogs stay mounted while closed).
 - **Post-update tell (verified 2026-08-25):** the `Installed version x.y.z` line renders only while the installed version differs from the latest. After a successful update it DISAPPEARS — a poll waiting for `Installed version <new>` never resolves and reads like a hung update. Assert instead on the consent modal closing plus the `Update` button being gone (only `Uninstall` remains), then confirm from the CLI: the workspace's `plugins_workspace_installations` row flips `pluginVersionId` to the new version id, and the plugin frame's URL / `.PluginsUiFrame` src carry that id (`/plugins-ui/<versionId>/...`).
 - **Consent modal audit anchors (verified 2026-08-25):** the dialog is `.RoutePluginsPluginConsentModal` (audit by that class, never `[role=dialog]`). Accessible name comes from the `MyModalHeading` via `aria-labelledby` — `"<Install|Update> <displayName>"` — and the description from `MyModalDescription` (`<name>@<version> · <publisher>`). Its 3 controls are `Cancel`, `Accept and <install|update>`, and `Close`. Initial focus lands on `Cancel`; `Escape` closes and returns focus to the page's `Install`/`Update` trigger. The capabilities list always shows the FULL grant surface; the consent diff renders only as `new` badges on added rows (`consentDiff` in `$pluginName.tsx`), so for an update with no new grants the pass condition is zero badges in `.RoutePluginsPluginConsentModal-item` — there is no "no new permissions" sentence. Each capability row keeps the raw manifest id in its `title` attribute.
+- **`Accept and install` / `Accept and update` stay disabled for a plugin with `plugin.schedule.run` until the run-as box is ticked.** Click the label text `Allow this plugin to run as me while I am signed out.`; its 1px input is covered. Seen on install too (T3 Code 0.1.0, 2026-11-21), not only on update.
+- **A new version or a new plugin needs the organization policy first.** The hero `header.RoutePluginsPluginHero[data-organization-policy]` reads `needs_approval` (Update disabled, "Needs your organization owner's approval.") or `blocked` (Install disabled, "Your organization does not allow this plugin."). Allow it in the policy modal (`app-map.md`). After you close the policy modal with Escape, the org switcher is still open behind it and its backdrop eats the next click on `Update`; close the switcher with its own `Cancel` first.
 - **Access change notices row (verified 2026-10-25, Chitchat 0.8.11 to 0.8.12):** a version that declares `workspace.access.changed` shows an `Access change notices` heading in the consent modal with `Bonobo Senate will notify <origin> when workspace access changes. The notice holds no member data.` An update that adds or changes that origin marks the row `new`. The audit of the modal reported 7 controls and no findings. After the update, read the receiver doc (see the access-notice recipe in `chitchat.md`).
 
 ## Publisher pages
@@ -472,6 +474,86 @@ same HEAD. Known real-world trigger: a bundled dependency's `new Function("")` f
 (Zod v4 `allowsEval`) trips the case-sensitive `\bFunction\s*\(` check. When reproducing a finding
 against the repo's dist yourself, remember PowerShell `-match` is case-insensitive by default and
 over-reports lowercase `function (` lines.
+
+## Wildcard origins: consent, publish refusal, and checks (verified 2026-11-21)
+
+Fixtures: Data Probe 0.6.0 (`outboundOrigins: ["https://*.ray-thurne-void.workers.dev"]`) and T3 Code
+0.1.0 (`uiOutboundOrigins: ["https://*.t3coderelay.com"]`), both installed in `chitchat-qa/copy-qa-0922`.
+
+- **Consent and Access anchors.** A pattern row is `li[data-origin-wildcard]` (empty value) with the
+  entry text and a note span `Any subdomain of <base host>` (`.RoutePluginsPluginConsentModal-itemNote`
+  in the modal). An exact origin row has no attribute and no note. A list with a pattern is followed
+  by one `<p>`: "An entry that starts with *. covers every subdomain. Anyone who controls a subdomain
+  there can receive these requests." The Access section uses `li.RoutePluginsPluginAccess-item` under
+  the headings `Backend network access` and `Page and file view network access` with the same words.
+  On an update, the pattern row gets a `new` badge when its exact string was not accepted before.
+  Read the stored strings in `acceptedOutboundOrigins` / `acceptedUiOutboundOrigins`.
+- **A bad pattern is refused in about 1 second, before review.** Publish shows the message in
+  `p.PluginsPublishSessionProvider-error[role=alert]` inside the dialog, and the card shows `failed`
+  with the same text. `lastPublishAttempt` has `status: "failed"`, `commitSha: null`, `reviewId: null`,
+  and no `plugins_versions` row is made. Example message: "Wildcard origin https://*.amazonaws.com must
+  be under a domain you control, not a public suffix or an unknown top-level domain." To test it live,
+  push a commit that changes only the origin line in `dist/bonobo.plugin.json`, publish it, then
+  `git revert` and publish the revert. Work in a scratch clone so a shared plugin checkout is not moved.
+- **A private plugin repo publishes.** The import token read `raythurnvoid/bonobo-plugin-t3code` while
+  private: the dialog showed its HEAD and the full publish passed.
+- **Backend check (Data Probe page).** In the frame set `#outbound-url`, click `#run-outbound`, and
+  read `pre#outbound-result[data-state]`: `done` with `output.status` (a number) when the origin is
+  allowed, `refused` with `output.error: "Plugin fetch origin is not allowed"` when not. In
+  `plugins_event_runs`, an allowed run has `apiCallCount 1` and a refused one `apiCallCount 0`. The
+  fixture answers 404 to a GET on `/modern-basic`; that is still a numeric status.
+- **Frame CSP check (any page frame).** In one `frame.evaluate`, add a `securitypolicyviolation`
+  listener, `fetch` each URL with `AbortSignal.timeout(1200)`, record the new violations per URL, then
+  remove the listener. An allowed host fails only as a network error (an unknown subdomain gives
+  `ERR_NAME_NOT_RESOLVED` in the console) and adds no violation. The apex and other hosts add one with
+  `violatedDirective: "connect-src"`. Read the frame's CSP with a same-origin
+  `fetch(location.href.split("#")[0])` and `headers.get("content-security-policy")`, or `curl -D -`.
+- **Installation ID row.** `code[data-installation-id]` holds the id and the button is named
+  `Copy installation ID`. After a click its `aria-label` is `Copied` for a while, so a second locator by
+  the old name finds nothing. `navigator.clipboard.readText()` works from the host page in the QA Edge
+  tab and returns the id.
+
+## T3 Code page (verified 2026-11-21, 0.1.1)
+
+T3 Code 0.1.1 is installed in `chitchat-qa/copy-qa-0922`. Page:
+`/w/chitchat-qa/copy-qa-0922/plugins/t3code/pages/t3code`. The fixtures (a fake target, two runs,
+`/t3code/inbox`) are in the [qa-data catalog](../../qa-data/references/inventory.md).
+
+- **State.** The page root has `data-t3code-state`: `needs-setup` (a `Set up` button), `blocked` (the
+  member's key range is taken), `loading`, `ready`. Tabs are `role=tab` `Send`, `Runs`, `Automations`.
+  The gear button `Setup` toggles the Setup panel; while it is open the tabs' content is gone, so press
+  `Setup` again before you read run rows.
+- **Run rows.** `li.run[data-run-status]` (`sending`, `sent`, `queued`, `unknown`, `failed`, `done`),
+  chip `.chip`, result `.run-result`. A `<details>` row says where the run came from:
+  `Sent from this page`, `File upload`, or a schedule.
+- **Clicks in this frame can stall** on "waiting for element to be stable". Focus the control from
+  `frame.evaluate` and press Enter (`keyboard.press` reaches the focused frame). Use `selectOption` and
+  `fill` for form fields; they work.
+- **The plugin client.** To call `plugins_data` doors as the member, walk the Preact tree from
+  `#root._children` (or the React `__reactContainer$` key) to a node whose `props.client.context`
+  exists. Then `client.convex.query(client.api.plugins_data.watch_documents, {...})`, or
+  `client.fetchJson("/api/v1/plugin-backend/invoke", { endpoint, input })`.
+- **A fake target fails cleanly.** `https://relay.t3.codes/v1/hooks/<16 digits>/<task>/<token>` with
+  made-up parts: the relay answers `404 {"error":"hook_not_found"}` and the run ends `failed` with
+  "T3 does not know this webhook. Copy the URL again." No desktop is needed for send, upload, schedule
+  or results checks. Write a result with a personal API key (`plugin_data:write`) at the run's key in
+  `results`; revoke the key after.
+- **Upload runs need My file permissions.** Choosing an upload target in Setup is not enough. Without
+  Can view on the upload folder, the event run has no `pluginStatus`, no run row appears, and only its
+  Activity says "The plugin cannot read <path>. Choose this file or its folder in My file permissions."
+  Allow about 10 s after the upload.
+- **Schedule.** `Run now` on the plugin detail page queues a `schedule.interval.elapsed` run (event
+  run `serializationKey "schedule"`). With nothing due it ends 204 with `apiCallCount 4` and writes
+  nothing. An automation's first due time is its save time plus its interval (at least 15 minutes),
+  and `automation_state` is not user-writable, so a due automation needs that wait.
+- **Page tools.** In the page's agent panel (Agent mode), ask for `draft_prompt` with a target name.
+  The chat shows `Page tool: T3 Code: draft_prompt`; the frame switches to `Send` with the target and
+  prompt filled. Nothing is sent: check that no `send` event run and no new `runs` doc appear.
+- **Prove a frame fix before publishing.** Build the changed page in a scratch copy with the plugin's
+  own Vite config, then answer the published frame URL with `page.route` and the published CSP, adding
+  only the sha256 of the new inline script. Check that the route saw the frame request and that the
+  frame has the new script. Then the published bundle is the fix-off case and the swapped one the
+  fix-on case. A route stays for the whole session; delete the session to drop it.
 
 ## MCP fixture plugin (Data Probe 0.3.0)
 
