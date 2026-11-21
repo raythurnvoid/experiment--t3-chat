@@ -96,7 +96,7 @@ with private proposals. `files_pending_updates.ts` and
   for their own steps. Between advances it checks five seconds or 128 advance calls
   and hands off. A content action can take longer. Every selection size uses this worker.
   A scheduled job ID and generation fence late replies.
-  The existing five-minute recovery cron pages every idle group and restarts only a dead owner.
+  The existing 10-minute recovery cron pages every idle group and restarts only a dead owner.
   It leaves running preparation alone and never renews a deadline just to retry.
   A Move or Paste that waits for another Move's group checks every second and keeps its Activity
   deadline fresh. Its Activity has `errorCode: "waiting_for_move"`. If a fixed deadline ends that

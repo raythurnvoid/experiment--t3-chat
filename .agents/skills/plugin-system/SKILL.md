@@ -402,8 +402,9 @@ and backend invoke still need workspace read or write. A personal plugin run can
 selected files and folders, so its list of `/` answers 403. Guests get no Trash, and scheduled runs
 cannot use Trash yet.
 
-The minute dispatcher reads at most 20 due handlers. It admits four live chains globally and one per
-organization. Scheduled work uses its own Workpool with parallelism two. A live chain delays another
+The dispatcher cron runs every 10 minutes, so a due run can start up to 10 minutes late. It ran every
+minute before 2026-11-21; the slower pace saves function calls. It reads at most 20 due handlers. It
+admits four live chains globally and one per organization. Scheduled work uses its own Workpool with parallelism two. A live chain delays another
 run in that organization by one minute. A full deployment leaves the oldest due handler unchanged.
 Disabled or invalid assignments move a full configured interval ahead; invalid YAML retries in
 15 minutes. Save and Run now move the handler due time without canceling a valid chain.

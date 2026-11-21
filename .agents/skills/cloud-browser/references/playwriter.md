@@ -181,7 +181,7 @@ workspace, two per user, two per workspace, four per organization, and ten per
 deployment. Playwriter creates no browser profile or `browser_usage` charge.
 
 Failed settings sync keeps `syncPending` until a retry succeeds. The indexed
-minute cron retries pending settings in batches of 50. A failed retry does not
+10-minute cron retries pending settings in batches of 50. A failed retry does not
 schedule another retry chain.
 Sync checks runner status before sending policy, so a restart cannot keep an old
 connection generation in use. The sweep uses indexes for links due to expire

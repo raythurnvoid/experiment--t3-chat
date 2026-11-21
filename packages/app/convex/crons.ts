@@ -9,8 +9,12 @@ crons.cron("reset due anonymous billing credits", "0 0 * * *", internal.billing.
 // Once daily at 03:00 UTC — refresh read-only GitHub repo mounts (real work only on commit movement).
 crons.cron("sync github mounts", "0 3 * * *", internal.github_mounts.sync_all_mounts, {});
 
-// Every minute — take the oldest due plugin schedules in one bounded pass.
-crons.cron("dispatch due plugin schedules", "* * * * *", internal.plugins_runtime.dispatch_due_schedules, {});
+// Every 10 minutes — take the oldest due plugin schedules in one bounded pass.
+//
+// The crons below that once ran every minute now run every 10 minutes. Each run is a function call
+// even when there is no work, and those calls were most of the dev bill. Schedules are at least 15
+// minutes apart, so a run can start up to 10 minutes late.
+crons.cron("dispatch due plugin schedules", "*/10 * * * *", internal.plugins_runtime.dispatch_due_schedules, {});
 
 // Once daily at 04:00 UTC.
 crons.cron("cleanup extra notifications", "0 4 * * *", internal.notifications.cleanup_extra_notifications, {});
@@ -21,9 +25,10 @@ crons.cron("cleanup expired value store entries", "30 4 * * *", internal.value_s
 // Once hourly — remove comment roots whose document mark was never saved.
 crons.cron("cleanup unconfirmed comments", "10 * * * *", internal.channels_messages.delete_unconfirmed_comments, {});
 
-crons.cron("retry messages jobs", "* * * * *", internal.channels_notifications.retry_due_jobs, {});
+// Every 10 minutes. Each run pages all seven Messages job tables, so it is several calls.
+crons.cron("retry messages jobs", "*/10 * * * *", internal.channels_notifications.retry_due_jobs, {});
 
-crons.cron("retry plugin file access updates", "* * * * *", internal.plugins_file_grants.recover_due, {});
+crons.cron("retry plugin file access updates", "*/10 * * * *", internal.plugins_file_grants.recover_due, {});
 
 // Once daily at 05:00 UTC.
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.files_nodes.cleanup_old_snapshots, {});
@@ -92,11 +97,11 @@ crons.cron("settle browser usage", "*/5 * * * *", internal.files_browser.settle_
 // and retry failed wipes whose backoff is over. Each deletion also starts this job at once.
 crons.cron("process browser profile wipes", "*/5 * * * *", internal.files_browser.process_browser_profile_wipes, {});
 
-// Every minute — close expired shared connections and retry exact socket cleanup.
-crons.cron("sweep shared browser connections", "* * * * *", internal.playwriter_browser.sweep_connections, {});
-crons.cron("process shared browser cleanups", "* * * * *", internal.playwriter_browser.process_cleanups, {});
-crons.cron("recover browser calls", "* * * * *", internal.ai_chat_files.recover_browser_invocations, {});
-crons.cron("retry browser policy sync", "* * * * *", internal.files_browser.retry_browser_preferences_sync, {});
+// Every 10 minutes — close expired shared connections and retry exact socket cleanup.
+crons.cron("sweep shared browser connections", "*/10 * * * *", internal.playwriter_browser.sweep_connections, {});
+crons.cron("process shared browser cleanups", "*/10 * * * *", internal.playwriter_browser.process_cleanups, {});
+crons.cron("recover browser calls", "*/10 * * * *", internal.ai_chat_files.recover_browser_invocations, {});
+crons.cron("retry browser policy sync", "*/10 * * * *", internal.files_browser.retry_browser_preferences_sync, {});
 
 // Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
 crons.cron(
@@ -166,8 +171,9 @@ crons.cron("recover expired transfer attempts", "*/5 * * * *", internal.files_tr
 // Every 5 minutes — resume interrupted review plans and commits.
 crons.cron("recover pending review jobs", "*/5 * * * *", internal.files_pending_update_runs.recover, {});
 crons.cron("recover Trash requests", "*/5 * * * *", internal.files_trash_requests.recover, {});
-crons.cron("recover Move groups", "*/5 * * * *", internal.files_move_cohorts.recover, {});
-crons.cron("recover saved file indexes", "*/5 * * * *", internal.files_index.recover, {});
+// Every 10 minutes: each of these two runs pages through many recovery pages.
+crons.cron("recover Move groups", "*/10 * * * *", internal.files_move_cohorts.recover, {});
+crons.cron("recover saved file indexes", "*/10 * * * *", internal.files_index.recover, {});
 
 // Every 15 minutes — crash/abandon fallback for paged pending states: expired temporary
 // states/batches/text inputs, expired trusted-update stages, and retired-state cleanup tasks.
