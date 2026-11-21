@@ -2475,7 +2475,11 @@ async function publish_version_from_github(
 		let node: typeof rules | undefined = rules;
 		for (const label of baseHost.split(".").reverse()) {
 			const children: (typeof rules)[1] = node[1];
-			node = Object.hasOwn(children, label) ? children[label] : Object.hasOwn(children, "*") ? children["*"] : undefined;
+			node = Object.hasOwn(children, label)
+				? children[label]
+				: Object.hasOwn(children, "*")
+					? children["*"]
+					: undefined;
 			if (node === undefined) {
 				break;
 			}

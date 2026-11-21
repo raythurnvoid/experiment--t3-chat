@@ -146,7 +146,7 @@ Design principle: **a wildcard origin trusts a whole zone.** `https://*.example.
 
 ## UI outbound origins
 
-UI origins accept bare normalized `https://` and `wss://` origins. A separate Convex backend needs its HTTPS cloud and HTTP-action origins plus its WSS cloud origin. Backend `outboundOrigins` still accepts HTTPS only. Paths, credentials, queries, hashes, and insecure protocols are refused. A `*` is allowed only in a wildcard origin, see "Wildcard origins" above. Keep the exact UI list in both the manifest and install consent.
+UI origins accept bare normalized `https://` and `wss://` origins. A separate Convex backend needs its HTTPS cloud and HTTP-action origins plus its WSS cloud origin. Backend `outboundOrigins` still accepts HTTPS only. Paths, credentials, queries, hashes, and insecure protocols are refused. In both lists, every origin host (exact or wildcard) may use only letters, digits, dots and hyphens, so `_` and CSP characters such as `;` are refused; a bracketed IPv6 host still works for an exact origin. A `*` is allowed only in a wildcard origin, see "Wildcard origins" above. Keep the exact UI list in both the manifest and install consent.
 
 `outboundOrigins` is the plugin's backend calling out from the runner. `uiOutboundOrigins` is the plugin's UI calling out from a member's browser. They are separate lists, separate capabilities, and separate consent entries — the same origin in both is new to each of them (`plugins_consent_diff` returns `newOutboundOrigins` and `newUiOutboundOrigins`). That UI surface holds the member's session token, so whatever it may reach can be reached by anything that manages to run inside it.
 
@@ -1082,6 +1082,39 @@ It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" 
 - Test data: `scripts/seed-qa-flats.mjs` writes fake flats with a personal API key, only into a
   `qa-` folder. It creates paid data, so load `qa-data` first.
 
+# T3 Code plugin (`plugins/bonobo-plugin-t3code`)
+
+Published 2026-11-21 (see "Releases"). Private repository `bonobo-plugin-t3code`; its README holds
+the member setup steps, the T3 prompt template, the security notes and the known limits. It sends
+work to T3 Code on a member's desktop and reads runs and threads back, mostly from a phone. It is
+the first plugin with a wildcard origin (see "Wildcard origins").
+
+- **Start work:** the backend posts the prompt to the member's T3 webhook on the fixed relay host
+  (`outboundOrigins: ["https://relay.t3.codes"]`). The relay answers only `202` with a delivery id,
+  so a run never knows its T3 thread. A `504` can mean T3 already started, so it is shown as
+  `unknown`, not as a failure.
+- **Read threads:** the page calls the member's own machine host directly
+  (`uiOutboundOrigins: ["https://*.t3coderelay.com"]`; T3 sends CORS `*`) with a read-only T3 token.
+  Every T3 Connect user has a host in that zone, so the plugin sends the token only to the host the
+  member saved. The `t3coderelay.com` zone comes from T3 tests and DNS, not from a confirmed linked
+  machine yet.
+- **Results:** the desktop agent writes a small `results` document with a personal API key and the
+  installation id from the plugin page's "Installation ID" row. The page joins results to runs by
+  key range, one read per 100 runs.
+- **Data:** one private scope per member, `user-<userId>` over `u:<userId>:`. Any member may create a
+  scope over a free id and key range, and no door says who created a scope. So the page shows the
+  blocked state when the scope has another prefix, level or member list, or when any document in the
+  member's range was created by someone else. The backend reads only documents the member created
+  and last wrote. Tokens and webhook URLs live in the scope, so the organization owner can read them;
+  the plugin refuses a T3 token that can do more than read, and clears it when the host changes.
+  Runs are deleted after 30 days.
+- **Automations and uploads:** one 15-minute schedule tick sends at most 5 due automations of the
+  member the installation runs as (at most 20 automations per member; that member needs
+  `workspace.plugins.manage` for outbound calls). An upload under the configured folder starts a run
+  only when the member gave the plugin Can view on that folder.
+- **Chat agent:** page tools list runs and threads and only draft a prompt. A prompt runs code on the
+  PC, so the member must press Send.
+
 # Chitchat plugin (`plugins/bonobo-plugin-chitchat`)
 
 Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Bonobo Senate. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Bonobo Senate keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
@@ -1158,6 +1191,18 @@ first plugin to pin it. It was published with a passed review and installed in
 `chitchat-qa/xfer-qa-0914`, where the live checks of `files/query` ran on fake flats in `/qa-flats`.
 Apartments 0.1.1 (`756ea30`, version doc `hn7gtx63md4g3w2z4n6fvdbrsh8jjfd6`) reloads the list on
 every Show click, also when the view did not change. It replaced 0.1.0 in the same workspace.
+
+The wildcard origin release shipped on 2026-11-21. Host commits `d72467b5` and `421cac81` add
+wildcard origins and review policy 20. The runner was deployed as
+`d0dd47bd-0c9d-49eb-a95f-0023b5b5ba0d`. The SDK folder changed only in comments and its README, so
+it was not mirrored. Data Probe 0.6.0 (`8a981c0`, version doc `hn7zby16bq5mwzaez0rqn41hg98jn495`)
+adds the `outbound-fetch` check under `https://*.ray-thurne-void.workers.dev`. T3 Code 0.1.0
+(`f2791a6`), 0.1.1 (`30a123f`, the page froze after Set up in 0.1.0) and 0.1.3 (`b0e1c81`, version
+doc `hn7ksnwsx9rejmrjb6ejbjetvn8jmhme`) were published from the private repo and installed in
+`chitchat-qa/copy-qa-0922`. 0.1.2 (`89feb8a`) was flagged by the AI review and never published:
+its webhook body told the desktop agent to use the member's personal API key. Text a plugin sends
+to an outside agent must not ask for, name, or explain credentials; put that setup in the README
+the member reads.
 
 Council 0.2.18 was published on 2026-10-31 from `2e64649b2ed72f3c150220bff8b11c9353908b48`
 as `hn7krd0pg6xqysgfnk5kt7kcg58hbdtd`, with ready sources and a passed review. Both existing
