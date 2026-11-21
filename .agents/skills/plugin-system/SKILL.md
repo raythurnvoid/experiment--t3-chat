@@ -620,6 +620,11 @@ Rules:
 
 A page or file view may tell the chat agent what it shows, so a member can ask about "this email" without the agent calling a tool. The shape follows MCP Apps `ui/update-model-context`: `{ content?: [{ type: "text", text }], structuredContent?: object }`. Only text blocks are kept.
 
+Two limits, and the smaller one is the one that matters: the host accepts up to 16 KiB as JSON, but
+the model reads only the first 4 KiB of the text (step 5). So a plugin sizes its view for about
+4,000 bytes and puts the most important part first, like Gmail's `MAX_VIEW_BYTES` and Apartments'
+`MAX_TEXT_BYTES`. Text from strangers (emails, ads, landlords) is data: say so in the view.
+
 How it travels:
 
 1. The page pushes with `client.agent.setContext` (`bonobo:update-model-context`, the SDK sends at most one value per 500 ms, always the newest, and drops a value equal to the last one sent), or sets a provider with `client.agent.setContextProvider` (`bonobo:context-provider { enabled }`).
@@ -1063,12 +1068,19 @@ Git submodule with its own repo (`<owner>/bonobo-plugin-gallery`). `dist/` is co
 
 # Apartments plugin (`plugins/bonobo-plugin-apartments`)
 
-Draft 0.1.1, published 2026-11-20 (see "Releases"). Repository `bonobo-plugin-apartments`; its README
-holds the flat file shape for the writer, the views, and the build and release steps. It copies the
-Gallery layout. It pins SDK 0.28.0 from the mirror.
+Version 0.2.0 (see "Releases"). Repository `bonobo-plugin-apartments`; its README holds the flat
+file shape for the writer, the views, the agent view context, and the build and release steps. It
+copies the Gallery layout. It pins SDK 0.28.0 from the mirror.
+
+The writer is the user's Berlin flat radar (a separate personal repository, `src/app-sync.ts`). After
+each scan it saves one file per flat into `/flats` of the user's home workspace, plus each flat's
+`messages.md`, photos of the flats worth a visit, and `/flats/viewings.md`. It deletes the files of
+flats it drops. Marks (saved, contacted, hidden) are read-only in the plugin: the radar is the only
+writer. The real flat data is personal: never copy it into this repository, a commit or a test.
 
 It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" in the
-`public-api` skill). Capability: `workspace.files.read` only. Host facts it depends on:
+`public-api` skill). Capabilities: `workspace.files.read` and `agent.view-context`. Host facts it
+depends on:
 
 - Each view is one folder-mode query on one frontmatter field, and the table columns come back in
   `fields`. A page can be empty while `isDone` is false, so "Load more" follows the cursor a few
@@ -1077,6 +1089,12 @@ It is the first plugin built on `POST /api/v1/files/query` (see "Field queries" 
   `eq: true` (the "Ideal" view) finds only a YAML boolean. So the writer must write the sorted
   fields as plain numbers and `ideal` as `true` or `false`, never in quotes. A quoted `"850"` is
   text and sorts after every number.
+- Combined filters (rent and bike time together) are not possible: one read is one index range on
+  one field, and Files metadata stores one row per field. The radar's `ideal` field is the combined
+  filter. Decided 2026-11-21.
+- The agent view context is cut to 4,000 bytes, because the model reads at most 4 KiB of it
+  (`PLUGIN_CONTEXT_MAX_MODEL_BYTES`), not the 16 KiB the host accepts. Put the most important part
+  first. Its first review sized it for 16 KiB, so the table rows never reached the model.
 - The page stores only the folder path in `localStorage`, because all plugin frames share one
   origin.
 - Test data: `scripts/seed-qa-flats.mjs` writes fake flats with a personal API key, only into a
@@ -1191,6 +1209,12 @@ first plugin to pin it. It was published with a passed review and installed in
 `chitchat-qa/xfer-qa-0914`, where the live checks of `files/query` ran on fake flats in `/qa-flats`.
 Apartments 0.1.1 (`756ea30`, version doc `hn7gtx63md4g3w2z4n6fvdbrsh8jjfd6`) reloads the list on
 every Show click, also when the view did not change. It replaced 0.1.0 in the same workspace.
+Apartments 0.2.0 (`7c93d42`, version doc `hn7wcw80hsyrn7bqpz221papc58jmrph`, 2026-11-21) adds the
+Kind, Walk, Found and Ideal columns, the Shortest walk and Latest found views, each flat's messages,
+the viewings panel and `agent.view-context`. It is installed in the user's `personal/home`
+(installation `hx7w6nycs0f3294rbzbg1hxysh8jn68d`) with a Read choice on `/flats`, where the flat
+radar writes. The radar writes with a key bound to the service account `flat-radar`, which has Can
+edit on `/flats` only.
 
 The wildcard origin release shipped on 2026-11-21. Host commits `d72467b5` and `421cac81` add
 wildcard origins and review policy 20. The runner was deployed as
