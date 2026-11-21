@@ -597,7 +597,7 @@ The batch secret mutations (`save_publisher_repository_secrets`, `save_installat
 
 ## Page agent tools (`agent.page-tools`)
 
-A page may declare `agent: { tools: [{ name, description, inputSchema }] }`. Such a page opens with the app's chat agent in a right panel, like the Files view (`list_ui_pages` returns `hasAgent`). The page code runs the tools, so the agent can work with what the member sees: open an item, write a draft, change the view. Gmail (`plugins/bonobo-plugin-gmail`, page `mail`) is the first user.
+A page may declare `agent: { tools: [{ name, description, inputSchema }] }`. Such a page opens with the app's chat agent in a right panel, like the Files view (`list_ui_pages` returns `hasAgent`). A page of an installation that accepted `agent.view-context` gets the same panel without tools (Apartments), because no other chat names the page, so its view would never reach the agent. The consent is per installation, so every page of that plugin gets the panel, also one that shares nothing (Gmail's connection page). Decided 2026-11-21. The page code runs the tools, so the agent can work with what the member sees: open an item, write a draft, change the view. Gmail (`plugins/bonobo-plugin-gmail`, page `mail`) is the first user.
 
 How one call travels:
 

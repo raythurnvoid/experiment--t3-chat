@@ -198,9 +198,11 @@ function RoutePluginsPluginPage() {
 			className={"RoutePluginsPluginPage" satisfies RoutePluginsPluginPage_ClassNames}
 		>
 			{breadcrumb}
-			{/* A page with agent tools shows the chat agent on the right, like the Browser route. The
-			    chat sends this page with each message, so the agent can call the page's tools. */}
-			{page.hasAgent ? (
+			{/* A page with agent tools, or one that shares what it shows (`agent.view-context`), shows the
+			    chat agent on the right, like the Browser route. The chat sends this page with each
+			    message, so the agent can call the page's tools and read its view. Without the panel a
+			    page's view could never reach the agent, because no other chat names this page. */}
+			{page.hasAgent || plugin.hasAgentViewContext ? (
 				<MyPanelGroup direction="horizontal">
 					<MyPanel id="route-plugins-plugin-page-frame" order={1} defaultSize={70} minSize={40}>
 						<div className={"RoutePluginsPluginPage-panel" satisfies RoutePluginsPluginPage_ClassNames}>{frame}</div>
