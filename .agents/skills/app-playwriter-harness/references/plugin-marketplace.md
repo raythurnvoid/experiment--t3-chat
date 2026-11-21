@@ -349,8 +349,9 @@ What a user API key can and cannot reach, so a check is not designed around an i
 - The body **must** name `installationId` for a user API key, and the installation must have accepted
   the matching `plugin.data.*` capability. Omitting it is a 400 `installationId is required for an API
 key`; the plugin token kinds carry their own installation and are refused for naming a second.
-- Read the installation id from `vp env exec pnpx convex data plugins_workspace_installations`; it is
-  not in the DOM.
+- Read the installation id on the plugin's page from `[data-installation-id]` (the "Installation ID"
+  row under the header). Without a browser, use `vp env exec pnpx convex data
+  plugins_workspace_installations`.
 - Ordered writes (`/write-versioned`, `/delete-versioned`) and reservations (`/reserve`) require a
   `plugin_service` principal. A user key gets 403 `Permission denied`, never a conflict, so a 409
   check cannot be built from user keys alone: plain `/write` does not enforce writer ownership between
@@ -369,7 +370,8 @@ instead of touching a pre-existing one, and never uninstall an installation you 
 1. Open the org switcher, `Create workspace`, name it (the submit-button collision in
    `known-hazards.md` applies). Read its id from `convex data organizations_workspaces`.
 2. Go to `/w/<org>/<scratch>/plugins/<plugin>`, `Install`, `Accept and install`. Read the new
-   installation id from `convex data plugins_workspace_installations` — the newest row.
+   installation id from `[data-installation-id]` on that page, or from
+   `convex data plugins_workspace_installations` (the newest row).
 3. Mint a second API key on `/w/<org>/<scratch>/api-keys`. Keys are per workspace, so this one cannot
    reach the first workspace's installation.
 4. Cross-name the installations. Both directions answer `404 Not found` on read, write and list. The

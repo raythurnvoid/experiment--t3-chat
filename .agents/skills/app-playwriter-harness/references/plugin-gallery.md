@@ -128,8 +128,9 @@ seeded `qa.perm.member` in a scratch Chrome (`clerk-test-accounts.md`). The same
 
 - The init script above also runs inside the plugin frame. Read `window.__capturedInit` with
   `frame.evaluate`, not on the host page.
-- A member gets `[]` from `plugins.list_installations`. Read the installation id with
-  `convex data plugins_workspace_installations` and match the `workspaceId`.
+- A member gets `[]` from `plugins.list_installations`. Read the installation id on the plugin's
+  page from `[data-installation-id]` (the "Installation ID" row, shown to every member). Without a
+  browser, use `convex data plugins_workspace_installations` and match the `workspaceId`.
 - Save and remove choices from the signed-in tab with `plugins_access.grant_file_access_as_me`
   (`{ membershipId, installationId, rootNodeId, level: "read" }`) and `revoke_file_access_as_me`.
   Read `list_my_file_grants` until the choice shows `state: "applied"`. On a small folder it took

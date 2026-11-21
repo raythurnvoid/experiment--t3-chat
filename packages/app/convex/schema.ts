@@ -7777,11 +7777,14 @@ const app_convex_schema = defineSchema({
 		userWritableCollections: v.union(v.array(v.string()), v.null()),
 		capabilities: v.array(plugins_capability_validator),
 		/**
-		 * Exact https origins the plugin's code declares it calls; consented at install.
+		 * Https origins the plugin's code declares it calls; consented at install. An entry is an exact
+		 * origin or a wildcard like `https://*.example.com` that covers every subdomain.
 		 **/
 		outboundOrigins: v.array(v.string()),
 		/**
-		 * Exact https origins the plugin's pages and file views may call from the browser; consented at install.
+		 * Https and wss origins the plugin's pages and file views may call from the browser; consented at
+		 * install. An entry is an exact origin or a wildcard like `https://*.example.com` that covers every
+		 * subdomain.
 		 *
 		 * The asset response builds its `connect-src` from this list, and an asset request carries only
 		 * a plugin version and a path. So this has to live on the immutable version: the response cannot
@@ -10574,6 +10577,8 @@ const app_convex_schema = defineSchema({
 					sourceRepositoryUrl: v.string(),
 					// The ceiling the owner approved. An upgrade inside it installs without the owner.
 					capabilities: v.array(plugins_capability_validator),
+					// An approved wildcard origin approves only that exact entry. A later exact origin under
+					// it needs a new approval.
 					outboundOrigins: v.array(v.string()),
 					uiOutboundOrigins: v.array(v.string()),
 					// The origins of `serviceEventsUrl` that may get access notices.

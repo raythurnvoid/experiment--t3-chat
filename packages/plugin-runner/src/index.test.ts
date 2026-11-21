@@ -381,16 +381,37 @@ describe("validation", () => {
 		expect((await res.json())._nay.message).toContain("outboundOrigins");
 	});
 
-	it("rejects outboundOrigins entries that are not exact https origins", async () => {
+	it("rejects outboundOrigins entries that are not https origins or valid wildcards", async () => {
 		for (const outboundOrigins of [
 			["https://modal.example/convert"],
 			["http://modal.example"],
 			"https://modal.example",
+			// The URL parser accepts `*` in a host, so these must be refused by the schema itself.
+			["https://*"],
+			["https://a.*.modal.example"],
+			["https://*.*.modal.example"],
+			["http://*.modal.example"],
+			["https://*.modal.example/convert"],
 		]) {
 			const res = await worker.fetch(run_request(await make_run_body({ body: { outboundOrigins } })), make_env());
 			expect(res.status).toBe(400);
 			expect((await res.json())._nay.message).toContain("outboundOrigins");
 		}
+	});
+
+	it("accepts an outboundOrigins wildcard pattern and passes it to the outbound binding", async () => {
+		let outboundProps: unknown;
+		const res = await worker.fetch(
+			run_request(await make_run_body({ body: { outboundOrigins: ["https://*.modal.example"] } })),
+			make_env(),
+			make_ctx({
+				onOutboundProps: (props) => {
+					outboundProps = props;
+				},
+			}),
+		);
+		expect(res.status).toBe(200);
+		expect(outboundProps).toMatchObject({ outboundOrigins: ["https://*.modal.example"] });
 	});
 
 	it("rejects a malformed or reserved requestPath with curated messages", async () => {
@@ -1250,6 +1271,25 @@ describe("BonoboOutbound", () => {
 				),
 			).rejects.toThrow("method is invalid");
 			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("allows a subdomain of a wildcard entry and refuses its apex", async () => {
+		const { fetchSpy } = mock_host_fetch((request) => {
+			if (request.url === "https://api.modal.example/x") {
+				return new Response("service-ok", { status: 200 });
+			}
+		});
+		try {
+			const self = outbound_self({ outboundOrigins: ["https://*.modal.example"] });
+			const response = await BonoboOutbound.prototype.fetch.call(self, new Request("https://api.modal.example/x"));
+			expect(await response.text()).toBe("service-ok");
+
+			await expect(BonoboOutbound.prototype.fetch.call(self, new Request("https://modal.example/x"))).rejects.toThrow(
+				"origin is not allowed",
+			);
 		} finally {
 			fetchSpy.mockRestore();
 		}

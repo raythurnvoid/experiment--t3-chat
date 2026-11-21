@@ -11,7 +11,9 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  * Capabilities may authorize more than one caller. Each entry names all current callers:
  *
  * - `plugin.secrets.read` — the backend run may call `env.BONOBO.secrets.get(name)`.
- * - `outbound.fetch` — the backend run may `fetch` the manifest's `outboundOrigins`.
+ * - `outbound.fetch` — the backend run may `fetch` the manifest's `outboundOrigins`. An entry is an
+ *   exact HTTPS origin or a wildcard origin like `https://*.example.com`. A wildcard origin matches
+ *   every subdomain at any depth, never `example.com` itself. See "Wildcard origins" in the README.
  * - `workspace.files.read` — the plugin's UI pages and file views may read workspace files and
  *   their metadata (custom fields), and so may backend runs. It puts the `files:list`,
  *   `files:read`, and `files:download` scopes on the frame's UI token and `files:list` +
@@ -60,8 +62,10 @@ export type { ExportedHandler, ExecutionContext, Request, Response } from "@clou
  *   `plugin.data.read`, `workspace.files.write`, or `workspace.members.read` as well. A Files-only
  *   registration may receive an empty-scope interactive grant; it gains file authority only after sealing.
  * - `ui.outbound.fetch` — the plugin's UI pages and file views, running in the member's browser, may
- *   call the manifest's bare HTTPS or WSS `uiOutboundOrigins`. The browser enforces `connect-src`. It
- *   and `uiOutboundOrigins` require each other: neither may be declared alone.
+ *   call the manifest's bare HTTPS or WSS `uiOutboundOrigins`. An entry may also be a wildcard
+ *   origin like `https://*.example.com` or `wss://*.example.com`, with the same rule as
+ *   `outbound.fetch`. The browser enforces `connect-src`. It and `uiOutboundOrigins` require each
+ *   other: neither may be declared alone.
  * - `workspace.members.read` — the plugin's UI pages and file views may list every member of the
  *   workspace, as user ids and display names. Email is never returned. Without it a frame can still
  *   resolve names for ids it already holds, which enumerates nobody. Every member reads the roster

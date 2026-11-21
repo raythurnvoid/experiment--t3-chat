@@ -1570,6 +1570,42 @@ describe("plugins publish_version", () => {
 		expect(versions).toEqual([]);
 	});
 
+	// `*.amazonaws.com` is not a public suffix itself, but `s3.amazonaws.com` below it is.
+	test.each(["https://*.workers.dev", "https://*.amazonaws.com"])(
+		"refuses the wildcard origin %s, which covers a public suffix, before any upload",
+		async (origin) => {
+			const t = test_convex();
+			const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+			const asOwner = t.withIdentity(user_identity(membership.userId));
+			const github = await mock_publish_github_fetch({ outboundOrigins: [origin] });
+
+			const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+
+			expect(published).toEqual({
+				_nay: {
+					message: `Wildcard origin ${origin} must be under a domain you control, not a public suffix or an unknown top-level domain.`,
+				},
+			});
+			expect(github.uploadUrls).toEqual([]);
+		},
+	);
+
+	test("publishes wildcard origins under domains the publisher can control", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const outboundOrigins = ["https://*.t3coderelay.com", "https://*.ray-thurne-void.workers.dev"];
+		await mock_publish_github_fetch({ outboundOrigins });
+
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+
+		expect(published._nay).toBeUndefined();
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions.map((version) => version.outboundOrigins)).toEqual([outboundOrigins]);
+	});
+
 	test("rejects publishing a plugin name owned by another publisher", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isAlias, isMap, isScalar, isSeq, parseAllDocuments, type Node as YamlNode } from "yaml";
 
 import { Result } from "common/errors-as-values-utils.ts";
+import { origin_patterns_base_origin } from "common/origin-patterns.ts";
 import { files_get_normalized_node_path_segments, files_get_utf8_byte_size } from "./files.ts";
 import { organizations_name_autofix_and_validate } from "./organizations.ts";
 import { plugins_CAPABILITIES } from "./plugins-capabilities.ts";
@@ -22,7 +23,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "19";
+export const plugins_REVIEW_POLICY_VERSION = "20";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = [
@@ -395,6 +396,13 @@ export function plugins_data_is_valid_name(raw: string) {
 
 const MAX_OUTBOUND_ORIGIN_LENGTH = 255;
 
+/**
+ * Check one entry of `outboundOrigins` or `uiOutboundOrigins` and return its normal form.
+ *
+ * An entry is an exact origin or a wildcard pattern like `https://*.example.com`. A pattern must pass
+ * the exact-origin rules after `*.` is removed, and its normal form is the pattern itself. The
+ * public-suffix rule for patterns needs the suffix list, so publishing checks it, not this function.
+ */
 export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 	const trimmed = raw.trim();
 	if (trimmed.length > MAX_OUTBOUND_ORIGIN_LENGTH) {
@@ -402,9 +410,18 @@ export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 			_nay: { message: `Origins must be at most ${MAX_OUTBOUND_ORIGIN_LENGTH} characters` },
 		});
 	}
+
+	// The URL parser accepts `*` inside a host, so refuse every `*` that is not the `*.` prefix of a
+	// pattern before parsing.
+	const baseOrigin = origin_patterns_base_origin(trimmed);
+	const exactOrigin = baseOrigin ?? trimmed;
+	if (exactOrigin.includes("*")) {
+		return Result({ _nay: { message: "A wildcard origin must look like https://*.example.com" } });
+	}
+
 	let url: URL;
 	try {
-		url = new URL(trimmed);
+		url = new URL(exactOrigin);
 	} catch {
 		return Result({ _nay: { message: "Origin must be a valid URL" } });
 	}
@@ -417,11 +434,41 @@ export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 	if (url.pathname !== "/" || url.search || url.hash) {
 		return Result({ _nay: { message: "Origin must be a bare origin without path, query, or hash" } });
 	}
-	const lowered = trimmed.toLowerCase();
+	const lowered = exactOrigin.toLowerCase();
 	if (lowered !== url.origin && lowered !== `${url.origin}/`) {
 		return Result({ _nay: { message: "Origin must be a bare origin without path, query, or hash" } });
 	}
-	return Result({ _yay: url.origin });
+	// The URL parser also accepts characters like `;`, `'`, and `,` in a host. The page CSP lists these
+	// entries unchanged, so allow only the host characters a CSP source can hold. A bracketed IPv6 host
+	// stays allowed for exact origins.
+	if (!/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])$/u.test(url.hostname)) {
+		return Result({ _nay: { message: "Origin host can only use letters, digits, dots and hyphens" } });
+	}
+	if (baseOrigin === null) {
+		return Result({ _yay: url.origin });
+	}
+
+	// A pattern trusts every subdomain of its base host, so the base must be a real domain. The parser
+	// already turned every IPv4 form into four decimal numbers.
+	if (
+		url.hostname.startsWith("[") ||
+		/^\d+\.\d+\.\d+\.\d+$/u.test(url.hostname) ||
+		url.hostname === "localhost" ||
+		url.hostname.endsWith(".localhost")
+	) {
+		return Result({ _nay: { message: "A wildcard origin cannot use an IP address or localhost" } });
+	}
+
+	const labels = url.hostname.split(".");
+	if (labels.includes("")) {
+		return Result({ _nay: { message: "A wildcard origin must look like https://*.example.com" } });
+	}
+	if (labels.length < 2) {
+		return Result({
+			_nay: { message: "A wildcard origin needs a domain with at least two parts, like *.example.com" },
+		});
+	}
+	return Result({ _yay: `${url.protocol}//*.${url.host}` });
 }
 
 const MAX_MCP_SERVER_URL_LENGTH = 2048;
@@ -832,6 +879,7 @@ const MAX_EXPANDED_EVENT_CONTENT_TYPES = 64;
 const MAX_CONTENT_TYPES_PER_FILE_VIEW = 32;
 const MAX_EXPANDED_FILE_VIEW_CONTENT_TYPES = 64;
 const MAX_OUTBOUND_ORIGINS = 16;
+const MAX_WILDCARD_ORIGINS = 4;
 const MAX_SECRETS = 32;
 const MAX_SECRET_DESCRIPTION_LENGTH = 300;
 const MAX_MCP_SERVERS = 4;
@@ -1408,6 +1456,16 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate UI outbound origin "${origin}"` } });
 		}
 		uiOutboundOrigins.add(origin);
+	}
+
+	// Each wildcard is a broad grant, and the consent list must stay readable. Wildcards still count
+	// inside the limit of all origins.
+	for (const origins of [outboundOrigins, uiOutboundOrigins]) {
+		if ([...origins].filter((origin) => origin_patterns_base_origin(origin) !== null).length > MAX_WILDCARD_ORIGINS) {
+			return Result({
+				_nay: { message: `Plugin manifests can declare at most ${MAX_WILDCARD_ORIGINS} wildcard origins per list` },
+			});
+		}
 	}
 
 	// The access notice and its URL require each other, like ui.outbound.fetch and its origins. A URL

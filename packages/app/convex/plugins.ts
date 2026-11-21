@@ -27,6 +27,7 @@ import {
 } from "./plugins_service_events.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
+import { origin_patterns_base_origin } from "common/origin-patterns.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
 	plugins_MAX_ARTIFACT_BYTES,
@@ -1231,6 +1232,8 @@ const REVIEW_RUNTIME_FACTS =
 	"still carry their headers and bodies, so sending unrelated credentials or private data to an " +
 	"allowed destination can be harmful. Provider credentials used to authenticate to their provider " +
 	"are normal. A URL read from host configuration is not an unapproved destination by itself.\n" +
+	"An origin entry that starts with *. allows every subdomain of that domain. Check that the plugin " +
+	"sends private data only to a host the member chose, or to a domain the publisher controls.\n" +
 	"Host APIs include /api/v1/ HTTP routes and direct SDK Convex calls. For example, " +
 	"client.convex.query(client.api.plugins_data.list_members, args) uses workspace.members.read. " +
 	"The absence of an HTTP path does not show that a capability is unused.\n" +
@@ -2448,6 +2451,43 @@ async function publish_version_from_github(
 		return Result({ _nay: { message: manifest._nay.message } });
 	}
 	args.attempt.pluginName = manifest._yay.name;
+
+	// A wildcard on a public suffix like `*.workers.dev` or `*.co.uk` lets anyone who owns a name there
+	// receive the requests. A base host on a suffix the list does not know (`*.foo.internal`) is refused
+	// too. So is a base with public suffixes below it: `*.amazonaws.com` covers `s3.amazonaws.com`,
+	// where anyone can own a name. The suffix list is large, so only a publish with a wildcard loads it.
+	for (const origin of [...manifest._yay.outboundOrigins, ...manifest._yay.uiOutboundOrigins]) {
+		const baseOrigin = origin_patterns_base_origin(origin);
+		if (baseOrigin === null) {
+			continue;
+		}
+
+		const { parse } = await import("tldts");
+		// tldts has no API that says whether a rule sits below a host, so read its internal rule trie.
+		// package.json pins tldts to one exact version, so this file path cannot move under us. Its types
+		// come from `server/tldts-trie.d.ts`.
+		const { rules } = await import("tldts/dist/es6/src/data/trie.js");
+		const baseHost = new URL(baseOrigin).hostname;
+		const parsed = parse(baseHost, { allowPrivateDomains: true });
+
+		// Walk the labels from the right, like tldts does. A label without its own node follows the `*` rule.
+		let node: typeof rules | undefined = rules;
+		for (const label of baseHost.split(".").reverse()) {
+			node = node[1][label] ?? node[1]["*"];
+			if (node === undefined) {
+				break;
+			}
+		}
+		const hasRulesBelow = node !== undefined && Object.keys(node[1]).length > 0;
+
+		if (!(parsed.isIcann || parsed.isPrivate) || parsed.publicSuffix === baseHost || hasRulesBelow) {
+			return Result({
+				_nay: {
+					message: `Wildcard origin ${origin} must be under a domain you control, not a public suffix or an unknown top-level domain.`,
+				},
+			});
+		}
+	}
 
 	// The dist/bonobo.plugin.json text fingerprints the release, and the registered version keys off
 	// this hash. The review cache does not: it keys off the review subject hash computed further down,
@@ -7144,6 +7184,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"17": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
 				"18": "47bd1102c7eca10fb5ecc6ec22738e9ea6a2d8c4b23172dab8434b7f1d3b6f4d",
 				"19": "b69fa98b73a121d1800d9f3a4e3dae7c536e7bfb86f6b01967d17c198ba5907d",
+				"20": "b61bcf2f31a18ea9b4a2ecd5508547df8ae70b15cb6a4a0b5739f4bf472b939f",
 			};
 			expect(digest).toBe(reviewedHashes[plugins_REVIEW_POLICY_VERSION]);
 		});

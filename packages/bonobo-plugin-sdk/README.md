@@ -9,7 +9,7 @@ A plugin manifest declares capabilities (`BonoboCapability`), which a workspace 
 Backend run (`fetch(request, env, ctx)`):
 
 - `plugin.secrets.read` — `env.BONOBO.secrets.get(name)` resolves the publisher secret (or the workspace's shadowing installation secret) or `null`.
-- `outbound.fetch` — native `fetch` to third-party HTTPS origins listed in the manifest's `outboundOrigins`.
+- `outbound.fetch` — native `fetch` to third-party HTTPS origins listed in the manifest's `outboundOrigins`. An entry may be a wildcard origin like `https://*.example.com` (see [Wildcard origins](#wildcard-origins)).
 - `plugin.data.read` — read the plugin's own document store.
 - `plugin.data.write` — create, change, and delete documents in that store. Declaring it also requires `plugin.data.read`.
 - `workspace.files.read` — the run's host token also carries `files:list` and `files:read`. A read includes the files' metadata (custom fields). Files calls use the member's applied choices in **My file permissions**. An unreadable target answers `403`, and a missing one answers `404`. A folder list shows unreadable items with `locked: true`; a `recursive` list shows a locked item once and lists nothing under a locked folder. Runs may also list Trash and read their own Restore jobs, except scheduled runs. `files/download-urls` stays bound to the triggering upload.
@@ -23,7 +23,7 @@ Plugin page and file view (the sandboxed iframe):
 - `workspace.files.read` — read access to workspace files and their metadata (custom fields): the frame's UI token carries the `files:list`, `files:read`, and `files:download` scopes. The same capability also reaches backend runs (see the backend list above).
 - `plugin.data.read` — read the plugin's own document store; the UI token carries `plugin_data:read`.
 - `plugin.data.user-write` — the plugin's UI pages and file views may create, change, and delete documents in that store as the acting member. The frame's UI token never carries a write scope: the write runs through the app's own member-attributed mutations on the frame's own Convex client (see [Using the Convex client](#using-the-convex-client)). Declaring it also requires `plugin.data.read`.
-- `ui.outbound.fetch` — the plugin's UI pages and file views may call the manifest's `uiOutboundOrigins`. These must be bare normalized HTTPS or WSS origins. It is enforced as `connect-src` in the frame's CSP, so the browser refuses other destinations. The capability and origins require each other. Backend `outboundOrigins` stays HTTPS only.
+- `ui.outbound.fetch` — the plugin's UI pages and file views may call the manifest's `uiOutboundOrigins`. These must be bare normalized HTTPS or WSS origins, or wildcard origins like `https://*.example.com` and `wss://*.example.com` (see [Wildcard origins](#wildcard-origins)). It is enforced as `connect-src` in the frame's CSP, so the browser refuses other destinations. The capability and origins require each other. Backend `outboundOrigins` stays HTTPS only.
 - `workspace.members.read` — the plugin's UI pages and file views may list every member of the workspace, as `{ userId, displayName }` rows through the `list_members` door on the frame's Convex client. Email is never returned. Without it a frame can still resolve names for ids it already holds (the `resolve_member_display` door), which enumerates nobody. Every member reads the roster under one rule, including a member who signed in anonymously.
 - `plugin.backend.invoke` — the plugin's UI pages and file views may run the plugin's backend on demand through `POST /api/v1/plugin-backend/invoke` on the UI token. The manifest must declare `backend.endpoints`; the capability and the endpoint list require each other. It is its own consent because "a member's click runs publisher code that can write" is different from "an upload runs it".
 
@@ -44,6 +44,17 @@ Chat agent (see [MCP servers and skills](#mcp-servers-and-skills)):
 - `agent.skills.contribute` — the chat skill catalog lists the manifest's `skills`, and the agent reads them from the plugin's read-only mount. Nothing is written into the workspace. The capability and `skills` require each other.
 - `agent.page-tools` — the chat agent may call the tools a page declares in `agent.tools` while a member has that page open in the app. The page code runs each call (see [Page agent tools](#page-agent-tools)). The capability and at least one page with `agent.tools` require each other.
 - `agent.view-context` — the plugin's pages and file views may tell the chat agent what they show (see [Agent view context](#agent-view-context)). The text goes with the member's next chat message only and is not saved in the chat. It requires at least one page or file view.
+
+### Wildcard origins
+
+A wildcard origin trusts a whole zone. The plugin may send private data only to a host the member chose, or to a domain the publisher controls. The AI review checks this.
+
+- Form: `https://*.<domain>[:port]` in `outboundOrigins` and `uiOutboundOrigins`, and `wss://*.<domain>[:port]` in `uiOutboundOrigins` only. `*` may only be the whole first label. The rest follows the exact-origin rules. The host may use only letters, digits, dots and hyphens.
+- The domain needs at least two parts and must not be an IP address or `localhost`. Publish refuses a public suffix such as `*.workers.dev`, `*.github.io` or `*.co.uk`, an unknown top-level domain such as `*.foo.internal`, and a domain with public suffixes below it such as `*.amazonaws.com`.
+- At most 4 wildcard origins per list. They count inside the limit of 16.
+- `https://*.example.com` matches `a.example.com` and `a.b.example.com`, with the same scheme and port. It never matches `example.com` itself; list that origin on its own if you need it. The backend and the page CSP use the same rule.
+- The install screen shows each wildcard origin with "Any subdomain of example.com". Members accept the exact string. Changing an exact origin to a wildcard origin, or the other way round, asks them to accept it again. In an organization with a plugin policy, the owner must approve it again too.
+- In `serviceEventsUrl` and MCP server URLs, a `*` has no special meaning.
 
 ### Grant lifecycle and service upload routes
 

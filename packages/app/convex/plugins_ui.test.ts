@@ -2661,7 +2661,7 @@ describe("plugin ui assets", () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t, {
 			capabilities: ["workspace.files.read", "ui.outbound.fetch"],
-			uiOutboundOrigins: ["https://council.example.com"],
+			uiOutboundOrigins: ["https://council.example.com", "https://*.relay.example.com"],
 		});
 		r2Objects.set("plugins/gallery/0.1.0/dist/frontend/index.html", "<!doctype html><title>Gallery</title>");
 
@@ -2670,9 +2670,10 @@ describe("plugin ui assets", () => {
 		});
 		expect(response.status).toBe(200);
 		const csp = response.headers.get("Content-Security-Policy");
-		// The declared origin is added to the origins every frame already needs; it does not replace them.
+		// The declared origins are added to the origins every frame already needs; they do not replace
+		// them. A wildcard goes in unchanged, because the browser reads it as a CSP host source.
 		expect(csp).toContain(
-			"connect-src 'self' https://cloud.convex.test wss://cloud.convex.test https://council.example.com;",
+			"connect-src 'self' https://cloud.convex.test wss://cloud.convex.test https://council.example.com https://*.relay.example.com;",
 		);
 		expect(csp).not.toContain("connect-src 'self' https://cloud.convex.test wss://cloud.convex.test;");
 	});

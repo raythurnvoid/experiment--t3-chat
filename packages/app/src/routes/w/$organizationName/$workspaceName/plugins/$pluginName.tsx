@@ -2,6 +2,7 @@ import "./plugin.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { createFileRoute } from "@tanstack/react-router";
+import { origin_patterns_base_origin } from "common/origin-patterns.ts";
 import { usePaginatedQuery, useQuery } from "convex/react";
 import {
 	ChevronRight,
@@ -30,6 +31,7 @@ import { editor as monaco_editor } from "monaco-editor";
 import { memo, useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { McpConnect } from "@/components/mcp-connect.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
@@ -1970,6 +1972,59 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 });
 // #endregion installed runs
 
+// #region installation id
+type RoutePluginsPluginInstallationId_ClassNames =
+	| "RoutePluginsPluginInstallationId"
+	| "RoutePluginsPluginInstallationId-row"
+	| "RoutePluginsPluginInstallationId-label"
+	| "RoutePluginsPluginInstallationId-value"
+	| "RoutePluginsPluginInstallationId-description";
+
+type RoutePluginsPluginInstallationId_CustomAttributes = {
+	"data-installation-id": string;
+};
+
+type RoutePluginsPluginInstallationId_Props = {
+	installationId: app_convex_Id<"plugins_workspace_installations">;
+};
+
+/**
+ * The `/api/v1/plugin-data/*` routes need the installation id when a member calls them with a
+ * personal API key. No other screen shows it, so every member who can open this page sees it here.
+ */
+const RoutePluginsPluginInstallationId = memo(function RoutePluginsPluginInstallationId(
+	props: RoutePluginsPluginInstallationId_Props,
+) {
+	const { installationId } = props;
+
+	return (
+		<section className={"RoutePluginsPluginInstallationId" satisfies RoutePluginsPluginInstallationId_ClassNames}>
+			<div className={"RoutePluginsPluginInstallationId-row" satisfies RoutePluginsPluginInstallationId_ClassNames}>
+				<span
+					className={"RoutePluginsPluginInstallationId-label" satisfies RoutePluginsPluginInstallationId_ClassNames}
+				>
+					Installation ID
+				</span>
+				<code
+					className={"RoutePluginsPluginInstallationId-value" satisfies RoutePluginsPluginInstallationId_ClassNames}
+					{...({
+						"data-installation-id": installationId,
+					} satisfies RoutePluginsPluginInstallationId_CustomAttributes)}
+				>
+					{installationId}
+				</code>
+				<CopyIconButton variant="ghost-highlightable" tooltipCopy="Copy installation ID" text={installationId} />
+			</div>
+			<p
+				className={"RoutePluginsPluginInstallationId-description" satisfies RoutePluginsPluginInstallationId_ClassNames}
+			>
+				Use this ID with a personal API key to read or write this plugin's data.
+			</p>
+		</section>
+	);
+});
+// #endregion installation id
+
 // #region access and automation
 type RoutePluginsPluginAccess_ClassNames =
 	| "RoutePluginsPluginAccess"
@@ -1981,6 +2036,7 @@ type RoutePluginsPluginAccess_ClassNames =
 	| "RoutePluginsPluginAccess-list"
 	| "RoutePluginsPluginAccess-item"
 	| "RoutePluginsPluginAccess-item-actions"
+	| "RoutePluginsPluginAccess-item-note"
 	| "RoutePluginsPluginAccess-empty"
 	| "RoutePluginsPluginAccess-trigger"
 	| "RoutePluginsPluginAccess-trigger-name"
@@ -2012,6 +2068,7 @@ type RoutePluginsPluginAccess_Props = {
 
 type RoutePluginsPluginAccess_CustomAttributes = {
 	"data-organization-policy": "allowed" | "blocked";
+	"data-origin-wildcard": "";
 };
 
 /**
@@ -2135,6 +2192,32 @@ function format_mcp_server_auth(server: plugins_McpServer) {
 	}
 	return `each member signs in at ${new URL(server.auth.issuer).host}`;
 }
+
+/**
+ * The host a wildcard origin covers, such as `example.com` for `https://*.example.com`. Null for an
+ * exact origin. Both consent screens show it under the entry, so an admin sees which zone they trust.
+ */
+function get_origin_wildcard_host(origin: string) {
+	const baseOrigin = origin_patterns_base_origin(origin);
+	return baseOrigin === null ? null : new URL(baseOrigin).host;
+}
+
+type RoutePluginsPluginOriginWildcardWarning_ClassNames = "RoutePluginsPluginOriginWildcardWarning";
+
+/**
+ * The warning under an origin list that holds a wildcard origin. Both consent screens show it, so the
+ * words live only here.
+ */
+const RoutePluginsPluginOriginWildcardWarning = memo(function RoutePluginsPluginOriginWildcardWarning() {
+	return (
+		<p
+			className={"RoutePluginsPluginOriginWildcardWarning" satisfies RoutePluginsPluginOriginWildcardWarning_ClassNames}
+		>
+			An entry that starts with <code>*.</code> covers every subdomain. Anyone who controls a subdomain there can
+			receive these requests.
+		</p>
+	);
+});
 
 const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
 	const {
@@ -2323,7 +2406,7 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 										{...(status
 											? ({
 													"data-organization-policy": status.policy,
-												} satisfies RoutePluginsPluginAccess_CustomAttributes)
+												} satisfies Partial<RoutePluginsPluginAccess_CustomAttributes>)
 											: {})}
 									>
 										{server.title} — {new URL(server.url).host} — {format_mcp_server_auth(server)}
@@ -2404,16 +2487,34 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 						No backend outbound origins.
 					</div>
 				) : (
-					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
-						{plugin.outboundOrigins.map((origin) => (
-							<li
-								key={origin}
-								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
-							>
-								{origin}
-							</li>
-						))}
-					</ul>
+					<>
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{plugin.outboundOrigins.map((origin) => {
+								const wildcardHost = get_origin_wildcard_host(origin);
+								return (
+									<li
+										key={origin}
+										className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+										{...(wildcardHost !== null
+											? ({ "data-origin-wildcard": "" } satisfies Partial<RoutePluginsPluginAccess_CustomAttributes>)
+											: {})}
+									>
+										{origin}
+										{wildcardHost !== null ? (
+											<span
+												className={"RoutePluginsPluginAccess-item-note" satisfies RoutePluginsPluginAccess_ClassNames}
+											>
+												Any subdomain of {wildcardHost}
+											</span>
+										) : null}
+									</li>
+								);
+							})}
+						</ul>
+						{plugin.outboundOrigins.some((origin) => get_origin_wildcard_host(origin) !== null) ? (
+							<RoutePluginsPluginOriginWildcardWarning />
+						) : null}
+					</>
 				)}
 			</section>
 
@@ -2428,15 +2529,31 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 				) : (
 					<>
 						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
-							{plugin.uiOutboundOrigins.map((origin) => (
-								<li
-									key={origin}
-									className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
-								>
-									{origin}
-								</li>
-							))}
+							{plugin.uiOutboundOrigins.map((origin) => {
+								const wildcardHost = get_origin_wildcard_host(origin);
+								return (
+									<li
+										key={origin}
+										className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+										{...(wildcardHost !== null
+											? ({ "data-origin-wildcard": "" } satisfies Partial<RoutePluginsPluginAccess_CustomAttributes>)
+											: {})}
+									>
+										{origin}
+										{wildcardHost !== null ? (
+											<span
+												className={"RoutePluginsPluginAccess-item-note" satisfies RoutePluginsPluginAccess_ClassNames}
+											>
+												Any subdomain of {wildcardHost}
+											</span>
+										) : null}
+									</li>
+								);
+							})}
 						</ul>
+						{plugin.uiOutboundOrigins.some((origin) => get_origin_wildcard_host(origin) !== null) ? (
+							<RoutePluginsPluginOriginWildcardWarning />
+						) : null}
 						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
 							A plugin page and a file view both run in a member's browser and may call these origins directly. This is
 							a separate risk from backend network access: the frame holds that member's session token.
@@ -2748,12 +2865,14 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginConsentModal-sectionTitle"
 	| "RoutePluginsPluginConsentModal-list"
 	| "RoutePluginsPluginConsentModal-item"
+	| "RoutePluginsPluginConsentModal-itemNote"
 	| "RoutePluginsPluginConsentModal-empty"
 	| "RoutePluginsPluginConsentModal-actions"
 	| "RoutePluginsPluginConsentModal-accountFields";
 
 type RoutePluginsPlugin_CustomAttributes = {
 	"data-organization-policy": RoutePlugins_PublishedPlugin["organizationPolicy"];
+	"data-origin-wildcard": "";
 };
 
 // Publishers can inspect a version before it appears in the public catalog.
@@ -3308,7 +3427,7 @@ function RoutePluginsPlugin() {
 					className={"RoutePluginsPluginHero" satisfies RoutePluginsPlugin_ClassNames}
 					{...({
 						"data-organization-policy": plugin.organizationPolicy,
-					} satisfies RoutePluginsPlugin_CustomAttributes)}
+					} satisfies Partial<RoutePluginsPlugin_CustomAttributes>)}
 				>
 					<Puzzle aria-hidden className={"RoutePluginsPluginHero-icon" satisfies RoutePluginsPlugin_ClassNames} />
 					<div className={"RoutePluginsPluginHero-info" satisfies RoutePluginsPlugin_ClassNames}>
@@ -3459,6 +3578,7 @@ function RoutePluginsPlugin() {
 					</div>
 				</header>
 
+				{installationId ? <RoutePluginsPluginInstallationId installationId={installationId} /> : null}
 				{installedItem ? (
 					<PluginsManagementAccess
 						key={`management:${installedItem.installation._id}`}
@@ -3852,19 +3972,39 @@ function RoutePluginsPlugin() {
 								No backend outbound origins requested.
 							</div>
 						) : (
-							<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
-								{plugin.outboundOrigins.map((origin) => (
-									<li
-										key={origin}
-										className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
-									>
-										{origin}
-										{installedVersion && consentDiff.newOutboundOrigins.includes(origin) ? (
-											<MyBadge variant="secondary">new</MyBadge>
-										) : null}
-									</li>
-								))}
-							</ul>
+							<>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.outboundOrigins.map((origin) => {
+										const wildcardHost = get_origin_wildcard_host(origin);
+										return (
+											<li
+												key={origin}
+												className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+												{...(wildcardHost !== null
+													? ({ "data-origin-wildcard": "" } satisfies Partial<RoutePluginsPlugin_CustomAttributes>)
+													: {})}
+											>
+												{origin}
+												{installedVersion && consentDiff.newOutboundOrigins.includes(origin) ? (
+													<MyBadge variant="secondary">new</MyBadge>
+												) : null}
+												{wildcardHost !== null ? (
+													<span
+														className={
+															"RoutePluginsPluginConsentModal-itemNote" satisfies RoutePluginsPlugin_ClassNames
+														}
+													>
+														Any subdomain of {wildcardHost}
+													</span>
+												) : null}
+											</li>
+										);
+									})}
+								</ul>
+								{plugin.outboundOrigins.some((origin) => get_origin_wildcard_host(origin) !== null) ? (
+									<RoutePluginsPluginOriginWildcardWarning />
+								) : null}
+							</>
 						)}
 
 						{/* Frame egress is consented separately from backend egress: the frame runs with a member's
@@ -3877,18 +4017,36 @@ function RoutePluginsPlugin() {
 									This plugin's pages and file views can call these origins from your browser
 								</div>
 								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
-									{plugin.uiOutboundOrigins.map((origin) => (
-										<li
-											key={origin}
-											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
-										>
-											{origin}
-											{installedVersion && consentDiff.newUiOutboundOrigins.includes(origin) ? (
-												<MyBadge variant="secondary">new</MyBadge>
-											) : null}
-										</li>
-									))}
+									{plugin.uiOutboundOrigins.map((origin) => {
+										const wildcardHost = get_origin_wildcard_host(origin);
+										return (
+											<li
+												key={origin}
+												className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+												{...(wildcardHost !== null
+													? ({ "data-origin-wildcard": "" } satisfies Partial<RoutePluginsPlugin_CustomAttributes>)
+													: {})}
+											>
+												{origin}
+												{installedVersion && consentDiff.newUiOutboundOrigins.includes(origin) ? (
+													<MyBadge variant="secondary">new</MyBadge>
+												) : null}
+												{wildcardHost !== null ? (
+													<span
+														className={
+															"RoutePluginsPluginConsentModal-itemNote" satisfies RoutePluginsPlugin_ClassNames
+														}
+													>
+														Any subdomain of {wildcardHost}
+													</span>
+												) : null}
+											</li>
+										);
+									})}
 								</ul>
+								{plugin.uiOutboundOrigins.some((origin) => get_origin_wildcard_host(origin) !== null) ? (
+									<RoutePluginsPluginOriginWildcardWarning />
+								) : null}
 							</>
 						) : null}
 

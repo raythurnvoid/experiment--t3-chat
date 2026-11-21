@@ -163,7 +163,8 @@ if (!process.env.CONVEX_CLOUD_URL) {
 }
 // The SDK runs its own ConvexClient inside the iframe, and that client talks to the deployment's
 // cloud origin over a WebSocket. `https:` in connect-src never authorizes `wss:`, so the CSP must
-// list both schemes.
+// list both schemes. The other way round works under CSP3: a `wss:` source also allows `https:` to the
+// same host. So a plugin's `wss://` entry in `uiOutboundOrigins` also opens `https://` on that host.
 const CONVEX_CLOUD_ORIGIN = new URL(process.env.CONVEX_CLOUD_URL).origin;
 const CONVEX_CLOUD_WS_ORIGIN = CONVEX_CLOUD_ORIGIN.replace(/^https:/, "wss:");
 
@@ -174,9 +175,10 @@ const CONVEX_CLOUD_WS_ORIGIN = CONVEX_CLOUD_ORIGIN.replace(/^https:/, "wss:");
  * wss for the sync WebSocket).
  *
  * `uiOutboundOrigins` are the extra destinations the plugin version declared and the workspace
- * accepted at install. They widen `connect-src` only. An asset request carries a plugin version and a
- * path and nothing else, so the response cannot know which installation is looking at it — which is
- * why the list lives on the immutable version and not on the installation.
+ * accepted at install. They widen `connect-src` only. A validated wildcard like `https://*.example.com`
+ * is already a valid CSP host source, so every entry goes in unchanged. An asset request carries a
+ * plugin version and a path and nothing else, so the response cannot know which installation is
+ * looking at it — which is why the list lives on the immutable version and not on the installation.
  */
 function plugin_page_csp(uiOutboundOrigins: readonly string[]) {
 	return [

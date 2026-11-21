@@ -432,6 +432,30 @@ describe("plugins_validate_origin", () => {
 			_nay: { message: "Origins must be at most 255 characters" },
 		});
 	});
+
+	test("accepts a wildcard only as the whole first label of a domain with two or more parts", () => {
+		expect(plugins_validate_origin("https://*.example.com")).toEqual({ _yay: "https://*.example.com" });
+		expect(plugins_validate_origin("https://*.Example.com/")).toEqual({ _yay: "https://*.example.com" });
+		expect(plugins_validate_origin("https://*.example.com:8443")).toEqual({ _yay: "https://*.example.com:8443" });
+		expect(plugins_validate_origin("wss://*.example.com", true)).toEqual({ _yay: "wss://*.example.com" });
+
+		for (const [origin, message] of [
+			["https://*.com", "A wildcard origin needs a domain with at least two parts, like *.example.com"],
+			["https://a.*.com", "A wildcard origin must look like https://*.example.com"],
+			["https://*", "A wildcard origin must look like https://*.example.com"],
+			["https://*.*.a.com", "A wildcard origin must look like https://*.example.com"],
+			["https://a*.b.com", "A wildcard origin must look like https://*.example.com"],
+			["https://*.127.0.0.1", "A wildcard origin cannot use an IP address or localhost"],
+			["https://*.[::1]", "A wildcard origin cannot use an IP address or localhost"],
+			["https://*.app.localhost", "A wildcard origin cannot use an IP address or localhost"],
+			["https://*.com.", "A wildcard origin must look like https://*.example.com"],
+			["https://*.example.com/v1", "Origin must be a bare origin without path, query, or hash"],
+			["https://a;b.example.com", "Origin host can only use letters, digits, dots and hyphens"],
+			["wss://*.example.com", "Origin must use https"],
+		]) {
+			expect(plugins_validate_origin(origin!), origin).toEqual({ _nay: { message } });
+		}
+	});
 });
 
 describe("plugins_validate_manifest", () => {
@@ -1182,6 +1206,23 @@ describe("plugins_validate_manifest", () => {
 				}),
 			),
 		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 UI outbound origins" } });
+	});
+
+	test("bounds wildcard origins at 4 per list", () => {
+		const wildcards = Array.from({ length: 5 }, (_, index) => `https://*.zone-${index}.example.com`);
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ outboundOrigins: [...wildcards.slice(0, 4), "https://api.example.com"] }),
+			),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(plugins_validate_manifest(manifest_json({ outboundOrigins: wildcards }))).toEqual({
+			_nay: { message: "Plugin manifests can declare at most 4 wildcard origins per list" },
+		});
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ capabilities: ["plugin.secrets.read", "ui.outbound.fetch"], uiOutboundOrigins: wildcards }),
+			),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 4 wildcard origins per list" } });
 	});
 
 	test("bounds event and outbound-origin fan-out", () => {
@@ -2284,6 +2325,26 @@ describe("plugins_consent_diff", () => {
 			scheduleAdded: false,
 			serviceEventsOriginChanged: false,
 		});
+	});
+
+	test("a wildcard origin is new even when an accepted exact origin is under it", () => {
+		// A wildcard grants every subdomain, so the member must see it even though one of those
+		// subdomains was accepted before.
+		const current = {
+			capabilities: ["outbound.fetch" as const],
+			outboundOrigins: ["https://api.example.com"],
+			uiOutboundOrigins: [],
+			mcpServers: [],
+			skills: [],
+			mounts: [],
+			events: [],
+		};
+		expect(
+			plugins_consent_diff({
+				current,
+				target: { ...current, outboundOrigins: ["https://api.example.com", "https://*.example.com"] },
+			}).newOutboundOrigins,
+		).toEqual(["https://*.example.com"]);
 	});
 
 	test("returns new or changed MCP servers and new skills", () => {

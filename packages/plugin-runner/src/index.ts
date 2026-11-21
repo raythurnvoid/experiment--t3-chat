@@ -20,6 +20,7 @@ import { z } from "zod";
 import { Result } from "common/errors-as-values-utils.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import { type cloudflare_workers_RouteHandlerArgs } from "common/cloudflare-workers.ts";
+import { origin_patterns_allows, origin_patterns_base_origin } from "common/origin-patterns.ts";
 
 type DynamicWorkerLimits = {
 	cpuMs: number;
@@ -611,7 +612,10 @@ const RUN_REQUEST_SCHEMA = z
 			)
 			.max(32, "outboundOrigins contains too many entries")
 			.superRefine((entries, ctx) => {
-				for (const origin of entries) {
+				for (const entry of entries) {
+					// A wildcard entry like `https://*.example.com` is checked through its base origin
+					// `https://example.com`. The app checks the other pattern rules when it reads the manifest.
+					const origin = origin_patterns_base_origin(entry) ?? entry;
 					let url: URL;
 					try {
 						url = new URL(origin);
@@ -619,8 +623,9 @@ const RUN_REQUEST_SCHEMA = z
 						ctx.addIssue({ code: "custom", message: "outboundOrigins contains an invalid value" });
 						return;
 					}
-					// Each entry must be exactly an https origin: no path, userinfo, query, hash, or default port.
-					if (url.protocol !== "https:" || url.origin !== origin) {
+					// The base must be exactly an https origin: no path, userinfo, query, hash, or default port.
+					// The URL parser accepts `*` in a host, so refuse any `*` left after the wildcard prefix.
+					if (url.protocol !== "https:" || url.origin !== origin || origin.includes("*")) {
 						ctx.addIssue({ code: "custom", message: "outboundOrigins entries must be https origins" });
 						return;
 					}
@@ -799,7 +804,9 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 		if (url.protocol !== "https:") {
 			throw new Error("Plugin fetch must use HTTPS");
 		}
-		if (!this.ctx.props.outboundOrigins.includes(url.origin)) {
+		// A wildcard entry allows every subdomain of its base host, never the base host itself.
+		// Redirects stay manual below, so each next hop comes back here and is checked again.
+		if (!origin_patterns_allows(this.ctx.props.outboundOrigins, url)) {
 			throw new Error("Plugin fetch origin is not allowed");
 		}
 		if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
