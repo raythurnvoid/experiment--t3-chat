@@ -1773,3 +1773,22 @@ Activity popover removes it from the owner's feed while the member's still lists
 
 Uninstall the plugin afterwards — the installation is what mounts `/.plugins/image` and what makes
 every later image upload start another failing run.
+
+## Apartments page with real flats (0.2.0, verified 2026-11-21)
+
+Page: `/w/personal/home/plugins/apartments/pages/flats`. The flat radar writes the real flats to
+`/flats`. They are personal data: read counts and column shapes, and do not copy titles, addresses
+or messages into this repo.
+
+- **The folder field can start on `/qa-flats`.** All plugin frames share one origin, so the folder the
+  page saved during the old QA install comes back. That folder does not exist here, so the page shows
+  "Choose the flats folder in My file permissions." Type `/flats` and press Show.
+- **A flat with photos:** the first ideal flats have only `messages.md`. Find one with photos through
+  the API (list each flat folder) instead of clicking rows. Each photo also has a
+  `<photo>.description.md` from the image plugin; the page does not show those files.
+- **The chat panel** is on the right because the installation accepted `agent.view-context`. For the
+  check, start a new chat, pick Ask, and read `pluginContext` from the `/api/chat` request body (text
+  bytes and the first words only). The Gallery page is the control: it has no panel.
+- **Phone width:** other pages keep the desktop layout on a phone (`ui-design` skill), so 390 px of
+  viewport leaves the frame about 90 px. To check the plugin's own layout, make the frame 390 px wide
+  instead: a viewport of 815 px with the panel open.
