@@ -236,3 +236,6 @@
 [submodule "plugins/bonobo-plugin-apartments"]
 	path = plugins/bonobo-plugin-apartments
 	url = https://github.com/raythurnvoid/bonobo-plugin-apartments.git
+[submodule "plugins/bonobo-plugin-t3code"]
+	path = plugins/bonobo-plugin-t3code
+	url = https://github.com/raythurnvoid/bonobo-plugin-t3code.git
