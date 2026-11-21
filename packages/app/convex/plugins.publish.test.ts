@@ -1596,7 +1596,12 @@ describe("plugins publish_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const outboundOrigins = ["https://*.t3coderelay.com", "https://*.ray-thurne-void.workers.dev"];
+		// `constructor` is also a key on plain objects, so it checks that the rule walk reads own keys only.
+		const outboundOrigins = [
+			"https://*.t3coderelay.com",
+			"https://*.ray-thurne-void.workers.dev",
+			"https://*.constructor.io",
+		];
 		await mock_publish_github_fetch({ outboundOrigins });
 
 		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));

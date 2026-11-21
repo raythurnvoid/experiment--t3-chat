@@ -2471,9 +2471,11 @@ async function publish_version_from_github(
 		const parsed = parse(baseHost, { allowPrivateDomains: true });
 
 		// Walk the labels from the right, like tldts does. A label without its own node follows the `*` rule.
+		// Use own keys only: the child maps are plain objects, so `constructor` would find Object's function.
 		let node: typeof rules | undefined = rules;
 		for (const label of baseHost.split(".").reverse()) {
-			node = node[1][label] ?? node[1]["*"];
+			const children: (typeof rules)[1] = node[1];
+			node = Object.hasOwn(children, label) ? children[label] : Object.hasOwn(children, "*") ? children["*"] : undefined;
 			if (node === undefined) {
 				break;
 			}
