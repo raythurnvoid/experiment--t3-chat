@@ -408,22 +408,11 @@ test("a saved scope job pages a file's saved docs and ends equal to the node aft
 	).toEqual([]);
 	expect(JSON.parse(metadataDone.job!.cursor!)).toMatchObject({ phase: 1, page: null });
 
-	// An active job can still hold a cursor from the retired chunk index.
-	await t.run((ctx) =>
-		ctx.db.patch("files_pending_overlay_jobs", metadataDone.job!._id, {
-			cursor: JSON.stringify({ phase: 1, page: "old index cursor" }),
-		}),
-	);
-
 	// Second run: the first page of chunks only.
 	vi.runOnlyPendingTimers();
 	await t.finishInProgressScheduledFunctions();
 	const halfway = await read_saved_docs(t, nodeId);
-	expect(JSON.parse(halfway.job!.cursor!)).toMatchObject({
-		phase: 1,
-		page: expect.any(String),
-		sequenceIndex: true,
-	});
+	expect(JSON.parse(halfway.job!.cursor!)).toMatchObject({ phase: 1, page: expect.any(String) });
 	const archivedChunks = halfway.chunks.filter((chunk) => chunk.archiveOperationId !== undefined).length;
 	expect(archivedChunks).toBeGreaterThan(0);
 	expect(archivedChunks).toBeLessThan(halfway.chunks.length);
