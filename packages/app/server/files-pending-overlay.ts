@@ -3791,7 +3791,6 @@ async function read_list_page(
 					server_path_normalize(args.folderPath) !== "/"))
 				? [{ kind: "moved_in" as const, movedIn: null, numItems: pageSize, position: start, savedStream }]
 				: []),
-			// The frontmatter of the user's text drafts of saved files.
 		]);
 		if (args.mode === "children") for (const stream of cursorStreams) stream.seek = childSeek;
 		if (args.mode === "metadata") {
@@ -3807,6 +3806,8 @@ async function read_list_page(
 				})),
 			);
 		}
+		// Bash can read all of this user's saved-file drafts for a missing frontmatter value, even in one folder.
+		// TODO: Index draft frontmatter values in the Phase 5 draft metadata table.
 		if (overlay && args.mode === "metadata")
 			cursorStreams.push({
 				kind: "pending",
