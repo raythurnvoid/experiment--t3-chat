@@ -847,6 +847,7 @@ const files_metadata_index_fields = {
 	valueKind: v.optional(
 		v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
 	),
+	searchValue: v.optional(v.union(v.string(), v.number(), v.boolean())),
 	stringValue: v.optional(v.string()),
 	numberValue: v.optional(v.number()),
 	booleanValue: v.optional(v.boolean()),
@@ -5095,6 +5096,33 @@ const app_convex_schema = defineSchema({
 			"valueKind",
 			"restrictedScopeNodeId",
 			"booleanValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_value_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"searchValue",
+			"treePath",
+		])
+		.index("by_org_ws_source_archive_docKind_field_scope_value_tree", [
+			"organizationId",
+			"workspaceId",
+			"sourceKind",
+			"moveView.cohortId",
+			"moveView.view",
+			"archiveOperationId",
+			"docKind",
+			"fieldPath",
+			"valueKind",
+			"restrictedScopeNodeId",
+			"searchValue",
 			"treePath",
 		])
 		// The children of one folder that have one key, by value. Committed field docs only.
@@ -9574,6 +9602,8 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_source_id", ["source.id"])
+		// The metadata migration must wait for a Move even before its cohort exists.
+		.index("by_transferKind_status", ["source.transferKind", "status"])
 		.index("by_user_workspace_source_kind_status", ["userId", "workspaceId", "source.kind", "status"])
 		.index("by_user_workspace_source_kind_isRename_status", [
 			"userId",

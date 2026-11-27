@@ -1991,6 +1991,7 @@ export const internal_get_walk_start = internalQuery({
 		_yay: v.object({
 			root: v.union(files_pending_parent_validator, v.null()),
 			start: v.union(walk_start_validator, v.null()),
+			ownerTreePath: v.optional(v.string()),
 			/** Whether the start is the top of its area: the root, or a restricted folder's root. */
 			areaTop: v.boolean(),
 		}),
@@ -2003,10 +2004,11 @@ export const internal_get_walk_start = internalQuery({
 			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
 		const root = opened._yay.root.parent;
-		if (!subtree) return Result({ _yay: { root, start: null, areaTop: false } });
+		if (!subtree) return Result({ _yay: { root, start: null, areaTop: false, ownerTreePath: opened._yay.treePath } });
 		return Result({
 			_yay: {
 				root,
+				ownerTreePath: opened._yay.treePath,
 				start: { scopeNodeId: subtree.node?.restrictedScopeNodeId ?? null, treePath: subtree.savedTreePath },
 				areaTop: !subtree.node || subtree.node.restrictedScopeNodeId === subtree.node._id,
 			},
@@ -2741,7 +2743,7 @@ export type files_visible_search_name_Result =
 		: never;
 
 // `meta search` streams. `exists` and `eq` read the folder's range of a value index; `prefix` and
-// `range` read a value range of the whole workspace, and a row outside the folder is dropped.
+// `range` read a value range of the whole workspace. Pinned mounts keep only rows under their pin.
 
 function metadata_match(
 	doc: Pick<
@@ -3055,12 +3057,9 @@ export const internal_search_metadata_saved = internalQuery({
 		// caller who can open the root, every row of the open area is readable, so nothing is dropped.
 		// For any other caller the page size and the cursor could hint at files they cannot open. So
 		// check the root here, in the same transaction as the read.
-		//
-		// Check the workspace root, not the opened folder. Bash `meta search --path <folder>` runs
-		// `prefix` and `range` inside a folder, and that read still goes through the whole open area.
 		if (
 			args.requireRoot &&
-			(await db_stream_root_locked(ctx, args, { reader: opened._yay.reader, root: { parent: { kind: "root" } } }))
+			(opened._yay.root.parent.kind !== "root" || (await db_stream_root_locked(ctx, args, opened._yay)))
 		)
 			return Result({ _nay: { name: "permission_denied", message: "Permission denied" } });
 		const { reader, root } = opened._yay;
@@ -3092,10 +3091,7 @@ export const internal_search_metadata_saved = internalQuery({
 		const frameRange = args.frame ? files_tree_walk_phase(args.frame, ["_creationTime", "_id"]) : null;
 		if (frameRange && !frameRange.bounds) return stream_done(root.parent);
 		const everyArea = !args.frame && (await db_reads_every_area(ctx, args));
-		const range =
-			!args.frame && (args.seek || !everyArea)
-				? metadata_range({ ...args, seek }, "treePath", byTree ? (rangeFolder?.treePath ?? null) : null)
-				: null;
+		const range = !args.frame && (args.seek || !everyArea) ? metadata_range({ ...args, seek }, "treePath", null) : null;
 		if (!args.frame && (args.seek || !everyArea) && !range) return stream_done(root.parent);
 		const nativePage = await (
 			everyArea
@@ -3150,7 +3146,7 @@ export const internal_search_metadata_saved = internalQuery({
 				if (!node || node.archiveOperationId !== null) return null;
 				const match = metadata_match(doc, "committed");
 				if (!reader) {
-					if (!`${node.path}/`.startsWith(under)) return null;
+					if (byTree && !`${node.path}/`.startsWith(under)) return null;
 					const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
@@ -3172,7 +3168,7 @@ export const internal_search_metadata_saved = internalQuery({
 				const resolved = await reader.resolve({ kind: "saved", id: node._id });
 				if (reader.exhausted) return "stop";
 				// A draft can move a row out of the folder.
-				if (resolved?.entry.kind !== "saved" || !`${resolved.entry.path}/`.startsWith(under)) return null;
+				if (resolved?.entry.kind !== "saved" || (byTree && !`${resolved.entry.path}/`.startsWith(under))) return null;
 				if (movedFolder && `${resolved.entry.path}/` !== under + `${node.path}/`.slice(movedFolder.treePath.length))
 					return null;
 				// Only a row a scope job has not reached yet, or a draft move, fails here (see above).
@@ -3339,7 +3335,7 @@ export const internal_search_metadata_places = internalQuery({
 			indexKey,
 			mergeKey: indexKey,
 			decide: async (field) => {
-				if (!field.ownerTreePath.startsWith(treePath)) return null;
+				if (byTree && !field.ownerTreePath.startsWith(treePath)) return null;
 				const place = await ctx.db.get("files_pending_places", field.placeId);
 				if (
 					!place?.isVisible ||

@@ -3173,15 +3173,16 @@ describe("guests", () => {
 		]);
 		const denied = `meta search: Permission denied: prefix and range read the whole workspace, so they need access to ${mount}. Use eq or exists with --path <a folder shared with you>.\n`;
 
-		// These two read the open area by value, also with a folder. So the folder does not help.
 		for (const where of [`{"prefix":["frontmatter.topic","at"]}`, `{"range":["frontmatter.amount",{"gte":1}]}`]) {
-			for (const path of [mount, `${mount}/shared`]) {
-				const command = `meta search --path ${path} --where '${where}'`;
-				const result = await runner.run({ command });
-				expect(result.stdout, command).toBe("");
-				expect(result.stderr, command).toBe(denied);
-				expect(result.metadata.exitCode, command).toBe(1);
-			}
+			const root = await runner.run({ command: `meta search --path ${mount} --where '${where}'` });
+			expect(root.stdout).toBe("");
+			expect(root.stderr).toBe(denied);
+			expect(root.metadata.exitCode).toBe(1);
+
+			const shared = await runner.run({ command: `meta search --path ${mount}/shared --where '${where}'` });
+			expect(shared.stdout).toBe("");
+			expect(shared.stderr).toContain(`For ${mount}/shared, use eq or exists`);
+			expect(shared.metadata.exitCode).toBe(2);
 		}
 
 		// `eq` walks the folder, so the guest still searches inside the shared folder.

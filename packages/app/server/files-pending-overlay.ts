@@ -1,3 +1,4 @@
+import { files_metadata_folder_range_fits } from "./files-metadata-index.ts";
 // The pending overlay: derived docs that copy what each user's drafts change, so agent reads and
 // draft views can page them with indexes. Only the flush below, its jobs
 // (`convex/files_pending_overlay.ts`) and data deletion write them.
@@ -3571,6 +3572,7 @@ async function read_list_page(
 		 * Metadata only.
 		 */
 		plan?: Infer<typeof files_metadata_search_plan_validator>;
+		metadataScopeLabel?: string;
 		order: "asc" | "desc";
 		kind?: "file" | "folder";
 		lowercaseExtension?: string;
@@ -3651,6 +3653,7 @@ async function read_list_page(
 		: savedSources;
 	if (indexView?.migrationDirection === "to_normal") indexSources.reverse();
 	const scope = JSON.stringify([
+		...(args.mode === "metadata" ? ["metadata-typed-v2"] : []),
 		args.organizationId,
 		args.workspaceId,
 		args.visibilityUserId,
@@ -3690,14 +3693,44 @@ async function read_list_page(
 	const by_time = (areaTop: boolean) => timeWindow !== null && (timeWindow.from !== null || areaTop);
 	// The Move view's places name every node of the cohort, so the frames read in that view.
 	const viewStream = savedSources.find((source) => source.kind === "cohort") ?? savedSources[0]!;
-	const open_walk = (movedIn: ReturnType<typeof moved_in_args>) =>
-		ctx.runQuery(internal.files_visible.internal_get_walk_start, {
+	const checkFolder =
+		args.cursor === null &&
+		args.mode === "metadata" &&
+		(plan?.op === "eq" || plan?.op === "exists") &&
+		(args.folderPath !== "/" || args.metadataScopeLabel !== undefined);
+	const folder_refusal = (
+		start: { treePath: string; scopeNodeId: Id<"files_nodes"> | null } | null,
+		ownerTreePath?: string | null,
+	) => {
+		if (!checkFolder) return null;
+		const source = (stream: files_SavedStream | files_IndexStream) => (stream.kind === "cohort" ? stream : {});
+		const fits = files_metadata_folder_range_fits(
+			args,
+			plan,
+			start ? { start, sources: indexSources.map(source) } : null,
+			overlay && ownerTreePath
+				? { treePath: ownerTreePath, userId: args.visibilityUserId, sources: savedSources.map(source) }
+				: null,
+		);
+		if (!fits)
+			return Result({
+				_nay: {
+					name: "metadata_bound_too_long",
+					message: `The field, value and folder path are too long together to search only ${args.metadataScopeLabel ?? args.folderPath}. Use a shorter value, a higher folder, or the workspace root.`,
+				},
+			});
+		return null;
+	};
+	const open_walk = async (movedIn: ReturnType<typeof moved_in_args>) => {
+		const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_start, {
 			...streamArgs,
 			...movedIn,
 			savedStream: viewStream,
 		});
-	// With only `+N` the place streams follow the start frame's order, so read the start first.
-	const startOpened = timeWindow?.from === null ? await open_walk({}) : null;
+		if (opened._nay || !opened._yay.root) return opened;
+		return folder_refusal(opened._yay.start, movedIn.movedIn ? null : opened._yay.ownerTreePath) ?? opened;
+	};
+	const startOpened = timeWindow?.from === null || checkFolder ? await open_walk({}) : null;
 	if (startOpened?._nay) return startOpened;
 	const startByTime = by_time(startOpened?._yay.areaTop ?? false);
 
@@ -3868,6 +3901,15 @@ async function read_list_page(
 	// A walk stream: the saved rows under the folder, one restricted area at a time, over every saved
 	// source. Its position holds the walk cursor. Every walk stream of the page shares one budget of
 	// stream calls, since the merge below can run a walk once per round.
+	const walk_at_start = (
+		opened: NonNullable<Awaited<ReturnType<typeof open_walk>>["_yay"]>,
+	): NonNullable<Stream["walk"]> => ({
+		root: opened.root,
+		start: opened.start,
+		startByTime: by_time(opened.areaTop),
+		frames: null,
+	});
+	const firstPageMoves = new WeakMap<Row, NonNullable<Stream["walk"]>>();
 	let walkCalls = 0;
 	const run_walk = async (stream: Stream): Promise<StreamResult> => {
 		const movedIn = moved_in_args(stream.movedIn);
@@ -3883,12 +3925,7 @@ async function read_list_page(
 		if (!stream.walk) {
 			const opened = stream.movedIn === null && startOpened ? startOpened : await open_walk(movedIn);
 			if (opened._nay) return opened;
-			stream.walk = {
-				root: opened._yay.root,
-				start: opened._yay.start,
-				startByTime: by_time(opened._yay.areaTop),
-				frames: null,
-			};
+			stream.walk = walk_at_start(opened._yay);
 		}
 		const walk = stream.walk;
 		const { root: walkRoot, start: walkStart } = walk;
@@ -3969,6 +4006,19 @@ async function read_list_page(
 							withRows: args.mode === "subtree",
 						}),
 					);
+					// Check readable children when the walk finds them, even if another match fills page one.
+					if (checkFolder)
+						for (const boundary of yay.boundaries) {
+							if (boundary.status !== "readable" && boundary.status !== "former_readable") continue;
+							const refusal = folder_refusal({
+								treePath: boundary.node.treePath,
+								scopeNodeId: boundary.node._id,
+							});
+							if (refusal) {
+								failed = refusal;
+								throw stopped;
+							}
+						}
 					return {
 						...yay,
 						items: yay.boundaries.map(({ key, ...boundary }) => ({ key, value: boundary })),
@@ -4157,6 +4207,14 @@ async function read_list_page(
 				const { rows, decided } = result._yay;
 				stream.hasRead ||= rows.length > 0 || result._yay.frontier !== null || result._yay.done;
 				stream.buffer = [...rows];
+				// A buffered move is already known, even if an earlier match fills page one.
+				if (checkFolder)
+					for (const row of stream.buffer) {
+						if (!row.movedIn) continue;
+						const opened = await open_walk(moved_in_args(row.movedIn));
+						if (opened._nay) return opened;
+						firstPageMoves.set(row, walk_at_start(opened._yay));
+					}
 				stream.frontier = result._yay.frontier;
 				stream.after = { position: result._yay.position, done: result._yay.done };
 				if (rows.length === 0) {
@@ -4182,12 +4240,15 @@ async function read_list_page(
 			stream.position = stream.after.position;
 			stream.open = !stream.after.done;
 		}
+		// Late folder bounds can read other keys sharing their first 2,500 bytes.
+		// TODO: Index these bounds so page one can check them all.
 		if (row.movedIn && !streams.some((other) => other.movedIn?.savedNodeId === row.movedIn!.savedNodeId)) {
 			const sources = args.mode === "metadata" ? indexSources : savedSources;
 			for (const source of walk ? sources.slice(0, 1) : sources)
 				streams.push({
 					kind: "nested",
 					movedIn: row.movedIn,
+					walk: firstPageMoves.get(row),
 					numItems: pageSize,
 					position: start,
 					savedStream: args.mode === "metadata" ? viewStream : (source as files_SavedStream),

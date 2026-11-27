@@ -498,6 +498,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"meta: expected subcommand search or get\n" +
 					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
+					"Use prefix and range at the workspace root. Use eq or exists in folders and mounts. For a long value or folder path, search from a higher folder or the workspace root and filter paths with grep.\n" +
 					"Usage: meta get <path> [--format text|json] [--field <field>] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
@@ -579,7 +580,8 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stdout: "",
 				stderr:
 					`${parsed._nay.message}\n` +
-					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n",
+					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
+					"Use prefix and range at the workspace root. Use eq or exists in folders and mounts. For a long value or folder path, search from a higher folder or the workspace root and filter paths with grep.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -597,11 +599,19 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
 		let scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
-		// Outside an indexed tree, default to this agent's own root, including its stored prefix.
-		if (parsed._yay.pathShell == null && scope.kind === "outside_db_files") {
+		const readsByValue = parsed._yay.plan.op === "prefix" || parsed._yay.plan.op === "range";
+		if (!readsByValue && parsed._yay.pathShell == null && scope.kind === "outside_db_files") {
 			scope = bash_resolve_db_files_shell_path(currentWorkspacePath, dbFilesRoots);
 		}
 
+		// A mount shares its stored tree with other versions, including at its shell root.
+		if (readsByValue && (scope.dbFilesPath !== "/" || scope.fs.readOnlySource)) {
+			return {
+				stdout: "",
+				stderr: `meta search: prefix and range search the whole workspace. For ${bash_normalize_path(scopeShellPath)}, use eq or exists in a workspace folder or one mounted source. For workspace files, run from the workspace root without --path and filter the paths with grep.\n`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
 		if (scope.kind === "external_mounts_root" || scope.kind === "external_mount_group") {
 			return {
 				stdout: "",
@@ -620,16 +630,15 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
-		// An explicit --path outside any indexed tree (e.g. /tmp) has nothing to search.
-		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
+		if (scope.dbFilesPath == null) {
 			return {
 				stdout: "",
-				stderr: `meta search: --path must be a folder under ${currentWorkspacePath} or /.mounts/<name>: ${parsed._yay.pathShell}\n`,
+				stderr: `meta search: --path must be a folder under ${currentWorkspacePath} or /.mounts/<name>: ${scopeShellPath}\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
-		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
+		if (parsed._yay.pathShell != null && scope.dbFilesPath !== "/") {
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			let scopedFolder;
 			try {
@@ -658,12 +667,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 		}
 
-		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
-		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
-		// Saved rows show their committed metadata; the user's drafts come from their draft metadata.
-		// `prefix` and `range` read the whole workspace and drop rows outside the folder, so a page can
-		// be short.
-		const readsByValue = parsed._yay.plan.op === "prefix" || parsed._yay.plan.op === "range";
+		const path = scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 		const listed = await files_pending_overlay_list(ctx, {
 			agentSource: scope.ctxData.agentSource,
 			organizationId: scope.ctxData.organizationId,
@@ -672,12 +676,12 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			subject: { kind: "user", userId: scope.ctxData.userId, plugin: null },
 			overlayUserId: scope.fs.overlayUserId,
 			folderPath: path ?? "/",
+			metadataScopeLabel: path || scope.fs.readOnlySource ? bash_normalize_path(scopeShellPath) : undefined,
 			mode: "metadata",
 			plan: parsed._yay.plan,
 			order: "asc",
-			// Refuse `prefix` and `range` for a guest, also with `--path`. A guest cannot open the
-			// workspace root. These two read the whole open area by value, then drop the rows the caller
-			// cannot open. A guest's agent would get an empty page that still has a next page, and so
+			// A guest cannot open the workspace root. These two read the whole open area by value,
+			// then drop unreadable rows. A guest could see an empty page that still has a next page, and so
 			// learn that values of files the guest cannot see match. With ranges it could find a hidden
 			// number.
 			//
@@ -689,6 +693,12 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			cursor,
 		});
 		if (listed._nay) {
+			if (listed._nay.name === "metadata_bound_too_long")
+				return {
+					stdout: "",
+					stderr: `meta search: ${listed._nay.message} At the root, filter the paths with grep.\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
 			// The root checks give this name: `requireRoot` above for `prefix` and `range`, and the walk's
 			// own start for `eq` and `exists` at the root. Say how to fix each one.
 			//

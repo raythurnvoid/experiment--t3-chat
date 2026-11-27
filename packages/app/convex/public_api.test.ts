@@ -4431,6 +4431,54 @@ describe("public files API", () => {
 		}
 	});
 
+	test("files/query explains how to narrow a folder search with a long index key", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-query-long-bound" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
+			membershipId: db.membershipId,
+			name: "Query",
+			scopes: ["files:read", "files:list"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const folder = await test_run_with_flush(t, (ctx) =>
+			files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				parentId: "root",
+				path: "notes",
+				kind: "folder",
+				now: Date.now(),
+			}),
+		);
+		expect(folder._nay).toBeUndefined();
+		const response = await t.fetch("/api/v1/files/query", {
+			method: "POST",
+			headers: auth_headers(key._yay.credential),
+			body: JSON.stringify({
+				mode: "search",
+				field: "metadata.status",
+				match: { eq: "界".repeat(900) },
+				path: "/notes",
+			}),
+		});
+		const body = await response.json();
+		expect(response.status, JSON.stringify(body)).toBe(400);
+		expect(body).toMatchObject({ errorCode: "invalid_input", message: expect.stringContaining("/notes") });
+		expect(body.message).toContain("shorter value");
+		const searchBox = await asUser.action(api.files_nodes.search_saved_metadata, {
+			membershipId: db.membershipId,
+			plan: { op: "eq", fieldPath: "metadata.status", value: "界".repeat(900) },
+			folderPath: "/notes",
+			numItems: 1,
+			cursor: null,
+		});
+		expect(searchBox._nay?.message).toBe(body.message);
+		expect(body.message).not.toContain("grep");
+	});
+
 	test("files/query search pages use the person's own search bucket, and folder pages do not", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-query-search-bucket" });

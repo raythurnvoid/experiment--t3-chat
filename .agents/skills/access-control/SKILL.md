@@ -1081,11 +1081,10 @@ A guest still searches names and `eq` / `exists` custom fields inside a folder s
 (`file.path:/folder/**`, or the open folder of a picker). `prefix` and `range` take no folder, so a
 guest cannot run them. A path, a node id, contents and public links are unchanged.
 
-The agent's Bash `meta search` follows the same limit. It passes `requireRoot` for `prefix` and
-`range`, so a guest's agent gets "Permission denied" for them, also with `--path` on a folder
-shared with the guest. The folder does not help: with a folder these two still read the whole open
-area by value and drop the rows outside it, and they do not read a restricted folder's own area at
-all. The message says to use `eq` or `exists` with `--path <a folder shared with you>`. `eq` and
+The agent's Bash `meta search` allows `prefix` and `range` only at a workspace root.
+Folders and mounted sources, including their roots, support `eq` and `exists`.
+It passes `requireRoot` there, so a guest gets "Permission denied" and a hint to use
+`eq` or `exists` with `--path <a folder shared with you>`. `eq` and
 `exists` walk the folder, so they work inside a shared folder and answer "Permission denied" at
 the root, with a hint to pass `--path`. Test: "a guest's meta search with prefix or range is
 refused" in `server/bash.files.test.ts`.

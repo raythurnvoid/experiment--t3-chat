@@ -1904,6 +1904,7 @@ async function db_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 					await ctx.db.patch("files_metadata_docs", _id, { moveView: beforeTag });
 					await ctx.db.insert("files_metadata_docs", {
 						...fields,
+						searchValue: fields.stringValue ?? fields.numberValue ?? fields.booleanValue,
 						moveView: afterTag,
 						path: after.path,
 						treePath: after.treePath,

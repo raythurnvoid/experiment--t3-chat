@@ -1277,16 +1277,110 @@ describe("bash_run_command", () => {
 			`${test_db_files_mount}/docs/inner/meta-moved.md`,
 			`${test_db_files_mount}/docs/meta-in.md`,
 		]);
+	});
 
-		// `prefix` reads the whole workspace and drops the rows outside the folder.
-		const prefix = await runner.run({
-			command: `meta search --path ${test_db_files_mount}/docs --where '{"prefix":["frontmatter.topic","at"]}'`,
+	async function search_with_private_folder_move(earlier: string[]) {
+		const ancestor = "/" + Array<string>(6).fill("界".repeat(145)).join("/");
+		const content = "---\ntopic: atlas\n---\n# Topic";
+		const runner = await create_bash_runner({
+			extraFiles: [
+				...earlier.map((name) => ({ path: "/docs/" + name, content })),
+				{ path: "/side/spacer/keep.txt", content: "no frontmatter" },
+				{ path: ancestor + "/a/hit.md", content },
+				{ path: ancestor + "/b/outside.md", content },
+			],
 		});
-		expect(prefix.stderr).toBe("");
-		expect(prefix.stdout.split("\n").filter(Boolean).sort()).toEqual([
-			`${test_db_files_mount}/docs/inner/meta-moved.md`,
-			`${test_db_files_mount}/docs/meta-in.md`,
-		]);
+		const folder = test_db_files_mount + "/docs";
+		const move = await runner.run({ command: `mv ${test_db_files_mount}${ancestor}/a ${folder}/z` });
+		expect(move.metadata.exitCode, move.stderr).toBe(0);
+		const search = (path: string) => `meta search --path ${path} --where '{"exists":"frontmatter.topic"}' --limit 1`;
+		return { runner, folder, search };
+	}
+
+	test.each([
+		{ place: "first", earlier: [] },
+		{ place: "buffered behind a match", earlier: ["ahead.md"] },
+	])(
+		"meta search refuses a moved-in saved bound discovered before returning page one ($place)",
+		async ({ earlier }) => {
+			const { runner, folder, search } = await search_with_private_folder_move(earlier);
+			runner.runQuery.mockClear();
+			const result = await runner.run({ command: search(folder) });
+			expect(result.metadata.exitCode, result.stderr).toBe(2);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain(folder);
+			expect(result.stderr).toContain("workspace root");
+			expect(result.stderr).toContain("grep");
+			expect(
+				runner.runQuery.mock.calls.some(
+					([ref, args]) => function_name_of(ref) === "files_visible:internal_search_metadata_saved" && args.movedIn,
+				),
+				"the unsafe nested metadata range stays unopened",
+			).toBe(false);
+		},
+	);
+
+	test("meta search returns the complete private set when a moved-in folder first appears on page 13", async () => {
+		const earlier = Array.from({ length: 12 }, (_, i) => `a${i}.md`).sort();
+		const { runner, folder, search } = await search_with_private_folder_move(earlier);
+		// This move stays ahead of /z in the place stream until all twelve saved matches have been returned.
+		const spacer = await runner.run({ command: `mv ${test_db_files_mount}/side/spacer ${folder}/y` });
+		expect(spacer.metadata.exitCode, spacer.stderr).toBe(0);
+		const direct = await runner.run({ command: search(folder + "/z") });
+		expect(direct.metadata.exitCode, direct.stderr).toBe(2);
+		expect(direct.stderr).toContain(folder + "/z");
+
+		let command: string | undefined = search(folder);
+		const pages: string[][] = [];
+		while (command) {
+			const page = await runner.run({ command });
+			expect(page.metadata.exitCode, page.stderr).toBe(0);
+			pages.push(page.stdout.trim().split("\n").filter(Boolean));
+			command = page.stderr.match(/Next page: (meta search .+)/u)?.[1];
+		}
+		expect(pages).toEqual([...earlier.map((name) => [folder + "/" + name]), [folder + "/z/hit.md"]]);
+	});
+
+	test("meta search refuses a long bound before listing a workspace folder", async () => {
+		const names = Array<string>(6).fill("界".repeat(145));
+		const deep = "/docs/" + names.join("/");
+		const runner = await create_bash_runner({ extraFiles: [{ path: deep + "/note.md", content: "# Note" }] });
+		const folder = test_db_files_mount + "/docs";
+		const eq = (value: string) => JSON.stringify({ eq: ["metadata.title", value] });
+		const short = await runner.run({ command: `meta search --path ${folder} --where '${eq("short")}'` });
+		expect(short.metadata.exitCode, short.stderr).toBe(0);
+		for (const [path, where] of [
+			[folder, eq("界".repeat(900))],
+			[test_db_files_mount + deep, JSON.stringify({ exists: "metadata.title" })],
+		]) {
+			const result = await runner.run({ command: `meta search --path ${path} --where '${where}' --limit 1` });
+			expect(result.metadata.exitCode, result.stderr).toBe(2);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain(path);
+			expect(result.stderr).toContain("workspace root");
+			expect(result.stderr).toContain("grep");
+		}
+	});
+
+	test("meta search refuses prefix and range inside the explicit or current folder", async () => {
+		const runner = await create_bash_runner();
+		const folder = `${test_db_files_mount}/docs`;
+		for (const command of [
+			`meta search --path ${folder} --where '{"prefix":["frontmatter.topic","at"]}'`,
+			`cd ${folder} && meta search --where '{"range":["frontmatter.amount",{"gte":1}]}'`,
+		]) {
+			const result = await runner.run({ command });
+			expect(result.metadata.exitCode, command).toBe(2);
+			expect(result.stdout, command).toBe("");
+			expect(result.stderr, command).toBe(
+				`meta search: prefix and range search the whole workspace. For ${folder}, use eq or exists in a workspace folder or one mounted source. For workspace files, run from the workspace root without --path and filter the paths with grep.\n`,
+			);
+		}
+		const outside = await runner.run({
+			command: `cd /tmp && meta search --where '{"prefix":["frontmatter.topic","at"]}'`,
+		});
+		expect(outside.metadata.exitCode).toBe(2);
+		expect(outside.stderr).toContain("/tmp");
 	});
 
 	test("meta search shows a row once when a folder inside a moved-in folder is renamed", async () => {
@@ -2128,6 +2222,45 @@ describe("recursive reads stop at a locked folder", () => {
 			`${mount}/docs/b.md`,
 			`${mount}/docs/nested/c.md`,
 		]);
+	});
+
+	test("meta search checks restricted children found on page one and keeps later pages readable", async () => {
+		const value = "語".repeat(700);
+		const child = "/zone/room/" + "界".repeat(145);
+		const { owner, runner, asOwner, seeded } = await seed_locked_docs([
+			{ path: "/zone/a.md", content: topic(value) },
+			{ path: child + "/last.md", content: topic(value) },
+		]);
+		for (const path of ["/zone/room", child]) {
+			const nodeId = await get_seeded_node_id(owner, path);
+			const result = await asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: seeded.membershipId,
+				nodeId,
+			});
+			expect(result._nay).toBeUndefined();
+			await drain_scheduled_continuations(owner);
+		}
+		const search = (folder: string) =>
+			`meta search --path ${mount}${folder} --limit 1 --format json --where '{"eq":["frontmatter.topic","${value}"]}'`;
+		const early = await owner.run({ command: search("/zone/room") });
+		expect(early.metadata.exitCode, "a long readable child found on page one is refused").toBe(2);
+		expect(early.stderr).toContain(mount + "/zone/room");
+		expect(early.stdout).toBe("");
+
+		const paths = async (who: typeof owner) => {
+			const found: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const result = await who.run({ command: search("/zone") + (cursor ? ` --cursor '${cursor}'` : "") });
+				expect(result.metadata.exitCode, result.stderr).toBe(0);
+				const page = JSON.parse(result.stdout) as { results: Array<{ path: string }>; nextCursor: string | null };
+				found.push(...page.results.map((item) => item.path));
+				cursor = page.nextCursor;
+			} while (cursor);
+			return found;
+		};
+		expect(await paths(owner)).toEqual([mount + "/zone/a.md", mount + child + "/last.md"]);
+		expect(await paths(runner)).toEqual([mount + "/zone/a.md"]);
 	});
 
 	const MINUTE = 60_000;

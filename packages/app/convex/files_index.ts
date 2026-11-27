@@ -257,7 +257,8 @@ export const stage_metadata = internalMutation({
 				runId: run._id,
 				kind: "metadata",
 				position: args.position + index,
-				value,
+				// An action started before the bridge can still send the typed fields.
+				value: { ...value, searchValue: value.stringValue ?? value.numberValue ?? value.booleanValue },
 			});
 		if (args.done)
 			await files_index_db_ticket(ctx, {
@@ -505,6 +506,7 @@ async function install(ctx: MutationCtx, run: Run) {
 			await db.insert("files_metadata_docs", {
 				...scope,
 				...item.value,
+				searchValue: item.value.stringValue ?? item.value.numberValue ?? item.value.booleanValue,
 				restrictedScopeNodeId: run.placement.restrictedScopeNodeId,
 			});
 	}

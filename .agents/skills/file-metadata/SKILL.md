@@ -654,9 +654,17 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
   with `files_search_query_GUEST_FIELD_PROBLEM`. Inside a shared folder a guest searches names, and
   `eq` and `exists` custom fields. `prefix` and `range` take no folder, so a guest cannot run them.
   The search box also passes `requireRoot` for `prefix` and `range`, like the public route, so the
-  read itself refuses a caller who cannot open the root. Bash `meta search` passes it too: a
-  guest's agent gets "Permission denied" for `prefix` and `range`, also with `--path` on a shared
-  folder, and the message says to use `eq` or `exists` with `--path`.
+  read itself refuses a caller who cannot open the root. Bash `meta search` allows `prefix` and
+  `range` only at a workspace root. Mounts share a stored tree across versions. Use `eq` or
+  `exists` there, including at the mount root. Before the first page, Bash checks the encoded
+  index bound for the requested folder or mount. At 2,500 bytes or more, it names the folder and
+  refuses the search. Use a shorter value or search higher in the tree. For workspace files,
+  search from the workspace root and filter paths with `grep`.
+  The search box and public search also check folders found while building page one. The public
+  route returns HTTP 400 with the folder name and ways to narrow the search. Later pages keep
+  their access checks. See the folder-bound limit in the pending-updates skill.
+  Without `--path` Bash uses the current folder.
+  A guest gets "Permission denied" at the root. Use `eq` or `exists` inside a shared folder.
 
   Reason: a search from a root the caller cannot open reads rows they cannot see and drops them, so
   the page size and the cursor leak hidden names and values. Decided 2026-11-20: limit the guest

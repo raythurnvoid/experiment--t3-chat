@@ -469,6 +469,8 @@ The index searches words in saved editable text. A file can have several matchin
 
 `POST /api/v1/files/query` reads saved files by one custom field. The route is registered in `convex/public_api_files_query_http_routes.ts` and loads `convex/public_api_files_query.ts` when it runs.
 
+In search mode, a folder equality or existence query can return HTTP 400 `invalid_input` on its first page if a folder key reaches 2,500 bytes. The message names the folder. Shorten the value or search from a higher folder. A long key first found on a later page keeps the usual access checks and the search continues.
+
 Callers: personal keys, keys bound to a service account, plugin pages and plugin runs (scheduled runs too). The caller needs `files:read` and `files:list` together: the route's auth check (`requiredScope`) covers `files:read`, and the route refuses a caller without `files:list` with 403 `Permission denied: this caller needs the files:list scope.` Code grants and service grants are refused, like `files/search`. Access is checked for one subject per request (`principal.subject`): the person for a personal key, the account for a bound key, the personal pair's applied consent for a plugin. Reading a file includes reading its custom fields, so plugins need only `workspace.files.read` (see "Public Field Query" in the file-metadata skill).
 
 Body: `{ mode, path?, field, match?, order?, kind?, fields?, limit?, cursor? }`.

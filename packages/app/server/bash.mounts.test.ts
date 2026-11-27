@@ -713,6 +713,28 @@ describe("bash_run_command", () => {
 			expect(
 				(await f.runner.run({ command: "meta search --path /.mounts/research name=Mountneedle" })).metadata.exitCode,
 			).not.toBe(0);
+			for (const [path, command] of [
+				["/.mounts", `meta search --path /.mounts --where '{"prefix":["metadata.topic","a"]}'`],
+				["/.mounts/research", `cd /.mounts/research && meta search --where '{"range":["metadata.score",{"gt":1}]}'`],
+				[
+					"/.mounts/research/repo",
+					`meta search --path /.mounts/research/repo --where '{"prefix":["metadata.topic","a"]}'`,
+				],
+				[
+					"/.mounts/research/repo",
+					`cd /.mounts/research/repo && meta search --where '{"range":["metadata.score",{"gt":1}]}'`,
+				],
+				[
+					"/.mounts/research/repo/records",
+					`cd /.mounts/research/repo/records && meta search --where '{"prefix":["metadata.topic","a"]}'`,
+				],
+			] as const) {
+				const result = await f.runner.run({ command });
+				expect(result.metadata.exitCode, command).toBe(2);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain(`For ${path}, use eq or exists`);
+				expect(result.stderr).toContain("run from the workspace root without --path");
+			}
 			expect((await f.runner.run({ command: "grep -R Mountneedle /.mounts/research" })).stdout).toContain(
 				"search --path /.mounts/research",
 			);
@@ -1426,6 +1448,7 @@ describe("bash_run_command", () => {
 				"search --path /.plugins Reviewneedle",
 				"cd /tmp && search Reviewneedle",
 				`meta search --where '{"eq":["metadata.source","plugin-source"]}'`,
+				`meta search --path /.plugins/review --where '{"exists":"metadata.source"}'`,
 				"cd / && search Reviewneedle",
 			]) {
 				const result = await run(command);
@@ -1434,6 +1457,46 @@ describe("bash_run_command", () => {
 				expect(result.output).not.toContain("Otherreviewprivate");
 				expect(result.output).not.toContain("other.js");
 			}
+			for (const command of [
+				`meta search --path /.plugins/review --where '{"prefix":["metadata.source","plugin"]}'`,
+				`cd /.plugins/review && meta search --where '{"range":["metadata.score",{"gt":1}]}'`,
+			]) {
+				const result = await run(command);
+				expect(result.exitCode, command).toBe(2);
+				expect(result.output).toContain("For /.plugins/review, use eq or exists");
+			}
+		});
+
+		test("mount metadata reads require physical bounds that isolate the requested folder", async () => {
+			const { runner, run } = await create_review_runner();
+			const base = "/.plugins/review";
+			const where = (value: string | number | boolean) => JSON.stringify({ eq: ["metadata.source", value] });
+			// This pinned review has 109 bytes of key fields around the equality value.
+			const text = "界".repeat(796);
+			for (const value of [text + "aa", 12, true]) {
+				const result = await run(`meta search --path ${base} --where '${where(value)}'`);
+				expect(result.exitCode, result.output).toBe(0);
+			}
+			for (const value of [text + "aaa", text + "a\0"]) {
+				const result = await run(`meta search --where '${where(value)}'`);
+				expect(result.exitCode, result.output).toBe(2);
+				expect(result.output).toContain(`too long together to search only ${base}.`);
+			}
+			const names = Array<string>(6).fill("界".repeat(150));
+			const path = names.join("/");
+			const created = await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+				path: `${reviewRoot}/${path}/note.md`,
+				rawText: "deep note",
+			});
+			expect(created._nay).toBeUndefined();
+			const exists = `'{"exists":"metadata.source"}'`;
+			const deep = await run(`meta search --path ${base}/${path} --where ${exists}`);
+			expect(deep.exitCode, deep.output).toBe(2);
+			expect(deep.output).toContain(`too long together to search only ${base}/${path}.`);
+			const higher = await run(`meta search --path ${base}/${names.slice(0, 4).join("/")} --where ${exists}`);
+			expect(higher.exitCode, higher.output).toBe(0);
+			expect(higher.output).toContain(`${base}/${path}/note.md`);
 		});
 
 		test("pages MIME matches inside one review and refuses its cursor in another source", async () => {
@@ -2077,6 +2140,11 @@ describe("bash_run_command", () => {
 			});
 			expect(metaSearched.metadata.exitCode).not.toBe(0);
 			expect(metaSearched.stderr).toContain("choose a single plugin to search");
+			const range = await runner.run({
+				command: `meta search --path /.plugins --where '{"range":["metadata.score",{"gt":1}]}'`,
+			});
+			expect(range.metadata.exitCode).toBe(2);
+			expect(range.stderr).toContain("For /.plugins, use eq or exists");
 		});
 
 		test("scoped tree and find work inside one plugin", async () => {

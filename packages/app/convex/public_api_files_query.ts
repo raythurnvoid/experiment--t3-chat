@@ -477,6 +477,8 @@ async function read_search_page(ctx: ActionCtx, args: PageArgs & { plan: files_m
 		if (result._nay.name === "permission_denied") {
 			return Result({ _nay: { name: "folder_locked", message: `Permission denied: ${path}. ${ROOT_NEEDED_HINT}` } });
 		}
+		if (result._nay.name === "metadata_bound_too_long")
+			return Result({ _nay: { name: "invalid_input", message: result._nay.message } });
 		// The other refusals have no name. With a cursor they mean the listing changed under it.
 		if (args.cursor !== null) throw convex_invalid_cursor_error("The query listing changed.");
 		return Result({ _nay: { name: "listing_busy", message: "Files changed during this page. Retry it." } });
