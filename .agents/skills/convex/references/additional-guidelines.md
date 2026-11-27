@@ -409,6 +409,12 @@ Client side:
 
 # Query and document patterns
 
+Convex counts each regular, search, or vector index as another full copy of each doc for storage
+billing. Include that cost when adding an index. When readers already have an ID, keep large text
+in a separate table with no app indexes. Keep draft-only and rare-state indexes off tables that hold
+all saved docs. The [Markdown storage budget test](../../../../packages/app/convex/files_storage_budget.test.ts)
+measures the cost of the schema against a fixed set of files.
+
 ## TypeScript circular inference around generated function refs
 
 When a Convex module reports TS7023/TS7024/TS7022 after adding or changing `ctx.runQuery`,

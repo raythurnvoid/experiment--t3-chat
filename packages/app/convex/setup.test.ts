@@ -83,7 +83,11 @@ export async function test_compact_metadata_catalog(t: TestConvexRoot<DataModel>
 }
 
 /** Run only this file's index steps, without firing unrelated timers. */
-export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeId: Id<"files_nodes">) {
+export async function test_finish_file_index(
+	t: TestConvexRoot<DataModel>,
+	nodeId: Id<"files_nodes">,
+	beforeStep?: (phase: Doc<"files_index_runs">["phase"]) => Promise<void>,
+) {
 	for (let pass = 0; pass < 10_000; pass++) {
 		const state = await t.run((ctx) =>
 			ctx.db
@@ -112,6 +116,7 @@ export async function test_finish_file_index(t: TestConvexRoot<DataModel>, nodeI
 		const run = await t.run((ctx) => ctx.db.get("files_index_runs", state.activeRunId!));
 		if (!run) throw new Error("The active file index run is missing");
 		const args = { runId: run._id, step: run.step, generation: run.generation };
+		await beforeStep?.(run.phase);
 		if (run.phase === "build_metadata") await t.action(internal.files_index.prepare_metadata, args);
 		else await t.mutation(internal.files_index.advance, args);
 	}
