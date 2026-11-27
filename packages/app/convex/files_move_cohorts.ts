@@ -1953,7 +1953,7 @@ async function db_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 				let sourceHeadId: Id<"files_saved_content_heads"> | undefined;
 				let sourceDb = ctx.db;
 				for (const row of page.page) {
-					const { _id, _creationTime: _time, path: _path, ...fields } = row;
+					const { _id, _creationTime: _time, ...fields } = row;
 					// Search can still serve the previous Save while the next index waits.
 					if (row.sourceKind !== "committed" || !row.contentHeadId)
 						throw should_never_happen("Saved search chunk has no source head", { chunkId: _id });

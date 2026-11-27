@@ -39,7 +39,6 @@ export async function db_insert_file_text_content(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
-		path: string;
 		archiveOperationId?: string;
 		yjsSequence?: number;
 		/**
@@ -109,7 +108,6 @@ export async function files_nodes_db_insert_file_content_docs(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
-		path: string;
 		/**
 		 * Only used for error logging when the editable content docs fail to insert.
 		 */
@@ -141,7 +139,6 @@ export async function files_nodes_db_insert_file_content_docs(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			path: args.path,
 			archiveOperationId: args.archiveOperationId ?? undefined,
 			// Read-only mounts chunk as plain text, to the same boundaries as before the chunker
 			// dispatched on this argument. `args.rootKind` is ignored here: a mount has no Yjs
@@ -193,7 +190,6 @@ export async function files_nodes_db_insert_file_content_docs(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			path: args.path,
 			archiveOperationId: args.archiveOperationId ?? undefined,
 			rootKind: args.rootKind,
 			textContent: args.textContent,
@@ -252,7 +248,6 @@ export async function files_nodes_db_insert_file_content_docs(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			path: args.path,
 			archiveOperationId: args.archiveOperationId ?? undefined,
 			yjsSequence: initialYjsSequence,
 			rootKind: args.rootKind,
@@ -481,22 +476,13 @@ export const create_file_node = internalMutation({
 			return await refuse(nodeIdResult._nay);
 		}
 
-		// The leaf's stored path can differ from `args.path` (segments resolved under `parentId`),
-		// so read it back from the created node before inserting the content docs.
-		const insertedNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
-		if (!insertedNode) {
-			const errorMessage = "created file node is missing right after insert";
-			const errorData = { nodeId: nodeIdResult._yay };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
+		const nodeId = nodeIdResult._yay;
 
 		// Same mutation as the node insert: a content-docs failure throws and rolls back the node.
 		await files_nodes_db_insert_file_content_docs(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			nodeId: insertedNode._id,
-			path: insertedNode.path,
+			nodeId,
 			parentId: args.parentId,
 			contentType: args.contentType,
 			rootKind: args.rootKind,
@@ -512,7 +498,7 @@ export const create_file_node = internalMutation({
 		if (!args.readOnly) {
 			if (!args.yjsSnapshotAssetId || !authorOrganizationId || !authorWorkspaceId || !authorUserId) {
 				const errorMessage = "Editable file creation requires tenant asset ids and author";
-				const errorData = { nodeId: insertedNode._id, yjsSnapshotAssetId: args.yjsSnapshotAssetId };
+				const errorData = { nodeId, yjsSnapshotAssetId: args.yjsSnapshotAssetId };
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
@@ -523,7 +509,7 @@ export const create_file_node = internalMutation({
 			if (!yjsSnapshotAsset || !versionSnapshotAsset) {
 				const errorMessage = "Editable file creation asset id points to a missing files_r2_assets doc";
 				const errorData = {
-					nodeId: insertedNode._id,
+					nodeId,
 					yjsSnapshotAssetId: args.yjsSnapshotAssetId,
 					versionSnapshotAssetId: args.assetId,
 				};
@@ -533,7 +519,7 @@ export const create_file_node = internalMutation({
 			await files_nodes_db_finalize_editable_text_node_creation(ctx, {
 				organizationId: authorOrganizationId,
 				workspaceId: authorWorkspaceId,
-				nodeId: insertedNode._id,
+				nodeId,
 				userId: authorUserId,
 				yjsSnapshot: { assetId: args.yjsSnapshotAssetId, size: yjsSnapshotAsset.size },
 				versionSnapshotAssetId: args.assetId,
@@ -543,7 +529,7 @@ export const create_file_node = internalMutation({
 
 		return Result({
 			_yay: {
-				nodeId: nodeIdResult._yay,
+				nodeId,
 			},
 		});
 	},

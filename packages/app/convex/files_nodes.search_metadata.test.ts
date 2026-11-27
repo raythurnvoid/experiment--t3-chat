@@ -173,7 +173,6 @@ async function test_insert_searchable_markdown_file(args: {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			nodeId,
-			path,
 			yjsSequence: 0,
 			rootKind: "rich_text",
 			textContent: markdown,
@@ -380,16 +379,6 @@ test("saved search skips a snippet linked to another content head", async () => 
 		});
 	});
 	expect((await search()).items).toEqual([]);
-	await t.run(async (ctx) => {
-		const hit = (await ctx.db.query("files_plain_text_chunks").first())!;
-		await ctx.db.patch("files_plain_text_chunks", hit._id, { textChunk: "# marker" });
-	});
-	const visible = await asUser.query(api.files_nodes.search_saved, {
-		membershipId: db.membershipId,
-		clause: { kind: "content", text: "marker" },
-		paginationOpts: { numItems: 10, cursor: null },
-	});
-	expect(visible.page).toMatchObject([{ textChunk: "# marker" }]);
 	const key = await asUser.mutation(api.public_api.api_credential_create, {
 		membershipId: db.membershipId,
 		serviceAccountId: null,
@@ -403,7 +392,7 @@ test("saved search skips a snippet linked to another content head", async () => 
 		body: JSON.stringify({ query: "marker" }),
 	});
 	expect(response.status).toBe(200);
-	expect((await response.json()).items, "public search skips a Move copy from an older version").toEqual([]);
+	expect((await response.json()).items, "public search skips a snippet from a different saved version").toEqual([]);
 });
 
 test("text_search_files searches pending unstaged content instead of stale committed chunks", async () => {

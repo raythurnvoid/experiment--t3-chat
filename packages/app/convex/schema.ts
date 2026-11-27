@@ -928,9 +928,8 @@ const files_metadata_catalog_row_fields = {
 	),
 };
 
-const files_text_chunk_fields = {
+const files_chunk_position_fields = {
 	chunkIndex: v.number(),
-	textChunk: v.string(),
 	/** Character offsets in the full text content. */
 	startIndex: v.number(),
 	endIndex: v.number(),
@@ -940,12 +939,15 @@ const files_text_chunk_fields = {
 	chunkFlags: v.number(),
 };
 
+const files_text_chunk_fields = {
+	...files_chunk_position_fields,
+	textChunk: v.string(),
+};
+
 const files_plain_text_chunk_fields = {
-	...files_text_chunk_fields,
-	textChunk: v.optional(v.string()),
+	...files_chunk_position_fields,
 	/** Linked exact text chunk for exact reads and integrity checks. */
 	textChunkId: v.id("files_text_chunks"),
-	path: v.optional(v.string()),
 	archiveOperationId: v.optional(v.string()),
 	plainTextChunk: v.string(),
 	hasChunkAbove: v.boolean(),

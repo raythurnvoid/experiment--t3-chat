@@ -834,7 +834,6 @@ describe("volume content storage", () => {
 			await files_nodes_db_insert_file_content_docs(ctx, {
 				...f.scope,
 				nodeId: created._yay,
-				path,
 				parentId: f.rootId,
 				contentType: "text/plain;charset=utf-8",
 				rootKind: "plain_text",
@@ -875,7 +874,6 @@ describe("volume content storage", () => {
 			await files_nodes_db_insert_file_content_docs(ctx, {
 				...f.scope,
 				nodeId: result._yay,
-				path: `${f.rootPath}/created.md`,
 				parentId: f.rootId,
 				contentType: "text/markdown;charset=utf-8",
 				rootKind: "plain_text",
@@ -915,7 +913,6 @@ describe("volume content storage", () => {
 				files_nodes_db_insert_file_content_docs(ctx, {
 					...f.scope,
 					nodeId: f.nodeId,
-					path: f.path,
 					contentType: "text/markdown;charset=utf-8",
 					rootKind: "plain_text",
 					textContent: volume_text,

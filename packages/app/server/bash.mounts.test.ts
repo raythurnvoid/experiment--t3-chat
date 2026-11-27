@@ -340,7 +340,6 @@ describe("bash_run_command", () => {
 						await files_nodes_db_insert_file_content_docs(ctx, {
 							...scope,
 							nodeId,
-							path,
 							contentType,
 							rootKind: "plain_text",
 							textContent: file.text,

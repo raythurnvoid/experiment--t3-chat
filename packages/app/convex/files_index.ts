@@ -500,10 +500,8 @@ async function install(ctx: MutationCtx, run: Run) {
 		moveView: { cohortId: run._id, view: "after" as const },
 	};
 	for (const item of page.page) {
-		if (item.kind === "text") {
-			const { path: _path, ...value } = item.value;
-			await db.insert("files_plain_text_chunks", { ...scope, ...value });
-		} else
+		if (item.kind === "text") await db.insert("files_plain_text_chunks", { ...scope, ...item.value });
+		else
 			await db.insert("files_metadata_docs", {
 				...scope,
 				...item.value,

@@ -953,7 +953,6 @@ export const finalize_write = internalMutation({
 				organizationId: volume.organizationId,
 				workspaceId: volume._id,
 				nodeId: created._yay,
-				path,
 				contentType: "text/plain",
 				rootKind: "plain_text",
 				textContent: file.content,

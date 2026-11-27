@@ -876,7 +876,7 @@ async function db_stage_pending_scope(
 					archiveOperationId,
 				});
 		} else {
-			const { _id: _id, _creationTime: _time, path: _path, ...fields } = row;
+			const { _id: _id, _creationTime: _time, ...fields } = row;
 			await ctx.db.patch("files_plain_text_chunks", row._id, { moveView: before });
 			if (current && (!item || item.afterProposal))
 				await ctx.db.insert("files_plain_text_chunks", {

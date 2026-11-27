@@ -308,7 +308,6 @@ describe("saved search during an archive", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
-				path: "/docs/inner.md",
 				rootKind: "rich_text",
 				textContent: "catchup here\n",
 			});
@@ -405,7 +404,6 @@ describe("content search on a deep file", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
-				path: `${path}/deep.md`,
 				rootKind: "rich_text",
 				textContent: "zebraword here\n",
 			});

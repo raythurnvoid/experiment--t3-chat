@@ -517,7 +517,6 @@ describe("reviewed Move graph", () => {
 						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
 						nodeId: node._id,
-						path: node.path,
 						rootKind: "plain_text",
 						textContent: "saved text",
 					});

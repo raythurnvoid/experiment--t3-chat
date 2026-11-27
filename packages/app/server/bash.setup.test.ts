@@ -318,7 +318,6 @@ export async function seed_organization_node(args: {
 			organizationId: scope.organizationId,
 			workspaceId: scope.workspaceId,
 			nodeId: fileId,
-			path: spec.path,
 			rootKind: seedRootKind,
 			textContent: content,
 		});
@@ -388,7 +387,6 @@ export async function seed_organization_node(args: {
 		organizationId: scope.organizationId,
 		workspaceId: scope.workspaceId,
 		nodeId: fileId,
-		path: spec.path,
 		yjsSequence: 1,
 		rootKind: seedRootKind,
 		textContent: content,

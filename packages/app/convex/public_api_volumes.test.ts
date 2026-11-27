@@ -398,7 +398,6 @@ async function readable_file(f: Awaited<ReturnType<typeof fixture>>, path = "/no
 		await files_nodes_db_insert_file_content_docs(ctx, {
 			...scope,
 			nodeId: created._yay,
-			path,
 			contentType: "text/plain",
 			rootKind: "plain_text",
 			textContent: "read",

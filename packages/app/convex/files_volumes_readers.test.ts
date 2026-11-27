@@ -131,7 +131,6 @@ async function fixture() {
 			organizationId: db.organizationId,
 			workspaceId: volumeId,
 			nodeId,
-			path: "/note.md",
 			rootKind: "plain_text",
 			textContent: "Saved volume content\n",
 		});

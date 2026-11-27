@@ -422,7 +422,6 @@ export async function seed_non_collaborative_file(args: { ctx: MutationCtx; path
 		organizationId,
 		workspaceId,
 		nodeId,
-		path,
 		contentType,
 		rootKind,
 		textContent: text,

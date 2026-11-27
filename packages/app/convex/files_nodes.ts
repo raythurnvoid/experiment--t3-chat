@@ -6558,8 +6558,6 @@ export type files_nodes_match_plain_text_file_lines_Result =
 // #endregion match
 
 async function db_search_snippet(ctx: QueryCtx, chunk: Doc<"files_plain_text_chunks">, savedOnly = false) {
-	// Saved-only search must verify the source version even for a legacy Move copy.
-	if (!savedOnly && chunk.textChunk !== undefined) return chunk.textChunk;
 	const exact = await ctx.db.get("files_text_chunks", chunk.textChunkId);
 	if (savedOnly && !exact) return null;
 	if (

@@ -547,7 +547,6 @@ describe("public files content search", () => {
 				const result = await db_insert_file_text_content(ctx, {
 					...scope,
 					nodeId,
-					path,
 					rootKind: "rich_text",
 					textContent: committedMarkdown,
 				});

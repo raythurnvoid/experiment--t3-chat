@@ -2302,7 +2302,6 @@ export const finalize_transfer_file_copy = internalMutation({
 				organizationId: run.destinationScope.organizationId,
 				workspaceId: run.destinationScope.workspaceId,
 				nodeId,
-				path,
 				parentId,
 				contentType,
 				rootKind: textKind,

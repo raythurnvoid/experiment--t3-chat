@@ -1557,7 +1557,6 @@ describe("non-collaborative files", () => {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				nodeId,
-				path,
 				contentType,
 				rootKind,
 				textContent: markdown,
