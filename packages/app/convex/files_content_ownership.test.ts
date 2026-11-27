@@ -52,22 +52,20 @@ async function read_content(ctx: QueryCtx, nodeId: Id<"files_nodes">) {
 	const exact = await files_saved_content_collect(files_saved_content_db_text_chunks(ctx.db, scope));
 	const plain = await files_saved_content_collect(files_saved_content_db_plain_text_chunks(ctx.db, scope));
 	const view = await files_saved_placement_db_get_node_view(ctx.db, nodeId);
-	const metadata = (
-		await Promise.all(
-			(view ? [undefined, view] : [undefined]).map((tag) =>
-				ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_contentHead_view_fieldPath", (q) =>
-						q.eq("contentHeadId", head._id).eq("moveView.cohortId", tag?.cohortId).eq("moveView.view", tag?.view),
-					)
-					.collect(),
-			),
-		)
-	).flat();
 	const copies = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_contentHead_fieldPath", (q) => q.eq("contentHeadId", head._id))
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+			q
+				.eq("organizationId", node.organizationId)
+				.eq("workspaceId", node.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", nodeId),
+		)
+		.filter((q) => q.eq(q.field("contentHeadId"), head._id))
 		.collect();
+	const metadata = copies.filter(
+		(row) => !row.moveView || (row.moveView.cohortId === view?.cohortId && row.moveView.view === view.view),
+	);
 	return {
 		node,
 		headId: head._id,

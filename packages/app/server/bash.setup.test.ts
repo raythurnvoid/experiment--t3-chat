@@ -401,16 +401,15 @@ export async function seed_organization_node(args: {
 		// bail out (usable: false) and the bounded R2 window fallback runs instead.
 		const chunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q
 					.eq("organizationId", scope.organizationId)
 					.eq("workspaceId", scope.workspaceId)
-					.eq("sourceKind", "committed")
 					.eq("fileNodeId", fileId)
 					.eq("moveView.cohortId", undefined)
-					.eq("moveView.view", undefined)
-					.eq("yjsSequence", 1),
+					.eq("moveView.view", undefined),
 			)
+			.filter((q) => q.eq(q.field("yjsSequence"), 1))
 			.collect();
 		const second = chunks[1];
 		if (second) {

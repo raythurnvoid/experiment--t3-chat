@@ -1406,12 +1406,8 @@ export async function test_fill_saved_file_with_max_chunks(
 		const headChunks = await Promise.all([
 			ctx.db
 				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q
-						.eq("organizationId", node.organizationId)
-						.eq("workspaceId", node.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", node.organizationId).eq("workspaceId", node.workspaceId).eq("fileNodeId", nodeId),
 				)
 				.collect(),
 			ctx.db

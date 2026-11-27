@@ -422,12 +422,8 @@ test("materialize_file_content preserves saved content when source chunking fail
 			: null;
 		const textChunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 			)
 			.collect();
 		const yjsAsset = yjsSnapshot ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
@@ -465,12 +461,8 @@ test("materialize_file_content preserves saved content when source chunking fail
 			: null;
 		const textChunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 			)
 			.collect();
 		const yjsUpdates = await ctx.db
@@ -809,12 +801,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	const chunkCount = await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-				q
-					.eq("organizationId", db.organizationId)
-					.eq("workspaceId", db.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 			)
 			.collect();
 		return chunks.length;
@@ -1168,11 +1156,10 @@ test("match_text_file_lines and match_plain_text_file_lines query committed and 
 	await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("sourceKind", "committed")
 					.eq("fileNodeId", cappedOutputNodeId),
 			)
 			.collect();
@@ -1348,11 +1335,10 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const chunkCount = await t.run(async (ctx) =>
 		ctx.db
 			.query("files_text_chunks")
-			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 				q
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
-					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)
 			.collect()

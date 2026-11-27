@@ -51,7 +51,6 @@ import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
 import { files_saved_content_db_get_tags } from "../server/files-saved-content.ts";
-import { files_saved_content_db_get_head } from "../server/files-saved-content-head.ts";
 import {
 	files_saved_index_db_get_stream,
 	files_saved_index_db_get_view,
@@ -127,26 +126,6 @@ export const get_workspace_index_view = query({
 });
 
 // #region indexed doc writes
-
-/**
- * One content head owns its write-bounded frontmatter docs. User metadata stays with the file.
- */
-export async function files_metadata_db_delete_committed_frontmatter(
-	ctx: MutationCtx,
-	args: {
-		organizationId: Doc<"files_metadata_docs">["organizationId"];
-		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		nodeId: Id<"files_nodes">;
-	},
-) {
-	const head = await files_saved_content_db_get_head(ctx.db, args.nodeId);
-	if (!head || head.organizationId !== args.organizationId || head.workspaceId !== args.workspaceId) return;
-	const docs = await ctx.db
-		.query("files_metadata_docs")
-		.withIndex("by_contentHead_fieldPath", (q) => q.eq("contentHeadId", head._id))
-		.collect();
-	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
-}
 
 export async function files_metadata_db_delete_pending(
 	ctx: MutationCtx,

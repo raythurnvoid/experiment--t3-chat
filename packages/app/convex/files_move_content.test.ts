@@ -243,9 +243,17 @@ test("Move keeps other source versions and cleans an older published index", asy
 		const retainedChunkId = await ctx.db.insert("files_text_chunks", chunk);
 		const plain = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_contentHead_yjsSeq_chunk", (q) => q.eq("contentHeadId", head._id))
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", f.db.organizationId)
+					.eq("workspaceId", f.db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", f.nodeId),
+			)
+			.filter((q) => q.eq(q.field("contentHeadId"), head._id))
 			.first();
-		if (plain) await ctx.db.patch("files_plain_text_chunks", plain._id, { textChunkId: retainedChunkId });
+		if (!plain) throw new Error("Expected the older published search chunk");
+		await ctx.db.patch("files_plain_text_chunks", plain._id, { textChunkId: retainedChunkId });
 		const stagedChunkId = await ctx.db.insert("files_text_chunks", {
 			...chunk,
 			contentHeadId: stagedHeadId,

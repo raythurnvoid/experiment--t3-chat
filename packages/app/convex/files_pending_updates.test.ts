@@ -132,11 +132,10 @@ describe("save_file_pending_update", () => {
 		const chunks = await t.run((ctx) =>
 			ctx.db
 				.query("files_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 					q
 						.eq("organizationId", draft.organizationId)
 						.eq("workspaceId", draft.workspaceId)
-						.eq("sourceKind", "committed")
 						.eq("fileNodeId", receipt.savedNodeId),
 				)
 				.collect(),

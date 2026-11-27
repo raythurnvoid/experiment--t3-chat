@@ -4959,8 +4959,6 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_metadata_index_fields }),
 		),
 	)
-		.index("by_contentHead_fieldPath", ["contentHeadId", "fieldPath"])
-		.index("by_contentHead_view_fieldPath", ["contentHeadId", "moveView.cohortId", "moveView.view", "fieldPath"])
 		.index("by_move_view", ["moveView.cohortId", "moveView.view"])
 		// Whole-file staging needs short cursors even when a metadata key is very long.
 		.index("by_organization_workspace_source_fileNode", [
@@ -5871,16 +5869,6 @@ const app_convex_schema = defineSchema({
 		.index("by_contentHead_view_chunk", ["contentHeadId", "moveView.cohortId", "moveView.view", "chunkIndex"])
 		.index("by_contentHead_lineEnd_chunk", ["contentHeadId", "lineEnd", "chunkIndex"])
 		.index("by_contentHead_endIndex_chunk", ["contentHeadId", "endIndex", "chunkIndex"])
-		.index("by_organization_workspace_source_fileNode_yjsSeq_chunk", [
-			"organizationId",
-			"workspaceId",
-			"sourceKind",
-			"fileNodeId",
-			"moveView.cohortId",
-			"moveView.view",
-			"yjsSequence",
-			"chunkIndex",
-		])
 		.index("by_organization_workspace_fileNode_chunkIndex", [
 			"organizationId",
 			"workspaceId",
@@ -5930,14 +5918,6 @@ const app_convex_schema = defineSchema({
 			v.object({ ...files_pending_index_fields, ...files_plain_text_chunk_fields }),
 		),
 	)
-		.index("by_contentHead_yjsSeq_chunk", ["contentHeadId", "yjsSequence", "chunkIndex"])
-		.index("by_contentHead_view_yjsSeq_chunk", [
-			"contentHeadId",
-			"moveView.cohortId",
-			"moveView.view",
-			"yjsSequence",
-			"chunkIndex",
-		])
 		// `sourceKind` and `userId` let a search read committed chunks only, or one user's pending chunks
 		// only. Committed chunks have no `userId`.
 		.searchIndex("search_by_plainTextChunk", {
