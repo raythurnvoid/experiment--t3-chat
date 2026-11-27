@@ -1443,7 +1443,6 @@ export async function test_fill_saved_file_with_max_chunks(
 				organizationId: node.organizationId,
 				workspaceId: node.workspaceId,
 				nodeId,
-				path: node.path,
 				archiveOperationId: node.archiveOperationId ?? undefined,
 				chunkCount: chunks._yay.length,
 				chunks: chunks._yay.slice(start, start + 100),

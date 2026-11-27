@@ -828,7 +828,10 @@ async function db_stage_pending_scope(
 	const saved =
 		work.target.kind === "saved" ? await files_saved_placement_db_get_node(ctx.db, work.target.id, after) : null;
 	// Header staging already finished the resumable path work for this private target.
-	const place = work.afterPlaceId ? await ctx.db.get("files_pending_places", work.afterPlaceId) : null;
+	const place =
+		args.phase === "pending_metadata" && work.afterPlaceId
+			? await ctx.db.get("files_pending_places", work.afterPlaceId)
+			: null;
 	// Hidden targets keep captured scope; owner readers still decide visibility.
 	const path = saved?.path ?? (place && !place.isPathless ? place.ownerTreePath.replace(/\/$/, "") : undefined);
 	const archiveOperationId = saved?.archiveOperationId ?? undefined;
@@ -873,13 +876,12 @@ async function db_stage_pending_scope(
 					archiveOperationId,
 				});
 		} else {
-			const { _id: _id, _creationTime: _time, ...fields } = row;
+			const { _id: _id, _creationTime: _time, path: _path, ...fields } = row;
 			await ctx.db.patch("files_plain_text_chunks", row._id, { moveView: before });
 			if (current && (!item || item.afterProposal))
 				await ctx.db.insert("files_plain_text_chunks", {
 					...fields,
 					moveView: after,
-					path: path ?? row.path,
 					archiveOperationId,
 				});
 		}

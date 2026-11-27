@@ -178,18 +178,16 @@ async function seed_generation(
 			sourceKind: "committed" as const,
 			fileNodeId,
 			chunkIndex: 0,
-			textChunk: "{}",
 			startIndex: 0,
 			endIndex: 2,
 			lineStart: 1,
 			lineEnd: 1,
 			chunkFlags: 0,
 		};
-		const textChunkId = await ctx.db.insert("files_text_chunks", chunks);
+		const textChunkId = await ctx.db.insert("files_text_chunks", { ...chunks, textChunk: "{}" });
 		await ctx.db.insert("files_plain_text_chunks", {
 			...chunks,
 			textChunkId,
-			path,
 			plainTextChunk: "{}",
 			hasChunkAbove: false,
 			hasChunkBelow: false,

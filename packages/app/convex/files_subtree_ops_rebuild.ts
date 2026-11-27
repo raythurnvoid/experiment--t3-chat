@@ -108,10 +108,8 @@ export async function files_nodes_db_rebuild_node(
 	}
 
 	await ctx.db.patch("files_nodes", node._id, fields);
-	if (node.path !== path) await files_pending_overlay_db_follow_saved_scope(ctx, node);
-	// Only the area changed. Metadata docs copy it for the catalog's area rows; text chunks have no
-	// area. A node without metadata docs writes nothing more.
-	else if (node.restrictedScopeNodeId !== fields.restrictedScopeNodeId)
+	// Only metadata docs store the path and area. The archive state did not change.
+	if (node.path !== path || node.restrictedScopeNodeId !== fields.restrictedScopeNodeId)
 		await files_pending_overlay_db_follow_saved_scope(ctx, node, { metadataOnly: true });
 	return true;
 }

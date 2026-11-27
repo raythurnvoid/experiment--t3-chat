@@ -185,14 +185,12 @@ async function build_text(ctx: MutationCtx, run: Run) {
 			value: {
 				textChunkId: chunk._id,
 				chunkIndex: chunk.chunkIndex,
-				textChunk: chunk.textChunk,
 				plainTextChunk: converted?._yay[index]?.plainTextChunk ?? chunk.textChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
-				path: run.placement.path,
 				archiveOperationId: run.placement.archiveOperationId ?? undefined,
 				hasChunkAbove: chunk.chunkIndex > 0,
 				hasChunkBelow: chunk.chunkIndex < run.chunkCount - 1,
@@ -502,8 +500,10 @@ async function install(ctx: MutationCtx, run: Run) {
 		moveView: { cohortId: run._id, view: "after" as const },
 	};
 	for (const item of page.page) {
-		if (item.kind === "text") await db.insert("files_plain_text_chunks", { ...scope, ...item.value });
-		else
+		if (item.kind === "text") {
+			const { path: _path, ...value } = item.value;
+			await db.insert("files_plain_text_chunks", { ...scope, ...value });
+		} else
 			await db.insert("files_metadata_docs", {
 				...scope,
 				...item.value,

@@ -135,7 +135,11 @@ export async function expect_side_docs_follow(f: Fixture, nodeIds: Array<Id<"fil
 					.collect()),
 			].filter((doc) => doc.sourceKind === "committed");
 			return sideDocs
-				.filter((doc) => (doc.archiveOperationId ?? null) !== node.archiveOperationId || doc.path !== node.path)
+				.filter(
+					(doc) =>
+						(doc.archiveOperationId ?? null) !== node.archiveOperationId ||
+						("docKind" in doc && doc.path !== node.path),
+				)
 				.map((doc) => ({
 					table: "fieldPath" in doc ? "metadata" : "chunk",
 					archiveOperationId: doc.archiveOperationId ?? null,

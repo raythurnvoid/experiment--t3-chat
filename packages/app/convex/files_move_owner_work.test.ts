@@ -489,6 +489,7 @@ test("public Move joins empty owner phases in one step", async () => {
 test("public Move seals unselected pending scope before the switch and keeps each branch", async () => {
 	const f = await native_pending_scope({ pauseBeforeInitialStep: true });
 	const originals = await Promise.all(f.proposals.map((proposal) => pending_scope_docs(f, proposal)));
+	const selectedChunks = new Map<Id<"files_pending_updates">, Id<"files_plain_text_chunks">[]>();
 	expect(
 		originals.every((docs) => docs.plain.length > 8 && docs.metadata.length > 8),
 		"native branches need several scope pages",
@@ -508,6 +509,10 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 	for (const [index, proposal] of f.proposals.entries()) {
 		const before = await pending_scope_docs(f, proposal, "before");
 		const after = await pending_scope_docs(f, proposal, "after");
+		selectedChunks.set(
+			proposal._id,
+			after.plain.map((doc) => doc._id),
+		);
 		const metadata = await f.t.query(internal.files_metadata.get_index_values_by_path, {
 			organizationId: f.db.organizationId,
 			workspaceId: f.db.workspaceId,
@@ -527,9 +532,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		);
 		expect(await pending_scope_docs(f, proposal)).toEqual({ plain: [], metadata: [] });
 		expect(before.plain.map((doc) => doc._id)).toEqual(originals[index]!.plain.map((doc) => doc._id));
-		expect(before.plain.every((doc) => doc.path === "/source.md")).toBe(true);
 		expect(after.plain.length).toBe(before.plain.length);
-		expect(after.plain.every((doc) => doc.path === "/target/source.md")).toBe(true);
 		expect(after.metadata.length).toBe(before.metadata.length);
 		expect(
 			after.metadata.every((doc) => doc.path === "/target/source.md" && doc.treePath === "/target/source.md"),
@@ -589,9 +592,9 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		);
 		expect(point.length).toBe(originals[0]!.plain.length);
 		expect(
-			point.every((doc) => doc.path === "/target/source.md"),
+			point.map((doc) => doc._id),
 			"after point reads use sealed pending scope",
-		).toBe(true);
+		).toEqual(selectedChunks.get(proposal._id));
 	}
 	await test_finish_transfer_run(f.asUser, f.runId);
 	expect(
@@ -603,7 +606,7 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 		expect(final.plain.map((doc) => doc.plainTextChunk)).toEqual(
 			originals[index]!.plain.map((doc) => doc.plainTextChunk),
 		);
-		expect(final.plain.every((doc) => doc.path === "/target/source.md")).toBe(true);
+		expect(final.plain.every((doc) => doc.moveView === undefined)).toBe(true);
 		expect(final.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.stringValue])).toEqual(
 			originals[index]!.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.stringValue]),
 		);

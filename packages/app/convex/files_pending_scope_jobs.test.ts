@@ -106,7 +106,7 @@ async function read_saved_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"fi
 function stale_docs({ node, chunks, metadata }: Awaited<ReturnType<typeof read_saved_docs>>) {
 	const archiveOperationId = node.archiveOperationId ?? undefined;
 	return [
-		...chunks.filter((doc) => doc.path !== node.path || doc.archiveOperationId !== archiveOperationId),
+		...chunks.filter((doc) => doc.archiveOperationId !== archiveOperationId),
 		...metadata.filter(
 			(doc) =>
 				doc.path !== node.path ||
@@ -257,10 +257,11 @@ test("pending scope pages follow the latest saved path and archive state without
 						fields.moveView.cohortId !== stageCohortId
 					)
 						continue;
-					expect(fields.path, `${key} AFTER copies use the destination while staging`).toBe(
-						"/destination/project/note.md",
-					);
-					if (key === "metadata") expect(fields).toMatchObject({ treePath: "/destination/project/note.md" });
+					if (key === "metadata")
+						expect(fields).toMatchObject({
+							path: "/destination/project/note.md",
+							treePath: "/destination/project/note.md",
+						});
 					const id = (await insert.mock.results[index]!.value) as string;
 					expect(
 						stagedDocs[key].some((doc) => doc.id === id),
@@ -308,15 +309,16 @@ test("pending scope pages follow the latest saved path and archive state without
 				original[key].map(({ _id, _creationTime, ...fields }) => ({
 					...fields,
 					moveView: { cohortId: stageCohortId, view: "after" },
-					path: "/destination/project/note.md",
-					...(key === "metadata" ? { treePath: "/destination/project/note.md" } : {}),
+					...(key === "metadata"
+						? { path: "/destination/project/note.md", treePath: "/destination/project/note.md" }
+						: {}),
 				})),
 			),
 		);
 	}
 	const moved = await readPendingDocs();
 	expect(moved.chunks.map(({ _id, _creationTime, ...fields }) => fields)).toEqual(
-		original.chunks.map(({ _id, _creationTime, ...fields }) => ({ ...fields, path: moved.node.path })),
+		original.chunks.map(({ _id, _creationTime, ...fields }) => fields),
 	);
 	expect(moved.metadata.map(({ _id, _creationTime, ...fields }) => fields)).toEqual(
 		original.metadata.map(({ _id, _creationTime, ...fields }) => ({
@@ -339,9 +341,9 @@ test("pending scope pages follow the latest saved path and archive state without
 	expect(repaired.chunks.length).toBeGreaterThan(4);
 	expect(repaired.metadata.length).toBeGreaterThan(4);
 	expect(
-		repaired.chunks.every((doc) => doc.path === repaired.node.path),
-		"all pending search docs follow the latest saved path",
-	).toBe(true);
+		repaired.chunks.map((doc) => doc.textChunkId),
+		"the rename keeps the exact source of each pending search hit",
+	).toEqual(original.chunks.map((doc) => doc.textChunkId));
 	expect(
 		repaired.metadata.every((doc) => doc.path === repaired.node.path && doc.treePath === repaired.node.treePath),
 		"all pending metadata docs follow the latest saved path",
@@ -591,7 +593,8 @@ test("an area change copies few metadata docs at once, and walks many in a job w
 	// Only a walk of the chunks would fix these stale chunks.
 	const staleChunkIds = [note.chunks[0]!._id, big.chunks[0]!._id];
 	await t.run(async (ctx) => {
-		for (const chunkId of staleChunkIds) await ctx.db.patch("files_plain_text_chunks", chunkId, { path: "/stale" });
+		for (const chunkId of staleChunkIds)
+			await ctx.db.patch("files_plain_text_chunks", chunkId, { archiveOperationId: "stale" });
 	});
 	const jobKeys: string[] = [];
 	test_spy_handler(run_job, async (handler, ctx, args) => {
@@ -622,7 +625,7 @@ test("an area change copies few metadata docs at once, and walks many in a job w
 	);
 	const chunks = [...(await read_saved_docs(t, noteId)).chunks, ...bigRestricted.chunks];
 	expect(
-		staleChunkIds.map((chunkId) => chunks.find((chunk) => chunk._id === chunkId)?.path),
+		staleChunkIds.map((chunkId) => chunks.find((chunk) => chunk._id === chunkId)?.archiveOperationId),
 		"an area change skips the text chunks",
-	).toEqual(["/stale", "/stale"]);
+	).toEqual(["stale", "stale"]);
 }, 60_000);

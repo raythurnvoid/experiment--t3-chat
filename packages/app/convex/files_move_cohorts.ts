@@ -30,7 +30,6 @@ import {
 	files_pending_overlay_db_set_cohort_staging,
 	files_pending_overlay_db_set_cohort_allocation,
 	files_pending_overlay_db_set_cohort_materialization,
-	files_pending_overlay_db_schedule_saved_scope,
 	files_pending_overlay_db_wake_job,
 } from "../server/files-pending-overlay.ts";
 import {
@@ -78,6 +77,7 @@ import { path_join, path_extract_segments_from } from "../server/server-utils.ts
 import { files_transfer_source_versions_equal } from "./files_transfer.ts";
 import { files_updated_by_db_sync_node } from "./files_updated_by.ts";
 import { files_share_rows_db_sync_node } from "../server/files-share-rows.ts";
+import { files_content_heads_db_for_head } from "../server/files-content-heads.ts";
 import {
 	files_trash_entries_db_insert,
 	files_trash_entries_db_sync,
@@ -1950,13 +1950,23 @@ async function db_sides(ctx: MutationCtx, cohort: Doc<"files_move_cohorts">, act
 					nodeId: record.nodeId,
 					cursor: cursor.page,
 				});
+				let sourceHeadId: Id<"files_saved_content_heads"> | undefined;
+				let sourceDb = ctx.db;
 				for (const row of page.page) {
-					const { _id, _creationTime: _time, ...fields } = row;
+					const { _id, _creationTime: _time, path: _path, ...fields } = row;
+					// Search can still serve the previous Save while the next index waits.
+					if (row.sourceKind !== "committed" || !row.contentHeadId)
+						throw should_never_happen("Saved search chunk has no source head", { chunkId: _id });
+					if (sourceHeadId !== row.contentHeadId) {
+						const sourceHead = await ctx.db.get("files_saved_content_heads", row.contentHeadId);
+						if (!sourceHead) throw should_never_happen("Search source head is missing", { chunkId: _id });
+						sourceDb = files_content_heads_db_for_head(ctx, sourceHead);
+						sourceHeadId = row.contentHeadId;
+					}
 					await ctx.db.patch("files_plain_text_chunks", _id, { moveView: beforeTag });
-					await ctx.db.insert("files_plain_text_chunks", {
+					await sourceDb.insert("files_plain_text_chunks", {
 						...fields,
 						moveView: afterTag,
-						path: after.path,
 						archiveOperationId: after.archiveOperationId ?? undefined,
 					});
 				}
@@ -2354,25 +2364,6 @@ async function db_cleanup_nodes(ctx: MutationCtx, cohort: Doc<"files_move_cohort
 	const ownsContent = item?.nodeRecordId === record._id && item.contentId !== null;
 	if (ownsContent)
 		await files_index_db_finish_move(ctx, { nodeId: record.nodeId, cohortId: cohort._id, published: finish });
-	if (finish && place?.kind === "file" && record.beforePlaceId && !ownsContent) {
-		const before = await ctx.db.get("files_saved_places", record.beforePlaceId);
-		if (before && before.archiveOperationId === place.archiveOperationId && before.path !== place.path) {
-			const chunk = await ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
-					q
-						.eq("organizationId", cohort.organizationId)
-						.eq("workspaceId", cohort.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("fileNodeId", record.nodeId)
-						.eq("moveView.cohortId", undefined)
-						.eq("moveView.view", undefined),
-				)
-				.first();
-			// Materialization skips overlay marks. Repair the reused chunks' path cache after release.
-			if (chunk) await files_pending_overlay_db_schedule_saved_scope(ctx, { ...cohort, _id: record.nodeId });
-		}
-	}
 	// A Move reads live items only. The older Trash items inside a moved folder still have the scope of
 	// the old place, but they must follow their folder. So a selected folder that changed scope starts a
 	// scope job. The job waits until this Move lets go of the workspace.

@@ -25,8 +25,8 @@ import {
 } from "./setup.test.ts";
 
 // Round up the settled corpus measurements. Lower both limits when storage falls.
-const BUDGET_TOTAL = 85;
-const BUDGET_PER_BYTE = 33;
+const BUDGET_TOTAL = 79;
+const BUDGET_PER_BYTE = 26;
 
 beforeEach(() => {
 	vi.useFakeTimers({ now: Date.UTC(2026, 10, 27) });
@@ -223,12 +223,13 @@ test("keeps saved Markdown within the total and per-byte storage budgets", async
 	const total = regular.billedBytes / regular.markdownBytes;
 	const marginal = (doubled.billedBytes - regular.billedBytes) / (doubled.markdownBytes - regular.markdownBytes);
 	const report = [
-		`Mixed files: ${regular.markdownBytes} Markdown bytes, ${regular.billedBytes} database bytes, total ${total}, marginal ${marginal}.`,
-		`Doubled bodies: ${doubled.markdownBytes} Markdown bytes, ${doubled.billedBytes} database bytes.`,
-		`Tiny files: ${tiny.billedBytes / 12} database bytes per file.`,
-		`Extra metadata: ${manyKeys.billedBytes / 4} database bytes per file.`,
+		`Mixed files: ${regular.markdownBytes} Markdown bytes, ${regular.billedBytes} estimated billed bytes, total ${total}, marginal ${marginal}.`,
+		"Includes file creation and Save records at the test time, before retention deadlines.",
+		`Doubled bodies: ${doubled.markdownBytes} Markdown bytes, ${doubled.billedBytes} estimated billed bytes.`,
+		`Tiny files: ${tiny.billedBytes / 12} estimated billed bytes per file.`,
+		`Extra metadata: ${manyKeys.billedBytes / 4} estimated billed bytes per file.`,
 		`Mean search chunk: ${regular.meanSearchChunkBytes} bytes, ${regular.meanSearchChunkLength} characters.`,
-		`Largest increase from one replacement before text cleanup: ${regular.beforeCleanupBytes} estimated billed bytes. Writes by step for all replacements: ${regular.saveWrites}`,
+		`Largest increase from one replacement before text cleanup: ${regular.beforeCleanupBytes} estimated billed bytes. Document writes in measured Save and index steps: ${regular.saveWrites}`,
 		regular.report,
 	].join("\n");
 	// The JSON reporter keeps measurements from passing runs too.

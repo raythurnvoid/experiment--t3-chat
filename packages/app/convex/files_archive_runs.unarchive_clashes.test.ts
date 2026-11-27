@@ -390,14 +390,11 @@ describe("unarchive_nodes", () => {
 			// Put the new files next to the archived ones, so every name is taken. Write them in place:
 			// a Move runs one job per file, and 100 of them take minutes.
 			await f.t.run(async (ctx) => {
-				const chunks = await ctx.db.query("files_plain_text_chunks").collect();
 				const metadataDocs = await ctx.db.query("files_metadata_docs").collect();
 				for (const nodeId of occupants.fileIds) {
 					const node = (await ctx.db.get("files_nodes", nodeId))!;
 					const path = `/budget/d0/${node.name}`;
 					await ctx.db.patch("files_nodes", nodeId, { parentId: tree.folderIds[0]!, path, treePath: path });
-					for (const chunk of chunks.filter((chunk) => chunk.sourceKind === "committed" && chunk.fileNodeId === nodeId))
-						await ctx.db.patch("files_plain_text_chunks", chunk._id, { path });
 					for (const doc of metadataDocs.filter((doc) => doc.sourceKind === "committed" && doc.fileNodeId === nodeId))
 						await ctx.db.patch("files_metadata_docs", doc._id, { path, treePath: path });
 				}

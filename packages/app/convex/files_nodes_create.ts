@@ -65,7 +65,6 @@ export async function db_insert_file_text_content(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: args.nodeId,
-		path: args.path,
 		archiveOperationId: args.archiveOperationId ?? undefined,
 		yjsSequence: args.yjsSequence,
 		chunks: chunks._yay,

@@ -169,7 +169,7 @@ describe("create_file_node", () => {
 		});
 		expect(state.chunks).toHaveLength(1);
 		expect(state.plainChunks).toHaveLength(1);
-		const { plainTextChunk, ...markdownChunk } = chunk;
+		const { plainTextChunk, textChunk, ...position } = chunk;
 		const contentScope = {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -177,13 +177,12 @@ describe("create_file_node", () => {
 			sourceKind: "committed",
 			yjsSequence: 0,
 		};
-		expect(state.chunks[0]).toMatchObject({ ...contentScope, ...markdownChunk });
+		expect(state.chunks[0]).toMatchObject({ ...contentScope, ...position, textChunk });
 		expect(state.plainChunks[0]).toMatchObject({
 			...contentScope,
-			...chunk,
+			...position,
 			plainTextChunk,
 			textChunkId: state.chunks[0]!._id,
-			path: "/note.md",
 			hasChunkAbove: false,
 			hasChunkBelow: false,
 		});
@@ -256,7 +255,7 @@ describe("create_file_node", () => {
 			expect(node.readOnly).toBe(false);
 			expect(node.readOnlyDecisionId).toBeNull();
 		}
-		expect(state.plainChunks[0]?.path).toBe("/docs/a/b/note.md");
+		expect(state.plainChunks[0]).toMatchObject({ sourceKind: "committed", fileNodeId: created._yay.nodeId });
 		expect(state.snapshots[0]?.fileNodeId).toBe(created._yay.nodeId);
 	});
 

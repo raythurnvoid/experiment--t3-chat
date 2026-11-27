@@ -1142,9 +1142,9 @@ describe("apply_file_pending_move", () => {
 				.unique();
 			expect(plainTextChunk?._id, "a pure file Move keeps its original plain chunk").toBe(plainTextChunkId);
 			expect(plainTextChunk).not.toHaveProperty("moveView");
-			expect(plainTextChunk?.textChunk).toBe(seeded.baseMarkdown);
+			expect((await ctx.db.get("files_text_chunks", plainTextChunk!.textChunkId))?.textChunk).toBe(seeded.baseMarkdown);
 			expect(plainTextChunk?.plainTextChunk).toBe(seeded.baseMarkdown);
-			expect(plainTextChunk?.path).toBe("/apply-dest/renamed.md");
+			expect(plainTextChunk).not.toHaveProperty("path");
 
 			expect(await ctx.db.get("files_metadata_docs", metadataDocId)).toBeNull();
 			const metadataDoc = await ctx.db
@@ -1313,9 +1313,9 @@ describe("apply_file_pending_move", () => {
 			);
 			expect(childChunk).not.toHaveProperty("moveView");
 			expect(childChunk?.textChunkId).toBe(childChunkIds.textChunkId);
-			expect(childChunk?.textChunk).toBe(seeded.baseMarkdown);
+			expect((await ctx.db.get("files_text_chunks", childChunkIds.textChunkId))?.textChunk).toBe(seeded.baseMarkdown);
 			expect(childChunk?.plainTextChunk).toBe(seeded.baseMarkdown);
-			expect(childChunk?.path).toBe("/apply-folder-dest/apply-folder/child.md");
+			expect(childChunk).not.toHaveProperty("path");
 		});
 	});
 

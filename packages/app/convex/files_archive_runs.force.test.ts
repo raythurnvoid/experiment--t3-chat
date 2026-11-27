@@ -265,10 +265,6 @@ describe("forced archive", () => {
 				name: "moved.md",
 				pathDepth: 1,
 			});
-			for (const doc of await ctx.db.query("files_plain_text_chunks").collect()) {
-				if (doc.sourceKind === "committed" && doc.fileNodeId === movedId)
-					await ctx.db.patch("files_plain_text_chunks", doc._id, { path: "/moved.md" });
-			}
 			for (const doc of await ctx.db.query("files_metadata_docs").collect()) {
 				if (doc.sourceKind === "committed" && doc.fileNodeId === movedId)
 					await ctx.db.patch("files_metadata_docs", doc._id, { path: "/moved.md", treePath: "/moved.md" });

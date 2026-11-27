@@ -2473,8 +2473,7 @@ export async function files_pending_overlay_db_schedule_repair(ctx: MutationCtx,
  * starts again. Callers must not schedule the same node twice in parallel: both calls would insert
  * a job doc.
  *
- * `metadataOnly`: only the area changed. Text chunks have no area, so the job skips them. A later
- * call without it makes the job walk the chunks too.
+ * Set `metadataOnly` when only the path or area changed. A later call without it also updates search chunks.
  */
 export async function files_pending_overlay_db_schedule_saved_scope(
 	ctx: MutationCtx,
@@ -2600,8 +2599,7 @@ export async function files_pending_overlay_db_schedule_saved_places(
  * per item would add up to 2 scheduler runs per item before the next step can start, so small items
  * skip the job.
  *
- * `metadataOnly`: only the area changed, like in `files_pending_overlay_db_schedule_saved_scope`.
- * Text chunks have no area, so they are not read.
+ * Set `metadataOnly` when only the path or area changed. Only metadata docs store those fields.
  */
 export async function files_pending_overlay_db_follow_saved_scope(
 	ctx: MutationCtx,
@@ -2658,7 +2656,7 @@ export async function files_pending_overlay_db_follow_saved_scope(
 
 /**
  * Copy a saved node's scope onto the given saved docs of that node. Metadata docs get the path,
- * archive state and area. Plain text chunks get the path and archive state. Only docs that differ are
+ * archive state and area. Plain text chunks get the archive state. Only docs that differ are
  * patched.
  */
 export async function files_pending_overlay_db_copy_saved_scope(
@@ -2697,10 +2695,10 @@ export async function files_pending_overlay_db_copy_saved_scope(
 	}
 
 	for (const chunk of args.chunks) {
-		if (chunk.path === node.path && chunk.archiveOperationId === archiveOperationId) continue;
+		if (chunk.archiveOperationId === archiveOperationId) continue;
 		// The caller read the chunk, so the Move guard needs no second read before the patch.
 		files_move_reservations_db_note_source(ctx.db, { table: "files_plain_text_chunks", id: chunk._id, old: chunk });
-		await ctx.db.patch("files_plain_text_chunks", chunk._id, { path: node.path, archiveOperationId });
+		await ctx.db.patch("files_plain_text_chunks", chunk._id, { archiveOperationId });
 	}
 }
 

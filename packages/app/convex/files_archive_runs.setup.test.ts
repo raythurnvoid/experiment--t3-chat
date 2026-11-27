@@ -113,9 +113,7 @@ export async function seed_tree(f: Fixture, args: { name: string; folderCount: n
 					yjsSequence: 1,
 					textChunkId,
 					chunkIndex: 0,
-					path,
 					plainTextChunk: name,
-					textChunk: name,
 					startIndex: 0,
 					endIndex: name.length,
 					lineStart: 1,
@@ -230,9 +228,10 @@ export async function expect_consistent(f: Fixture) {
 		if (sideDoc.sourceKind !== "committed" || savedScopeNodeIds.has(sideDoc.fileNodeId)) return [];
 		const node = nodeById.get(sideDoc.fileNodeId)!;
 		const archiveOperationId = sideDoc.archiveOperationId ?? null;
-		return archiveOperationId === node.archiveOperationId && sideDoc.path === node.path
+		const metadataPath = "docKind" in sideDoc ? sideDoc.path : undefined;
+		return archiveOperationId === node.archiveOperationId && (metadataPath === undefined || metadataPath === node.path)
 			? []
-			: [{ path: node.path, sideDocPath: sideDoc.path, node: node.archiveOperationId, sideDoc: archiveOperationId }];
+			: [{ path: node.path, sideDocPath: metadataPath, node: node.archiveOperationId, sideDoc: archiveOperationId }];
 	});
 	expect(sideDocMismatches).toEqual([]);
 

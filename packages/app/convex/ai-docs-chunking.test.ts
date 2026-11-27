@@ -76,8 +76,9 @@ test("native Save replaces exact chunks and their linked search rows", async () 
 		for (const chunk of plainTextChunks) {
 			const textChunk = textChunks.find((candidate) => candidate._id === chunk.textChunkId);
 			if (!textChunk) throw new Error("Expected linked text chunk");
+			expect(chunk).not.toHaveProperty("textChunk");
+			expect(chunk).not.toHaveProperty("path");
 			expect(chunk).toMatchObject({
-				textChunk: textChunk.textChunk,
 				startIndex: textChunk.startIndex,
 				endIndex: textChunk.endIndex,
 				lineStart: textChunk.lineStart,

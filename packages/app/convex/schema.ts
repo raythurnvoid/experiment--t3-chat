@@ -942,12 +942,10 @@ const files_text_chunk_fields = {
 
 const files_plain_text_chunk_fields = {
 	...files_text_chunk_fields,
+	textChunk: v.optional(v.string()),
 	/** Linked exact text chunk for exact reads and integrity checks. */
 	textChunkId: v.id("files_text_chunks"),
-	/**
-	 * Cached path. Saved text and search reads return the selected node's current path.
-	 */
-	path: v.string(),
+	path: v.optional(v.string()),
 	archiveOperationId: v.optional(v.string()),
 	plainTextChunk: v.string(),
 	hasChunkAbove: v.boolean(),

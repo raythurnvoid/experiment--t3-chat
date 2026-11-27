@@ -278,8 +278,7 @@ Bulk review (`packages/app/convex/files_pending_update_runs.ts`):
   This also serves one change. It never exposes a temporary folder or parking name.
   Saved plain-text chunks stay in their normal ID range when content and Trash identity stay
   the same. Both views read them. Search returns the current node's path and checks its current
-  access. Physical cleanup queues exact saved-scope work for the chunk path cache; every cache
-  page reads the current node again, so a later Move cannot restore an old path.
+  access. Search rows have no path to update during cleanup.
   Unselected owners' pending plain-text chunks and metadata use the same before/after scope.
   They stage in indexed pages before publication. Their proposal headers stay unselected.
   Exact proposal reservations select the content view until cleanup restores normal indexes.
@@ -449,17 +448,15 @@ Unified full-text search table:
   - required `userId`, `pendingUpdateId`, and `proposalRevision` for pending docs
   - optional `yjsSequence` for committed docs
   - `textChunkId`
-  - denormalized `path`
   - optional `archiveOperationId`
   - `chunkIndex`
   - `plainTextChunk`
-  - `textChunk`
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
   - `hasChunkAbove` / `hasChunkBelow`
   - search index `search_by_plainTextChunk` (filter fields `organizationId`, `workspaceId`, `archiveOperationId`, `sourceKind`, `userId`; committed chunks have no `userId`)
   - committed replacement, pending replacement, and scope patching indexes
 
-The old separate search and pending chunk tables no longer exist. Bash full-text `search` uses the unified `files_plain_text_chunks` table as a self-contained search-result doc; exact text reads use `files_text_chunks`, while plain-text regex search reads line numbers from `files_plain_text_chunks`.
+Full-text search checks the caller's access and the visible file or draft first. It gets the path from that file or draft and reads the original snippet through `textChunkId`. Saved-only search checks that the exact chunk belongs to the same saved content head. Plain-text regex search reads line numbers from `files_plain_text_chunks`.
 
 Unified Markdown frontmatter metadata docs:
 
@@ -658,7 +655,7 @@ Important behavior:
   - `files_pending_update_db_delete_chunks` deletes at most 128 chunks per table inline (metadata is bounded by its caps and all goes). The rest waits for `drain_pending_update_docs`, which deletes docs whose proposal is gone or whose revision is not the current one, one page per run. Every caller deletes the proposal or bumps its revision in the same mutation, so readers skip the rest at once. Readers of the pending chunk range must filter by the helper value. A Move tags old docs but does not copy them, and the drain waits only while a Move holds that proposal, so a Stop cannot leave them behind. Other proposals drain at once. Structural-only docs own no pending indexed docs. If content collapses while `pendingMove` or `pendingArchive` remains, remove the pending indexed docs and retain the structural doc.
 - Committed materialization writes committed `files_text_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed exact-text chunks, plain-text search chunks, and metadata docs for that file before inserting new docs.
 - If committed chunk replacement fails, the materialization finalizer throws so Convex rolls back the node, snapshot, update, job, and chunk writes together. Returning `_nay` from that branch would commit a partial materialization.
-- Rename, move, move to Trash, and restore patch denormalized `path` and `archiveOperationId` on `files_plain_text_chunks`, and `path`, `treePath`, and `archiveOperationId` on `files_metadata_docs`, so full-text and metadata search can filter scope before native pagination.
+- Moving to Trash and restoring update `archiveOperationId` on `files_plain_text_chunks`. Metadata docs keep their path, tree path, and Trash marker in sync with the file.
 - Pending update doc writes also store `size` from the same current `unstaged` text whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
 - A chunking failure never fails the pending update doc write: the stale pending Markdown/plain-text chunk docs are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden for that user).
 

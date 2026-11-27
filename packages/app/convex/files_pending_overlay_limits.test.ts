@@ -680,7 +680,7 @@ describe("saved scope job", () => {
 				expect(chunks.length).toBeGreaterThan(700);
 				expect(metadata).toHaveLength(896);
 				return [...chunks, ...metadata].filter(
-					(doc) => doc.path !== node.path || doc.archiveOperationId !== archiveOperationId,
+					(doc) => ("docKind" in doc && doc.path !== node.path) || doc.archiveOperationId !== archiveOperationId,
 				).length;
 			});
 

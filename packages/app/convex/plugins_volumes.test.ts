@@ -231,13 +231,13 @@ async function create_volume_fixture() {
 		});
 		await ctx.db.patch("files_nodes", nodeId, { assetId, statsId });
 		const chunks = files_chunk_plain_text(volume_text);
-		for (const [index, chunk] of chunks.entries()) {
+		for (const [index, { textChunk, ...chunk }] of chunks.entries()) {
 			const textChunkId = await ctx.db.insert("files_text_chunks", {
 				...scope,
 				fileNodeId: nodeId,
 				sourceKind: "committed",
 				chunkIndex: chunk.chunkIndex,
-				textChunk: chunk.textChunk,
+				textChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
@@ -250,7 +250,6 @@ async function create_volume_fixture() {
 				fileNodeId: nodeId,
 				sourceKind: "committed",
 				textChunkId,
-				path,
 				hasChunkAbove: index > 0,
 				hasChunkBelow: index < chunks.length - 1,
 			});

@@ -430,8 +430,8 @@ async function job_mark_doc(
 		const archiveOperationId = node.archiveOperationId ?? undefined;
 		// Scope is not part of either source index, so these patches keep the page cursor valid.
 		if ("plainTextChunk" in doc) {
-			if (doc.path !== node.path || doc.archiveOperationId !== archiveOperationId)
-				await ctx.db.patch("files_plain_text_chunks", doc._id, { path: node.path, archiveOperationId });
+			if (doc.archiveOperationId !== archiveOperationId)
+				await ctx.db.patch("files_plain_text_chunks", doc._id, { archiveOperationId });
 		} else if (
 			doc.path !== node.path ||
 			doc.treePath !== node.treePath ||

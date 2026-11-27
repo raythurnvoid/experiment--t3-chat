@@ -2384,15 +2384,14 @@ describe("pending file chunk docs lifecycle", () => {
 			proposalRevision: pendingRow.revision,
 			pendingUpdateId: pendingRow._id,
 			sourceKind: "pending",
-			path: "/pending-chunks-upsert",
 			chunkIndex: 0,
 		});
 		expect(new Set(firstTextChunks.map((chunk) => chunk._id))).toContain(firstPlainTextChunks[0]?.textChunkId);
 		for (const chunk of firstPlainTextChunks) {
 			const textChunk = firstTextChunks.find((candidate) => candidate._id === chunk.textChunkId);
 			if (!textChunk) throw new Error("Expected linked text chunk");
+			expect(chunk).not.toHaveProperty("textChunk");
 			expect(chunk).toMatchObject({
-				textChunk: textChunk.textChunk,
 				startIndex: textChunk.startIndex,
 				endIndex: textChunk.endIndex,
 				lineStart: textChunk.lineStart,

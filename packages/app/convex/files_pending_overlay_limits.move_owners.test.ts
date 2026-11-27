@@ -142,7 +142,7 @@ describe("paged Move transaction budgets", () => {
 		await t.run(async (ctx) => {
 			const chunks = await read_pending_chunks(ctx);
 			expect(new Set(chunks.map((chunk) => (chunk.sourceKind === "pending" ? chunk.userId : null))).size).toBe(6);
-			expect(chunks.every((chunk) => chunk.path === "/target/heavy.md")).toBe(true);
+			expect((await ctx.db.get("files_nodes", nodeId))?.path).toBe("/target/heavy.md");
 		});
 	}, 900_000);
 });

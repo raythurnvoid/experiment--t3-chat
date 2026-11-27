@@ -34,7 +34,7 @@ import { r2_create_asset_key, r2_enqueue_object_deletion_job, r2_PUT_MAY_ARRIVE_
 /**
  * Insert a paired set of committed `files_text_chunks` + `files_plain_text_chunks` for one file node.
  * Editable Markdown materialization passes a real `yjsSequence`; read-only text materialization omits it.
- * Caller supplies the already-computed chunk array and the denormalized `path`/`archiveOperationId` for the
+ * Caller supplies the already-computed chunk array and the archive state for the
  * plain-text docs. Does not touch `file_stats` or `files_metadata_docs` — callers own those.
  */
 export async function files_nodes_db_insert_committed_text_chunks(
@@ -43,7 +43,6 @@ export async function files_nodes_db_insert_committed_text_chunks(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
-		path: string;
 		archiveOperationId?: string;
 		yjsSequence?: number;
 		moveView?: Doc<"files_text_chunks">["moveView"];
@@ -94,10 +93,8 @@ export async function files_nodes_db_insert_committed_text_chunks(
 					...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 					textChunkId: textChunkIds[index]!,
 					chunkIndex: chunk.chunkIndex,
-					path: args.path,
 					archiveOperationId: args.archiveOperationId ?? undefined,
 					plainTextChunk: chunk.plainTextChunk,
-					textChunk: chunk.textChunk,
 					startIndex: chunk.startIndex,
 					endIndex: chunk.endIndex,
 					lineStart: chunk.lineStart,

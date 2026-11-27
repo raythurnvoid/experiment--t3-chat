@@ -302,7 +302,6 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 			await files_nodes_db_insert_committed_text_chunks(ctx, {
 				...scope,
 				nodeId: content.nodeId,
-				path: node.path,
 				archiveOperationId: node.archiveOperationId ?? undefined,
 				yjsSequence: shape.collaborationEnabled ? nextSequence : undefined,
 				chunks: page,
@@ -400,9 +399,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				await ctx.db.insert("files_plain_text_chunks", {
 					...shared,
 					textChunkId,
-					textChunk: chunk.textChunk,
 					plainTextChunk: chunk.plainTextChunk,
-					path: node.path,
 					archiveOperationId: node.archiveOperationId ?? undefined,
 					hasChunkAbove: chunk.chunkIndex > 0,
 					hasChunkBelow: chunk.chunkIndex < chunks._yay.totalChunkCount - 1,

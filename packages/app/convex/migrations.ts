@@ -19,7 +19,7 @@ const app_migrations = new Migrations(components.migrations, {
  */
 export const run = app_migrations.runner();
 
-// Each audit page checks that saved rows have finished changing.
+// The idle probes are shared by every row in this transaction's migration batch.
 const checked = new WeakMap<object, Set<string>>();
 async function check_search_idle(ctx: Pick<QueryCtx, "db">) {
 	if (checked.has(ctx)) return;
@@ -125,6 +125,38 @@ async function check_search_link(ctx: Pick<QueryCtx, "db">, row: Doc<"files_plai
 		throw new Error(`Search source differs for ${row._id}. Keep the stored snippet and investigate.`);
 	return exact.textChunk;
 }
+
+export const strip_search_chunks = app_migrations.define({
+	table: "files_plain_text_chunks",
+	batchSize: 16,
+	migrateOne: async (ctx, row) => {
+		await check_search_idle(ctx);
+		if (row.textChunk === undefined && row.path === undefined) return;
+		await check_search_link(ctx, row);
+		const { _id, _creationTime, path: _path, textChunk: _raw, ...next } = row;
+		await ctx.db.replace("files_plain_text_chunks", _id, next);
+	},
+});
+export const run_strip_search_chunks = app_migrations.runner(internal.migrations.strip_search_chunks);
+
+// Component dry-run logs document bodies. Roll back one real batch and return only its progress.
+export const preview_search_chunks = internalMutation({
+	args: { cursor: v.union(v.string(), v.null()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const page = (await ctx.runMutation(internal.migrations.strip_search_chunks, {
+			cursor: args.cursor,
+			batchSize: 16,
+			oneBatchOnly: true,
+			dryRun: false,
+		})) as { continueCursor: string; processed: number; isDone: boolean };
+		const { bytesRead, bytesWritten, documentsRead, documentsWritten, databaseQueries } =
+			await ctx.meta.getTransactionMetrics();
+		throw new Error(
+			`Search preview rolled back: ${JSON.stringify({ rows: page.processed, bytesRead, bytesWritten, documentsRead, documentsWritten, databaseQueries })}`,
+		);
+	},
+});
 
 const audit_args = {
 	cutoff: v.number(),

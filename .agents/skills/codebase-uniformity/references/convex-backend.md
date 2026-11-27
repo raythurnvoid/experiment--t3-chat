@@ -47,9 +47,9 @@ Convex rejects values close to 1 MiB, so large binary state never travels or sto
 
 ## Search Chunks
 
-- Full-text search pages read denormalized display fields and offsets directly from `files_plain_text_chunks`; do not add a `textChunkId` dereference to hydrate each hit.
+- Full-text search reads offsets from `files_plain_text_chunks`. After checking access and visibility, follow the hit's `textChunkId` to read the original Markdown snippet.
 - Exact text scans query `files_text_chunks` directly.
-- `files_plain_text_chunks.textChunkId` remains an integrity/provenance link between paired chunk docs. Validate it only in code that actually follows the link.
+- Check the linked chunk's file or draft owner. Saved-only search also checks its content head.
 - Keep invariant error metadata structured and never log chunk text or document bodies.
 - Keep query filters before pagination for the current full-text overlay. Do not add a JavaScript re-filter or a separate page probe that changes the established page semantics.
 - Do not hide hard caps such as `.take(100)` inside a cursor phase unless the cursor can advance past that cap.

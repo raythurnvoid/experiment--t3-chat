@@ -75,8 +75,8 @@ export async function files_search_db_create_reader(
 			entry = ownerReader ? await ownerReader.resolveTarget(target) : null;
 
 			// An archive stamps a folder first and the items inside it in later steps. The owner reader
-			// drops an item whose folder is stamped. Search keeps that item, with its stored path, until
-			// the job stamps it too, like a search without an owner overlay does.
+			// drops an item whose folder is stamped. Search keeps that item and the path from its saved placement
+			// until the job stamps it too, like a search without an owner overlay does.
 			let hasArchivedAncestor = false;
 			if (ownerReader && !entry && target.kind === "saved") {
 				const node = await files_saved_placement_db_get_node(ctx.db, target.id);

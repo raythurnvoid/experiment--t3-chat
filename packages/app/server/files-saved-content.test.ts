@@ -130,13 +130,11 @@ async function content_fixture() {
 				lineStart: index + 1,
 				lineEnd: index + 1,
 				chunkFlags: 0,
-				textChunk: text,
 			};
-			const textChunkId = await ctx.db.insert("files_text_chunks", fields);
+			const textChunkId = await ctx.db.insert("files_text_chunks", { ...fields, textChunk: text });
 			const plainChunkId = await ctx.db.insert("files_plain_text_chunks", {
 				...fields,
 				textChunkId,
-				path: view === "after" ? f.after.path : f.before.path,
 				plainTextChunk: text,
 				hasChunkAbove: index > 0,
 				hasChunkBelow: index < 2,
@@ -425,18 +423,18 @@ test("unselected pending content follows its exact source reservation without ac
 				pendingUpdateId: f.proposal._id,
 				proposalRevision: f.proposal.revision,
 				chunkIndex: index,
-				textChunk: `row${index}`,
 				startIndex: index * 4,
 				endIndex: (index + 1) * 4,
 				lineStart: index + 1,
 				lineEnd: index + 1,
 				chunkFlags: 0,
 			};
-			const textChunkId = await ctx.db.insert("files_text_chunks", fields);
+			const text = `row${index}`;
+			const textChunkId = await ctx.db.insert("files_text_chunks", { ...fields, textChunk: text });
 			const plain = {
 				...fields,
 				textChunkId,
-				plainTextChunk: fields.textChunk,
+				plainTextChunk: text,
 				hasChunkAbove: index > 0,
 				hasChunkBelow: index < 2,
 			};
@@ -444,14 +442,12 @@ test("unselected pending content follows its exact source reservation without ac
 			beforeIds.push(
 				await ctx.db.insert("files_plain_text_chunks", {
 					...plain,
-					path: f.before.path,
 					moveView: index === 1 ? { cohortId: f.cohortId, view: "before" } : undefined,
 				}),
 			);
 			afterIds.push(
 				await ctx.db.insert("files_plain_text_chunks", {
 					...plain,
-					path: f.after.path,
 					moveView: { cohortId: f.cohortId, view: "after" },
 				}),
 			);
@@ -467,14 +463,14 @@ test("unselected pending content follows its exact source reservation without ac
 			};
 			const plain = await files_saved_content_collect(files_saved_content_db_plain_text_chunks(ctx.db, args));
 			const text = await files_saved_content_collect(files_saved_content_db_text_chunks(ctx.db, args));
-			return { paths: plain.map((row) => row.path), text: text.map((row) => row.textChunk).join("") };
+			return { ids: plain.map((row) => row._id), text: text.map((row) => row.textChunk).join("") };
 		});
 	expect(await read(), "unselected content keeps every original scope row during staging").toEqual({
-		paths: Array(3).fill(f.before.path),
+		ids: chunks.beforeIds,
 		text: "row0row1row2",
 	});
 	expect(await read("after"), "fixed after reads use the reserved owner's staged scope").toEqual({
-		paths: Array(3).fill(f.after.path),
+		ids: chunks.afterIds,
 		text: "row0row1row2",
 	});
 	await f.t.run(async (ctx) => {
@@ -484,7 +480,7 @@ test("unselected pending content follows its exact source reservation without ac
 	await f.publish();
 	await f.t.run((ctx) => ctx.db.patch("files_plain_text_chunks", chunks.afterIds[0]!, { moveView: undefined }));
 	expect(await read(), "unselected content keeps every selected scope row during cleanup").toEqual({
-		paths: Array(3).fill(f.after.path),
+		ids: chunks.afterIds,
 		text: "row0row1row2",
 	});
 	expect(

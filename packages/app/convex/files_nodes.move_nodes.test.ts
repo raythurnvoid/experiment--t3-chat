@@ -561,7 +561,7 @@ describe("reviewed Move graph", () => {
 					const docs = await ctx.db.query(table).collect();
 					expect(docs).toHaveLength(2);
 					for (const doc of docs) {
-						expect(doc.path).toBe(path);
+						if ("docKind" in doc) expect(doc.path).toBe(path);
 						expect(doc.archiveOperationId).toBe(
 							doc.sourceKind === "committed" && doc.fileNodeId === occupant._id
 								? archived.archiveOperationId

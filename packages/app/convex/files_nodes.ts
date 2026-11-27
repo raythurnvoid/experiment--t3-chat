@@ -6557,6 +6557,41 @@ export type files_nodes_match_plain_text_file_lines_Result =
 
 // #endregion match
 
+async function db_search_snippet(ctx: QueryCtx, chunk: Doc<"files_plain_text_chunks">, savedOnly = false) {
+	// Saved-only search must verify the source version even for a legacy Move copy.
+	if (!savedOnly && chunk.textChunk !== undefined) return chunk.textChunk;
+	const exact = await ctx.db.get("files_text_chunks", chunk.textChunkId);
+	if (savedOnly && !exact) return null;
+	if (
+		!exact ||
+		exact.organizationId !== chunk.organizationId ||
+		exact.workspaceId !== chunk.workspaceId ||
+		(exact.sourceKind === "committed"
+			? chunk.sourceKind !== "committed" || exact.fileNodeId !== chunk.fileNodeId
+			: chunk.sourceKind !== "pending" ||
+				exact.userId !== chunk.userId ||
+				exact.pendingUpdateId !== chunk.pendingUpdateId ||
+				exact.proposalRevision !== chunk.proposalRevision ||
+				exact.target.kind !== chunk.target.kind ||
+				exact.target.id !== chunk.target.id)
+	) {
+		const errorMessage = "Search chunk lost its exact text";
+		const errorData = { chunkId: chunk._id, textChunkId: chunk.textChunkId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	// The saved-only reader has checked the hit against the current file. The source must match too.
+	if (
+		savedOnly &&
+		(exact.sourceKind !== "committed" ||
+			chunk.sourceKind !== "committed" ||
+			!chunk.contentHeadId ||
+			exact.contentHeadId !== chunk.contentHeadId)
+	)
+		return null;
+	return exact.textChunk;
+}
+
 function db_text_search_filtered_query(
 	ctx: QueryCtx,
 	args: {
@@ -6762,6 +6797,8 @@ export const text_search_files = internalQuery({
 		const pathPrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}/` : null;
 		for (const searchChunk of result.page) {
 			const entry = await reader.resolveDocument(searchChunk);
+			const visible = entry && (!pathPrefix || entry.path.startsWith(pathPrefix));
+			const textChunk = visible ? await db_search_snippet(ctx, searchChunk, args.savedOnly) : null;
 			// A search page cannot stop part way, because its cursor covers the whole page. So the action
 			// reads the same cursor again with fewer rows.
 			if (reader.exhausted || files_pending_overlay_list_over_budget(await ctx.meta.getTransactionMetrics()))
@@ -6769,10 +6806,10 @@ export const text_search_files = internalQuery({
 			// The folder is checked per row, on the top 1,024 matches of the workspace. Accepted exception:
 			// content search filters after the search index; a locked item is never returned for a content
 			// match.
-			if (!entry || (pathPrefix && !entry.path.startsWith(pathPrefix))) continue;
+			if (!entry || textChunk === null) continue;
 			items.push({
 				...entry,
-				textChunk: searchChunk.textChunk,
+				textChunk,
 				chunkIndex: searchChunk.chunkIndex,
 				startIndex: searchChunk.startIndex,
 				endIndex: searchChunk.endIndex,
@@ -7114,11 +7151,14 @@ export const search_saved = query({
 			);
 			return {
 				...result,
-				page: rows.map((row) => {
-					// Chunks come in relevance order, so the first chunk of a file is its best one.
-					const chunk = chunks.find((searchChunk) => searchChunk.fileNodeId === row.nodeId)!;
-					return { ...row, textChunk: chunk.textChunk, lineStart: chunk.lineStart };
-				}),
+				page: await Promise.all(
+					rows.map(async (row) => {
+						// Chunks come in relevance order, so the first chunk of a file is its best one.
+						const chunk = chunks.find((searchChunk) => searchChunk.fileNodeId === row.nodeId)!;
+						const textChunk = (await db_search_snippet(ctx, chunk))!;
+						return { ...row, textChunk, lineStart: chunk.lineStart };
+					}),
+				),
 			};
 		}
 

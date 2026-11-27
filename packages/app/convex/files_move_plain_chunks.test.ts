@@ -271,7 +271,10 @@ async function assert_reused(f: Fixture, original: Awaited<ReturnType<typeof chu
 		current.every((row) => row.moveView === undefined),
 		"pure Move leaves original chunks untagged",
 	).toBe(true);
-	expect(current.map((row) => row.textChunk).join("")).toBe(text);
+	const exact = await f.t.run((ctx) =>
+		Promise.all(current.map((row) => ctx.db.get("files_text_chunks", row.textChunkId))),
+	);
+	expect(exact.map((row) => row?.textChunk).join("")).toBe(text);
 }
 
 async function finish(f: Fixture, move: Move) {
@@ -285,11 +288,6 @@ async function finish(f: Fixture, move: Move) {
 				.unique(),
 		),
 	).toBeNull();
-	const node = (await f.t.run((ctx) => ctx.db.get("files_nodes", f.nodeId)))!;
-	expect(
-		(await chunks(f)).every((row) => row.path === node.path),
-		"reused chunk path cache finishes",
-	).toBe(true);
 }
 
 async function add_member(f: Fixture, name: string, role: "viewer" | "member" = "viewer") {
@@ -510,7 +508,7 @@ describe("Move unchanged plain chunks", () => {
 		120_000,
 	);
 
-	test("a later Move repairs the current path while an earlier cache job waits", async () => {
+	test("consecutive Moves show the current path without a search chunk repair", async () => {
 		const f = await fixture();
 		const original = await chunks(f);
 		const first = await start_move(f);
@@ -524,17 +522,7 @@ describe("Move unchanged plain chunks", () => {
 				.withIndex("by_kind_key", (q) => q.eq("kind", "saved_scope").eq("key", f.nodeId))
 				.unique(),
 		);
-		expect(cache, "physical finish queues the reused chunk cache repair").not.toBeNull();
-		await f.t.mutation(internal.files_pending_overlay.run_job, {
-			kind: cache!.kind,
-			key: cache!.key,
-			nextAttemptAt: cache!.nextAttemptAt,
-		});
-		expect(
-			(await f.t.run((ctx) => ctx.db.get("files_pending_overlay_jobs", cache!._id)))?.cursor,
-			"the first cache pass started before the later Move",
-		).not.toBeNull();
-		expect((await chunks(f)).every((row) => row.path === "/source/note.txt")).toBe(true);
+		expect(cache, "the Move finishes without a search chunk repair").toBeNull();
 		await assert_reads(f, "/target/source/note.txt");
 		const second = await start_move(f, f.sourceId, "root");
 		await drive_to(f, second, "complete");
@@ -542,7 +530,6 @@ describe("Move unchanged plain chunks", () => {
 		await finish(f, second);
 		await assert_reused(f, original);
 		await assert_reads(f, "/source/note.txt");
-		expect((await chunks(f)).every((row) => row.path === "/source/note.txt")).toBe(true);
 	}, 120_000);
 
 	test("leaves a separately archived child's chunks as they were", async () => {

@@ -515,7 +515,7 @@ repeats access and policy checks, chunks content, and publishes all file docs in
 It shares the database helpers in `files_nodes_create_db` with folder creation and the public API.
 Keep membership and write-access queries separate so their cached results remain reusable.
 
-Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
+Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows store the searchable plain text and link to the original snippet through `files_plain_text_chunks.textChunkId`. Search resolves the path and checks access before it reads that snippet.
 
 # Public Link Reader
 

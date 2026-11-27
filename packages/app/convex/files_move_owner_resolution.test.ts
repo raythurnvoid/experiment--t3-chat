@@ -61,9 +61,9 @@ async function read_sibling(
 }
 
 function side_payload(rows: Array<Doc<"files_plain_text_chunks"> | Doc<"files_metadata_docs">>, path?: string) {
-	// Save updates scope paths while keeping the same pending content and metadata values.
+	// Save updates metadata paths while keeping the same pending content and values.
 	return rows.map(({ _id: _id, _creationTime: _created, moveView: _view, ...row }) =>
-		path === undefined ? row : { ...row, path, ...("treePath" in row ? { treePath: path } : {}) },
+		path === undefined || !("treePath" in row) ? row : { ...row, path, treePath: path },
 	);
 }
 

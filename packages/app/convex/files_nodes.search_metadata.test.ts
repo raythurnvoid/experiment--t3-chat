@@ -342,6 +342,70 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	expect(scopedTinyLimit.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
 });
 
+test("saved search skips a snippet linked to another content head", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: "clerk-search-head" });
+		return await test_mocks_fill_db_with.membership(ctx, { userId });
+	});
+	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+	test_setup_r2_capture();
+	const nodeId = await test_materialize_markdown_file({ t, asUser, db, path: "/note.md", markdown: "# marker" });
+	const search = () =>
+		t.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			subject: { kind: "user", userId: db.userId, plugin: null },
+			savedOnly: true,
+			query: "marker",
+			numItems: 10,
+			cursor: null,
+		});
+	expect((await search()).items).toMatchObject([{ textChunk: expect.stringContaining("# marker") }]);
+	await t.run(async (ctx) => {
+		const hit = (await ctx.db.query("files_plain_text_chunks").first())!;
+		const exact = await ctx.db.get("files_text_chunks", hit.textChunkId);
+		if (exact?.sourceKind !== "committed" || !exact.contentHeadId) throw new Error("Expected a saved source");
+		const head = (await ctx.db.get("files_saved_content_heads", exact.contentHeadId))!;
+		const { _id, _creationTime, ...fields } = head;
+		const olderHeadId = await ctx.db.insert("files_saved_content_heads", {
+			...fields,
+			fileNodeId: nodeId,
+			retired: true,
+		});
+		await ctx.db.patch("files_text_chunks", exact._id, {
+			contentHeadId: olderHeadId,
+			textChunk: "old private snippet",
+		});
+	});
+	expect((await search()).items).toEqual([]);
+	await t.run(async (ctx) => {
+		const hit = (await ctx.db.query("files_plain_text_chunks").first())!;
+		await ctx.db.patch("files_plain_text_chunks", hit._id, { textChunk: "# marker" });
+	});
+	const visible = await asUser.query(api.files_nodes.search_saved, {
+		membershipId: db.membershipId,
+		clause: { kind: "content", text: "marker" },
+		paginationOpts: { numItems: 10, cursor: null },
+	});
+	expect(visible.page).toMatchObject([{ textChunk: "# marker" }]);
+	const key = await asUser.mutation(api.public_api.api_credential_create, {
+		membershipId: db.membershipId,
+		serviceAccountId: null,
+		name: "Saved search",
+		scopes: ["files:list", "files:read"],
+	});
+	if (key._nay) throw new Error(key._nay.message);
+	const response = await t.fetch("/api/v1/files/search", {
+		method: "POST",
+		headers: { Authorization: `Bearer ${key._yay.credential}`, "Content-Type": "application/json" },
+		body: JSON.stringify({ query: "marker" }),
+	});
+	expect(response.status).toBe(200);
+	expect((await response.json()).items, "public search skips a Move copy from an older version").toEqual([]);
+});
+
 test("text_search_files searches pending unstaged content instead of stale committed chunks", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -457,8 +521,9 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			)
 			.first();
 		if (!plainTextChunk) throw new Error("Expected pending plain-text chunk");
+		expect(plainTextChunk).not.toHaveProperty("textChunk");
+		expect(plainTextChunk).not.toHaveProperty("path");
 		expect(plainTextChunk).toMatchObject({
-			textChunk: expectedChunk.textChunk,
 			startIndex: expectedChunk.startIndex,
 			endIndex: expectedChunk.endIndex,
 			lineStart: expectedChunk.lineStart,
@@ -467,10 +532,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 			hasChunkAbove: expectedChunk.chunkIndex > 0,
 			hasChunkBelow: expectedChunk.chunkIndex < expectedChunks._yay.length - 1,
 		});
-		await ctx.db.patch("files_text_chunks", plainTextChunk.textChunkId, {
-			textChunk: "stale linked markdown chunk",
-			lineStart: 999,
-			lineEnd: 999,
+		expect(await ctx.db.get("files_text_chunks", plainTextChunk.textChunkId)).toMatchObject({
+			textChunk: expectedChunk.textChunk,
 		});
 	});
 
