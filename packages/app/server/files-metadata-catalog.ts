@@ -73,7 +73,7 @@ export const files_metadata_catalog_SOURCE_FIELDS = [
 	"docKind",
 	"fieldPath",
 	"valueKind",
-	"stringValue",
+	"searchValue",
 ] as const;
 
 type Source = Partial<
@@ -209,11 +209,11 @@ function add_doc(changes: files_metadata_catalog_Changes, doc: Source | null, si
 	add_change(changes, { ...base, ...area, family: "area_key", count: 0, kindCounts: valueKinds });
 	if (
 		doc.valueKind === "string" &&
-		doc.stringValue !== undefined &&
-		files_metadata_catalog_value_is_short(doc.stringValue)
+		typeof doc.searchValue === "string" &&
+		files_metadata_catalog_value_is_short(doc.searchValue)
 	) {
-		add_change(changes, { ...base, family: "value", stringValue: doc.stringValue, count: sign });
-		add_change(changes, { ...base, ...area, family: "area_value", stringValue: doc.stringValue, count: sign });
+		add_change(changes, { ...base, family: "value", stringValue: doc.searchValue, count: sign });
+		add_change(changes, { ...base, ...area, family: "area_value", stringValue: doc.searchValue, count: sign });
 	}
 }
 

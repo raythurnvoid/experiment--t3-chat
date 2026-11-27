@@ -672,7 +672,7 @@ describe("private pending text", () => {
 		});
 		const docs = await draft.t.run((ctx) => ctx.db.query("files_metadata_docs").collect());
 		const values = docs.filter((doc) => doc.docKind === "value");
-		expect(values.map((doc) => ({ fieldPath: doc.fieldPath, stringValue: doc.stringValue }))).toEqual(
+		expect(values.map((doc) => ({ fieldPath: doc.fieldPath, stringValue: doc.searchValue }))).toEqual(
 			path.endsWith(".md")
 				? [
 						{ fieldPath: "metadata.status", stringValue: "captured" },

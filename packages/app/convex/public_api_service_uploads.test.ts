@@ -2417,7 +2417,7 @@ describe("service upload targets", () => {
 		);
 		expect(
 			Object.fromEntries(
-				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.searchValue]),
 			),
 		).toEqual({
 			"metadata.source": "plugin",

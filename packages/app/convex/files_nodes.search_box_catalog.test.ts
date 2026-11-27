@@ -368,7 +368,7 @@ describe("search box doors", () => {
 					fieldPath: "frontmatter.status",
 					docKind: "value",
 					valueKind: "string",
-					stringValue: `v${String(index).padStart(3, "0")}`,
+					searchValue: `v${String(index).padStart(3, "0")}`,
 				});
 		});
 		await test_compact_metadata_catalog(t);
@@ -488,7 +488,7 @@ describe("search box doors", () => {
 					fieldPath,
 				};
 				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "field" });
-				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "value", valueKind: "string", stringValue: "x" });
+				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "value", valueKind: "string", searchValue: "x" });
 			}
 			// A value longer than the prefix cap: a prefix at the cap finds it, one past the cap is refused.
 			await ctx.db.insert("files_metadata_docs", {
@@ -502,7 +502,7 @@ describe("search box doors", () => {
 				fieldPath: "frontmatter.status",
 				docKind: "value",
 				valueKind: "string",
-				stringValue: "o".repeat(201),
+				searchValue: "o".repeat(201),
 			});
 		});
 		const keys = (await list_keys({ t, asWho: seeded.asOwner, membershipId: seeded.db.membershipId })).map(

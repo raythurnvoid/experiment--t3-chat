@@ -802,7 +802,7 @@ describe("Move write reservations", () => {
 					...base,
 					docKind: "value",
 					valueKind: "string",
-					stringValue: "secret",
+					searchValue: "secret",
 				});
 			}
 		});
@@ -1190,7 +1190,7 @@ describe("Move write reservations", () => {
 							...base,
 							docKind: "value" as const,
 							valueKind: "string" as const,
-							stringValue: `r${round}k${key}v${value}`,
+							searchValue: `r${round}k${key}v${value}`,
 						})),
 					];
 				}).flat(),

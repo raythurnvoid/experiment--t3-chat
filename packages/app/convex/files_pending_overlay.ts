@@ -1,3 +1,4 @@
+import { files_metadata_typed_fields } from "../server/files-metadata-index.ts";
 // Jobs of the pending overlay (`server/files-pending-overlay.ts`): the work a flush cannot do in
 // the writer's transaction. Each job has one task doc per (kind, key) in
 // `files_pending_overlay_jobs`. A job reads its cursor from the doc, recomputes a page of targets
@@ -506,9 +507,7 @@ async function db_place_field_values(db: QueryCtx["db"], place: Doc<"files_pendi
 		docKind: doc.docKind,
 		fieldPath: doc.fieldPath,
 		valueKind: doc.valueKind,
-		stringValue: doc.stringValue,
-		numberValue: doc.numberValue,
-		booleanValue: doc.booleanValue,
+		...files_metadata_typed_fields(doc),
 	}));
 }
 
@@ -797,9 +796,7 @@ async function db_run_saved_places_job(
 					docKind: doc.docKind,
 					fieldPath: doc.fieldPath,
 					valueKind: doc.valueKind,
-					stringValue: doc.stringValue,
-					numberValue: doc.numberValue,
-					booleanValue: doc.booleanValue,
+					...files_metadata_typed_fields(doc),
 					parent: place.parent,
 					ownerTreePath: place.ownerTreePath,
 					isVisible: place.isVisible,

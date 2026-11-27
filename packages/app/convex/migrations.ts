@@ -65,7 +65,7 @@ const metadata_page_args = {
 };
 
 export const migrate_metadata_values = internalMutation({
-	args: { ...metadata_page_args, operation: v.literal("backfill"), preview: v.boolean() },
+	args: { ...metadata_page_args, operation: v.literal("strip"), preview: v.boolean() },
 	handler: async (ctx, args) => {
 		await require_idle_moves(ctx);
 		const page = await ctx.db
@@ -77,10 +77,11 @@ export const migrate_metadata_values = internalMutation({
 			if ("kind" in row && row.kind === "text") continue;
 			const doc = "value" in row ? row.value : row;
 			const searchValue = canonical_value(doc);
-			if (Object.is(doc.searchValue, searchValue)) continue;
-			if ("value" in row)
-				await ctx.db.patch("files_index_candidates", row._id, { value: { ...row.value, searchValue } });
-			else await ctx.db.patch("files_metadata_docs", row._id, { searchValue });
+			if (!Object.is(doc.searchValue, searchValue)) throw new Error("Missing combined value. Finish the bridge audit.");
+			if (doc.stringValue === undefined && doc.numberValue === undefined && doc.booleanValue === undefined) continue;
+			const strip = { stringValue: undefined, numberValue: undefined, booleanValue: undefined };
+			if ("value" in row) await ctx.db.patch("files_index_candidates", row._id, { value: { ...row.value, ...strip } });
+			else await ctx.db.patch("files_metadata_docs", row._id, strip);
 			changed++;
 		}
 		const { bytesRead, bytesWritten, documentsRead, documentsWritten } = await ctx.meta.getTransactionMetrics();
@@ -112,7 +113,7 @@ export const audit_metadata_values = internalQuery({
 			const legacy = stringValue ?? numberValue ?? booleanValue;
 			if (
 				(args.layout !== "original" && !Object.is(searchValue, value)) ||
-				(args.layout === "strict" ? legacy !== undefined : !Object.is(legacy, value))
+				(args.layout === "strict" ? legacy !== undefined : args.layout === "dual" && !Object.is(legacy, value))
 			)
 				throw new Error("Metadata layout differs on " + row._id);
 			const normalized = { ...kept, ...(value === undefined ? {} : { searchValue: value }) };

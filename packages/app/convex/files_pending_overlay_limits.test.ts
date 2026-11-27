@@ -645,7 +645,7 @@ describe("saved scope job", () => {
 								...base,
 								docKind: "value",
 								valueKind: "string",
-								stringValue: head + "v".repeat(1024 - head.length),
+								searchValue: head + "v".repeat(1024 - head.length),
 							});
 						}
 					}
@@ -747,7 +747,7 @@ describe("metadata catalog", () => {
 								...base,
 								docKind: "value" as const,
 								valueKind: "string" as const,
-								stringValue: head + "v".repeat(1024 - head.length),
+								searchValue: head + "v".repeat(1024 - head.length),
 							};
 						}),
 					];

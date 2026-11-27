@@ -30,7 +30,8 @@ import {
 } from "./access_control.ts";
 import { access_control_subject_reads_drafts } from "../shared/access-control.ts";
 import { organizations_db_get_membership } from "./organizations_memberships_db.ts";
-import { files_metadata_db_query_saved_plan, files_metadata_db_query_saved_plan_in_area } from "./files_metadata.ts";
+import { files_metadata_folder_range_fits, files_metadata_typed_fields } from "../server/files-metadata-index.ts";
+import { files_metadata_db_query_saved_plan } from "./files_metadata.ts";
 import { files_db_get_visible_node_by_path } from "../server/files.ts";
 import { files_visible_db_create_reader } from "./files_visible_db.ts";
 import {
@@ -1534,6 +1535,7 @@ async function db_stream_subtree_range(
 		!place.ownerTreePath.startsWith(opened.treePath) ||
 		node?.kind !== "folder" ||
 		node.archiveOperationId !== null ||
+		!(await reader.canRead(node)) ||
 		// The rows below are checked on their own, but their paths would name the destination.
 		(await db_place_destinations_readable(ctx, reader, place)) !== true
 	)
@@ -1869,6 +1871,9 @@ export const internal_list_subtree_boundaries = internalQuery({
 		movedIn: v.optional(moved_in_validator),
 		frame: files_tree_walk_frame_validator,
 		withRows: v.boolean(),
+		metadataBound: v.optional(
+			v.object({ plan: files_metadata_search_plan_validator, sources: v.array(files_index_stream_validator) }),
+		),
 		/**
 		 * `find -mmin` / `-mtime`: a locked row is listed only when it changed in the window.
 		 */
@@ -1877,6 +1882,7 @@ export const internal_list_subtree_boundaries = internalQuery({
 	returns: v_result({
 		_yay: v.object({
 			root: v.union(files_pending_parent_validator, v.null()),
+			longBoundPath: v.optional(v.string()),
 			boundaries: v.array(
 				v.object({
 					key: v.array(v.any()),
@@ -1936,6 +1942,7 @@ export const internal_list_subtree_boundaries = internalQuery({
 			return Result({ _nay: { message: "Listing is too broad. Narrow the folder or filters." } });
 		const withLocked = await db_stream_frame_lists_locked(ctx, args, reader, args.frame);
 		const boundaries = [];
+		const blockedParents = new Set<Id<"files_nodes">>();
 		for (const { node, status } of result.page) {
 			// The walk does not enter a locked one either way, so leaving it out only drops its row and line.
 			if (!withLocked && status !== "readable" && status !== "former_readable") continue;
@@ -1948,6 +1955,39 @@ export const internal_list_subtree_boundaries = internalQuery({
 				continue;
 			const treePath = ownerTreePath + node.treePath.slice(savedTreePath.length);
 			const path = node.kind === "folder" ? treePath.slice(0, -1) : treePath;
+			const bound = args.metadataBound;
+			if (
+				bound &&
+				(bound.plan.op === "eq" || bound.plan.op === "exists") &&
+				(status === "readable" || status === "former_readable") &&
+				!files_metadata_folder_range_fits(
+					args,
+					bound.plan,
+					{
+						start: { treePath: node.treePath, scopeNodeId: node._id, kind: node.kind },
+						sources: bound.sources.map((source) => (source.kind === "cohort" ? source : {})),
+					},
+					null,
+				)
+			) {
+				// A scope repair can leave this boundary below a newly locked parent.
+				let current: typeof node | null = node;
+				while (current && current.treePath.startsWith(savedTreePath)) {
+					if (blockedParents.has(current._id)) break;
+					if (
+						current.organizationId !== args.organizationId ||
+						current.workspaceId !== args.workspaceId ||
+						!(await (reader ? reader.canRead(current) : checker.can(current, "content.read")))
+					) {
+						blockedParents.add(current._id);
+						break;
+					}
+					if (current._id === subtree.node?._id || (current.parentId === files_ROOT_ID && subtree.node === null))
+						return Result({ _yay: { root: root.parent, ...none, longBoundPath: path } });
+					if (current.parentId === files_ROOT_ID) break;
+					current = await files_saved_placement_db_get_node(ctx.db, current.parentId, reader?.fixedView);
+				}
+			}
 			const matches = args.withRows && stream_filter_matches(args, node) && updated_in(args.updated, node.updatedAt);
 			boundaries.push({
 				key: [node.treePath, node._creationTime, node._id],
@@ -2175,15 +2215,13 @@ export const internal_list_subtree_moved_in_folders = internalQuery({
 			cut: false,
 			indexKey,
 			mergeKey: indexKey,
-			// The nested stream checks access on every row it shows. A folder whose destination the user
-			// cannot read opens none: its rows would all be dropped, so the stream would only scan.
+			// A private Move needs access to both ends before its saved path can affect a search.
 			decide: async (place) => {
 				if (place.target.kind !== "saved") return null;
 				if ((await db_place_destinations_readable(ctx, reader, place)) !== true) return null;
-				if (args.outsideOnly && root.savedNode) {
-					const node = await files_saved_placement_db_get_node(ctx.db, place.target.id);
-					if (node?.treePath.startsWith(root.savedNode.treePath)) return null;
-				}
+				const node = await files_saved_placement_db_get_node(ctx.db, place.target.id);
+				if (!node || node.archiveOperationId !== null || !(await reader.canRead(node))) return null;
+				if (args.outsideOnly && root.savedNode && node.treePath.startsWith(root.savedNode.treePath)) return null;
 				return { item: null, movedIn: { savedNodeId: place.target.id, ownerTreePath: place.ownerTreePath } };
 			},
 		});
@@ -2776,25 +2814,24 @@ function metadata_match(
  */
 function metadata_plan_matches(
 	plan: Infer<typeof files_metadata_search_plan_validator>,
-	doc: Pick<Doc<"files_metadata_docs">, "docKind" | "valueKind" | "stringValue" | "numberValue" | "booleanValue">,
+	doc: Pick<Doc<"files_metadata_docs">, "docKind" | "valueKind" | "searchValue">,
 ) {
 	switch (plan.op) {
 		case "exists":
 			return doc.docKind === "field";
 		case "eq":
+			return doc.docKind === "value" && doc.valueKind === typeof plan.value && doc.searchValue === plan.value;
+		case "prefix":
 			return (
 				doc.docKind === "value" &&
-				(typeof plan.value === "string"
-					? doc.valueKind === "string" && doc.stringValue === plan.value
-					: typeof plan.value === "number"
-						? doc.valueKind === "number" && doc.numberValue === plan.value
-						: doc.valueKind === "boolean" && doc.booleanValue === plan.value)
+				doc.valueKind === "string" &&
+				typeof doc.searchValue === "string" &&
+				doc.searchValue.startsWith(plan.value)
 			);
-		case "prefix":
-			return doc.docKind === "value" && doc.valueKind === "string" && (doc.stringValue ?? "").startsWith(plan.value);
 		case "range": {
-			if (doc.docKind !== "value" || doc.valueKind !== plan.valueKind || doc.numberValue === undefined) return false;
-			const value = doc.numberValue;
+			if (doc.docKind !== "value" || doc.valueKind !== plan.valueKind || typeof doc.searchValue !== "number")
+				return false;
+			const value = doc.searchValue;
 			return (
 				(plan.gte == null || value >= plan.gte) &&
 				(plan.gt == null || value > plan.gt) &&
@@ -2832,7 +2869,14 @@ function metadata_range(
 	treePath: string | null,
 ) {
 	const { plan } = args;
-	const valueField = plan.op === "prefix" ? "stringValue" : plan.op === "range" ? "numberValue" : null;
+	const valueField =
+		plan.op === "prefix" || plan.op === "range"
+			? treeField === "treePath"
+				? "searchValue"
+				: plan.op === "prefix"
+					? "stringValue"
+					: "numberValue"
+			: null;
 	const lower =
 		plan.op === "prefix"
 			? { key: [plan.value], inclusive: true }
@@ -3067,16 +3111,28 @@ export const internal_search_metadata_saved = internalQuery({
 		const index = await files_saved_index_db_get_stream(ctx.db, args, args.indexStream ?? args.savedStream);
 		const byTree = plan.op === "exists" || plan.op === "eq";
 
-		// The saved folder whose range `exists` and `eq` read.
+		// A private Move or its permissions can change between opening the walk and reading this range.
 		let rangeFolder = root.savedNode;
 		if (args.movedIn) {
-			if (!reader || !byTree) return stream_done(root.parent);
-			rangeFolder = await files_saved_placement_db_get_node(ctx.db, args.movedIn.savedNodeId);
-			if (rangeFolder?.kind !== "folder" || rangeFolder.archiveOperationId !== null) return stream_done(root.parent);
+			if (!byTree) return stream_done(root.parent);
+			const subtree = await db_stream_subtree_range(ctx, args, opened._yay);
+			if (!subtree) return stream_done(root.parent);
+			rangeFolder = subtree.node;
 		} else if (byTree && root.parent.kind === "private") return stream_done(root.parent);
 
 		const under = args.movedIn ? args.movedIn.ownerTreePath : opened._yay.treePath;
 		const savedTreePath = rangeFolder?.treePath ?? "/";
+		if (args.frame) {
+			const checker = access_control_create_file_checker(ctx, args);
+			await files_tree_walk_check_frame(
+				{
+					get_node: (id) => files_saved_placement_db_get_node(ctx.db, id),
+					can: reader ? reader.canRead : (node) => checker.can(node, "content.read"),
+					start: { treePath: savedTreePath, scopeNodeId: rangeFolder?.restrictedScopeNodeId ?? null },
+				},
+				args.frame,
+			);
+		}
 		// The shared cursor uses the owner's path. This native range uses the saved path.
 		let seek = args.seek;
 		if (byTree && seek?.key.length && typeof seek.key[0] === "string") {
@@ -3091,34 +3147,24 @@ export const internal_search_metadata_saved = internalQuery({
 		const frameRange = args.frame ? files_tree_walk_phase(args.frame, ["_creationTime", "_id"]) : null;
 		if (frameRange && !frameRange.bounds) return stream_done(root.parent);
 		const everyArea = !args.frame && (await db_reads_every_area(ctx, args));
-		const range = !args.frame && (args.seek || !everyArea) ? metadata_range({ ...args, seek }, "treePath", null) : null;
-		if (!args.frame && (args.seek || !everyArea) && !range) return stream_done(root.parent);
-		const nativePage = await (
-			everyArea
-				? files_metadata_db_query_saved_plan(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						plan,
-						moveView: index.tag,
-						treePathPrefix: null,
-						bounds: range?.bounds,
-					})
-				: files_metadata_db_query_saved_plan_in_area(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						plan,
-						scopeNodeId: args.frame?.scopeNodeId ?? null,
-						moveView: index.tag,
-						bounds: frameRange?.bounds ?? range!.bounds,
-					})
-		).paginate(
+		const range = args.frame ? null : metadata_range({ ...args, seek }, "treePath", null);
+		if (!args.frame && !range) return stream_done(root.parent);
+		const nativePage = await files_metadata_db_query_saved_plan(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			plan,
+			moveView: index.tag,
+			scopeNodeId: everyArea ? undefined : (args.frame?.scopeNodeId ?? null),
+			bounds: frameRange?.bounds ?? range!.bounds,
+		}).paginate(
 			frameRange
 				? { cursor: null, numItems: stream_page_size(args.numItems) }
 				: (range?.pagination ?? { cursor: args.position.cursor, numItems: stream_page_size(args.numItems) }),
 		);
 		const page = range ? range.finish(nativePage) : nativePage;
 
-		const indexKey = (doc: Doc<"files_metadata_docs">) => metadata_index_key(plan, doc, doc.treePath);
+		const indexKey = (doc: Doc<"files_metadata_docs">) =>
+			metadata_index_key(plan, { ...doc, ...files_metadata_typed_fields(doc) }, doc.treePath);
 		// Rows under the listing folder in saved space come from the main stream, not a moved-in one.
 		const listingFolder = args.movedIn ? root.savedNode : null;
 		// In a moved-in folder, a row must sit at its saved path inside that folder. A row under a
@@ -3128,7 +3174,13 @@ export const internal_search_metadata_saved = internalQuery({
 		// keyed by its saved path sorts outside the listing, so its stream would stay open to the end
 		// and many of them would overflow the cursor.
 		const mergeKey = (doc: Doc<"files_metadata_docs">) =>
-			byTree ? metadata_index_key(plan, doc, under + doc.treePath.slice(savedTreePath.length)) : indexKey(doc);
+			byTree
+				? metadata_index_key(
+						plan,
+						{ ...doc, ...files_metadata_typed_fields(doc) },
+						under + doc.treePath.slice(savedTreePath.length),
+					)
+				: indexKey(doc);
 		return await db_stream_decide(ctx, {
 			root: root.parent,
 			requireComplete: args.requireComplete,
@@ -3144,7 +3196,7 @@ export const internal_search_metadata_saved = internalQuery({
 				if (doc.sourceKind !== "committed") return null;
 				const node = await files_saved_placement_db_get_node(ctx.db, doc.fileNodeId);
 				if (!node || node.archiveOperationId !== null) return null;
-				const match = metadata_match(doc, "committed");
+				const match = metadata_match({ ...doc, ...files_metadata_typed_fields(doc) }, "committed");
 				if (!reader) {
 					if (byTree && !`${node.path}/`.startsWith(under)) return null;
 					const readable = await access_control_db_filter_readable_file_nodes(ctx, {
@@ -3288,7 +3340,7 @@ export const internal_search_metadata_pending = internalQuery({
 					path: resolved.entry.path,
 					overlayUserId: args.visibilityUserId,
 				});
-				return { ...decision, match: metadata_match(doc, "pending") };
+				return { ...decision, match: metadata_match({ ...doc, ...files_metadata_typed_fields(doc) }, "pending") };
 			},
 		});
 	},

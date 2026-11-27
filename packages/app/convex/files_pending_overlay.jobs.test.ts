@@ -711,7 +711,7 @@ describe("files_pending_overlay flush", () => {
 				.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", place.pendingUpdateId))
 				.collect();
 			for (const doc of docs)
-				if (doc.stringValue === "draft") await ctx.db.patch("files_metadata_docs", doc._id, { stringValue: "done" });
+				if (doc.searchValue === "draft") await ctx.db.patch("files_metadata_docs", doc._id, { searchValue: "done" });
 			await ctx.db.insert(
 				"files_pending_updates",
 				proposal_doc(f.v, target(y), { pendingArchive: { fromPath: y.path, area: null, at: Date.now() } }),

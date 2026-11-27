@@ -25,8 +25,7 @@ import {
 } from "./setup.test.ts";
 
 // Round up the settled corpus measurements. Lower both limits when storage falls.
-// Both sets of metadata indexes coexist only during the bridge.
-const BUDGET_TOTAL = 82;
+const BUDGET_TOTAL = 79;
 const BUDGET_PER_BYTE = 26;
 
 beforeEach(() => {

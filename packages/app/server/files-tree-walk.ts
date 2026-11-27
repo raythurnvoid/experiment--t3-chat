@@ -148,7 +148,7 @@ const invalid_cursor = () =>
 /**
  * The end of a frame's range: after a folder's subtree, or right after a file.
  */
-function frame_end(frame: { treePath: string; kind: "folder" | "file" }) {
+export function files_tree_walk_frame_end(frame: { treePath: string; kind: "folder" | "file" }) {
 	return frame.kind === "folder" ? path_tree_prefix_upper_bound(frame.treePath) : `${frame.treePath}\u0000`;
 }
 
@@ -165,7 +165,7 @@ export function files_tree_walk_phase(frame: files_tree_walk_FrameArgs, idFields
 		order: "asc",
 		start: lower.key,
 		startInclusive: lower.inclusive,
-		end: [frame_end(frame)],
+		end: [files_tree_walk_frame_end(frame)],
 		endInclusive: false,
 	});
 	return { bounds: phases[frame.phase] ?? null, phaseCount: phases.length };
@@ -445,7 +445,7 @@ export async function files_tree_walk_page<Row>(args: {
 				continue;
 			}
 			// Locked: list it and read nothing under it. Boundaries and rows inside it are job lag.
-			skipBelow = [frame_end(boundary.node)];
+			skipBelow = [files_tree_walk_frame_end(boundary.node)];
 			lower = { key: skipBelow, inclusive: true };
 			if ((boundary.row || boundary.node.kind === "folder") && !seen.has(boundary.node._id)) {
 				seen.add(boundary.node._id);

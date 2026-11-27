@@ -1,7 +1,8 @@
 // The find, /tmp, search, grep, tree and stat tests, split from bash.test.ts so the files can run at the same
 // time.
 import type { FunctionReference } from "convex/server";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import * as files_metadata from "../convex/files_metadata.ts";
 import { api, internal } from "../convex/_generated/api.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
 import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
@@ -1308,7 +1309,7 @@ describe("bash_run_command", () => {
 			const result = await runner.run({ command: search(folder) });
 			expect(result.metadata.exitCode, result.stderr).toBe(2);
 			expect(result.stdout).toBe("");
-			expect(result.stderr).toContain(folder);
+			expect(result.stderr, "name the moved folder at its visible path").toContain(folder + "/z");
 			expect(result.stderr).toContain("workspace root");
 			expect(result.stderr).toContain("grep");
 			expect(
@@ -2103,6 +2104,82 @@ describe("recursive reads stop at a locked folder", () => {
 		return { t, seeded, owner, asOwner, member, runner, share };
 	}
 
+	test("metadata search keeps readable matches after access to a privately moved folder is revoked", async () => {
+		const source = "/" + Array<string>(6).fill("界".repeat(145)).join("/") + "/source";
+		const { owner, runner, asOwner, seeded } = await seed_locked_docs([
+			{ path: source + "/inside.md", content: topic("atlas") },
+			{ path: "/open/a.md", content: topic("atlas") },
+		]);
+		const move = await runner.run({ command: `mv ${mount}${source} ${mount}/open/moved` });
+		expect(move.metadata.exitCode, move.stderr).toBe(0);
+		const result = await asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.membershipId,
+			nodeId: await get_seeded_node_id(owner, source),
+		});
+		expect(result._nay).toBeUndefined();
+		await drain_scheduled_continuations(owner);
+
+		const found = await runner.run({
+			command: `meta search --path ${mount}/open --where '{"exists":"frontmatter.topic"}'`,
+		});
+		expect(found.metadata.exitCode, "a revoked source cannot change page one").toBe(0);
+		expect(found.stdout.trim()).toBe(mount + "/open/a.md");
+	});
+
+	test("a saved metadata page checks the current private Move before reading its range", async () => {
+		const { runner } = await seed_locked_docs([
+			{ path: "/side/book/note.md", content: topic("blue") },
+			{ path: "/open/a.md", content: topic("blue") },
+		]);
+		const moved = await runner.run({ command: `mv ${mount}/side/book ${mount}/open/moved` });
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+		const search = await runner.run({
+			command: `meta search --path ${mount}/open --where '{"eq":["frontmatter.topic","blue"]}'`,
+		});
+		expect(search.stdout).toContain(mount + "/open/moved/note.md");
+		const page = runner.runQuery.mock.calls.find(
+			([ref, args]) => function_name_of(ref) === "files_visible:internal_search_metadata_saved" && args.movedIn,
+		);
+		if (!page) throw Error("Missing saved metadata page for the private Move");
+		const range = vi.spyOn(files_metadata, "files_metadata_db_query_saved_plan");
+		try {
+			await runner.runQuery(...page);
+			expect(range).toHaveBeenCalled();
+			const renamed = await runner.run({ command: `mv ${mount}/open/moved ${mount}/open/renamed` });
+			expect(renamed.metadata.exitCode, renamed.stderr).toBe(0);
+			range.mockClear();
+			await runner.runQuery(...page);
+			expect(range, "a stale private placement cannot open the saved range").not.toHaveBeenCalled();
+		} finally {
+			range.mockRestore();
+		}
+	});
+
+	test("metadata search stops at a locked parent while its child's area is being updated", async () => {
+		const value = "語".repeat(700);
+		const child = "/zone/room/" + "界".repeat(145);
+		const { t, owner, runner, asOwner, seeded, share } = await seed_locked_docs([
+			{ path: "/zone/a.md", content: topic(value) },
+			{ path: child + "/private.md", content: topic(value) },
+		]);
+		for (const path of [child, "/zone/room"]) {
+			const result = await asOwner.mutation(api.files_sharing.restrict_node, {
+				membershipId: seeded.membershipId,
+				nodeId: await get_seeded_node_id(owner, path),
+			});
+			expect(result._nay).toBeUndefined();
+			if (path === child) await share(child);
+		}
+		const childId = await get_seeded_node_id(owner, child);
+		// Keep the child's old boundary key until the scope worker reaches it.
+		await t.run((ctx) => ctx.db.patch("files_nodes", childId, { parentScopeNodeId: null }));
+		const found = await runner.run({
+			command: `meta search --path ${mount}/zone --where '{"eq":["frontmatter.topic","${value}"]}'`,
+		});
+		expect(found.metadata.exitCode, "a child under a locked folder cannot change page one").toBe(0);
+		expect(found.stdout.trim()).toBe(mount + "/zone/a.md");
+	});
+
 	test("ls -R prints Permission denied for a locked folder and goes on", async () => {
 		const { runner } = await seed_locked_docs();
 
@@ -2245,7 +2322,13 @@ describe("recursive reads stop at a locked folder", () => {
 		const early = await owner.run({ command: search("/zone/room") });
 		expect(early.metadata.exitCode, "a long readable child found on page one is refused").toBe(2);
 		expect(early.stderr).toContain(mount + "/zone/room");
+		expect(early.stderr, "name the reachable child whose range is too long").toContain(mount + child);
 		expect(early.stdout).toBe("");
+		const fromRoot = await owner.run({ command: search("/").replace("--limit 1", "--limit 100") });
+		expect(fromRoot.metadata.exitCode, "check a readable child found on the first workspace-root page").toBe(2);
+		expect(fromRoot.stderr, "show the child's full Bash path from the workspace root").toContain(mount + child);
+		expect(fromRoot.stderr).toContain("Search a smaller folder or use meta get");
+		expect(fromRoot.stdout).toBe("");
 
 		const paths = async (who: typeof owner) => {
 			const found: string[] = [];

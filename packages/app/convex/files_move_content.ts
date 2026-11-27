@@ -438,7 +438,9 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 				const { _id: _id, _creationTime: _time, ...row } = original;
 				await ctx.db.insert("files_metadata_docs", {
 					...row,
-					searchValue: row.stringValue ?? row.numberValue ?? row.booleanValue,
+					stringValue: undefined,
+					numberValue: undefined,
+					booleanValue: undefined,
 					sourceKind: "committed",
 					fileNodeId: content.nodeId,
 					moveView: tag,

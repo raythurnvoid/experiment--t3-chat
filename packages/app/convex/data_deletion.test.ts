@@ -842,7 +842,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fieldPath: "frontmatter.cleanup",
 				docKind: "value",
 				valueKind: "string",
-				stringValue: args.tag,
+				searchValue: args.tag,
 			}),
 			ctx.db.insert("files_yjs_updates", {
 				organizationId: args.organizationId,
@@ -938,7 +938,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					fieldPath: "frontmatter.cleanup",
 					docKind: "value",
 					valueKind: "string",
-					stringValue: `pending-${args.tag}`,
+					searchValue: `pending-${args.tag}`,
 				}),
 			]);
 		}

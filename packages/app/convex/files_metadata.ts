@@ -41,12 +41,9 @@ import { organizations_db_get_membership } from "./organizations_memberships_db.
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import {
-	path_tree_prefix_upper_bound,
-	server_convex_get_user_fallback_to_anonymous,
-	string_prefix_upper_bound,
-} from "../server/server-utils.ts";
+import { server_convex_get_user_fallback_to_anonymous, string_prefix_upper_bound } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { files_metadata_saved_prefix, files_metadata_typed_fields } from "../server/files-metadata-index.ts";
 import { files_index_range_apply } from "../server/files-index-range.ts";
 import { files_move_reservations_db_check } from "../server/files-move-reservations.ts";
 import { files_metadata_maps_db_read } from "../server/files-metadata-maps.ts";
@@ -371,226 +368,26 @@ async function db_get_search_catalog_rows(
 	return readable._nay ? null : ({ keyFamily: "area_key", valueFamily: "area_value", parentId: area } as const);
 }
 
-/**
- * The index range of one plan over saved (committed), active docs, for the search box
- * (`files_nodes.search_saved`) and the agent's metadata stream (`files_visible.internal_search_metadata_saved`).
- * A folder is the last range of the `exists` and `eq` plans: `treePathPrefix` is the folder's stored
- * `treePath`, which ends with `/`. `prefix` and `range` put their range on the value, so they take no folder.
- * The folder range includes the folder's own doc on purpose: a folder's metadata is shown nowhere else, so
- * a metadata search inside a folder lists the folder itself. Name search leaves the folder out; keep both.
- */
+/** Read the selected workspace or area in (kind, value, path, time, id) order. */
 export function files_metadata_db_query_saved_plan(
 	ctx: QueryCtx,
 	args: {
-		organizationId: Doc<"files_metadata_docs">["organizationId"];
-		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		organizationId: string;
+		workspaceId: string;
 		plan: files_metadata_SearchPlan;
-		treePathPrefix: string | null;
 		moveView?: files_saved_index_ViewTag;
-		bounds?: Parameters<typeof files_index_range_apply>[1];
-	},
-) {
-	const { plan, treePathPrefix } = args;
-	switch (plan.op) {
-		case "exists":
-			return ctx.db.query("files_metadata_docs").withIndex("by_org_ws_source_archive_docKind_field_tree", (q) => {
-				const base = q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("sourceKind", "committed")
-					.eq("moveView.cohortId", args.moveView?.cohortId)
-					.eq("moveView.view", args.moveView?.view)
-					.eq("archiveOperationId", undefined)
-					.eq("docKind", "field")
-					.eq("fieldPath", plan.fieldPath);
-				if (args.bounds) return files_index_range_apply(base, args.bounds);
-				return treePathPrefix === null
-					? base
-					: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
-			});
-
-		case "eq":
-			if (typeof plan.value === "string") {
-				const value = plan.value;
-				return ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
-						const base = q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("moveView.cohortId", args.moveView?.cohortId)
-							.eq("moveView.view", args.moveView?.view)
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "value")
-							.eq("fieldPath", plan.fieldPath)
-							.eq("valueKind", "string")
-							.eq("stringValue", value);
-						if (args.bounds) return files_index_range_apply(base, args.bounds);
-						return treePathPrefix === null
-							? base
-							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
-					});
-			}
-
-			if (typeof plan.value === "number") {
-				const value = plan.value;
-				return ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_ws_source_archive_docKind_field_number_tree", (q) => {
-						const base = q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("moveView.cohortId", args.moveView?.cohortId)
-							.eq("moveView.view", args.moveView?.view)
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "value")
-							.eq("fieldPath", plan.fieldPath)
-							.eq("valueKind", "number")
-							.eq("numberValue", value);
-						if (args.bounds) return files_index_range_apply(base, args.bounds);
-						return treePathPrefix === null
-							? base
-							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
-					});
-			}
-
-			{
-				const value = plan.value;
-				return ctx.db
-					.query("files_metadata_docs")
-					.withIndex("by_org_ws_source_archive_docKind_field_boolean_tree", (q) => {
-						const base = q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("moveView.cohortId", args.moveView?.cohortId)
-							.eq("moveView.view", args.moveView?.view)
-							.eq("archiveOperationId", undefined)
-							.eq("docKind", "value")
-							.eq("fieldPath", plan.fieldPath)
-							.eq("valueKind", "boolean")
-							.eq("booleanValue", value);
-						if (args.bounds) return files_index_range_apply(base, args.bounds);
-						return treePathPrefix === null
-							? base
-							: base.gte("treePath", treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(treePathPrefix));
-					});
-			}
-
-		case "prefix":
-			return ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_string_tree", (q) => {
-					const base = q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("moveView.cohortId", args.moveView?.cohortId)
-						.eq("moveView.view", args.moveView?.view)
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "value")
-						.eq("fieldPath", plan.fieldPath)
-						.eq("valueKind", "string");
-					if (args.bounds) return files_index_range_apply(base, args.bounds);
-					const lower = base.gte("stringValue", plan.value);
-					const upperBound = string_prefix_upper_bound(plan.value);
-					return upperBound === null ? lower : lower.lt("stringValue", upperBound);
-				});
-
-		case "range":
-			// maybe_date docs keep their epoch milliseconds in numberValue, apart by valueKind.
-			return ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_ws_source_archive_docKind_field_number_tree", (q) => {
-					const base = q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("sourceKind", "committed")
-						.eq("moveView.cohortId", args.moveView?.cohortId)
-						.eq("moveView.view", args.moveView?.view)
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "value")
-						.eq("fieldPath", plan.fieldPath)
-						.eq("valueKind", plan.valueKind);
-					if (args.bounds) return files_index_range_apply(base, args.bounds);
-					if (plan.gte != null) {
-						const lower = base.gte("numberValue", plan.gte);
-						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
-						if (plan.lt != null) return lower.lt("numberValue", plan.lt);
-						return lower;
-					}
-					if (plan.gt != null) {
-						const lower = base.gt("numberValue", plan.gt);
-						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
-						if (plan.lt != null) return lower.lt("numberValue", plan.lt);
-						return lower;
-					}
-					if (plan.lte != null) return base.lte("numberValue", plan.lte);
-					if (plan.lt != null) return base.lt("numberValue", plan.lt);
-					return base;
-				});
-	}
-}
-
-/**
- * The same plans on one restricted area (the `..._scope_tree` indexes), for a member's metadata
- * search (`files_visible.internal_search_metadata_saved`). The area comes right before the value, so
- * every plan works per area. `bounds` is the rest of the range: a walk frame's `treePath` range for
- * `exists` and `eq`, the value range for `prefix` and `range`.
- */
-export function files_metadata_db_query_saved_plan_in_area(
-	ctx: QueryCtx,
-	args: {
-		organizationId: Doc<"files_metadata_docs">["organizationId"];
-		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		plan: files_metadata_SearchPlan;
-		scopeNodeId: Id<"files_nodes"> | null;
-		moveView?: files_saved_index_ViewTag;
+		scopeNodeId?: Id<"files_nodes"> | null;
 		bounds: Parameters<typeof files_index_range_apply>[1];
 	},
 ) {
-	const { plan } = args;
-	const valueKind =
-		plan.op === "exists"
-			? null
-			: plan.op === "prefix"
-				? "string"
-				: plan.op === "range"
-					? plan.valueKind
-					: typeof plan.value === "string"
-						? "string"
-						: typeof plan.value === "number"
-							? "number"
-							: "boolean";
-	// The four indexes share their fields up to the value, so one builder fills them. Their names
-	// differ, so the typed range builder cannot check the fields.
-	const range = (q: any) => {
-		let builder = q
-			.eq("organizationId", args.organizationId)
-			.eq("workspaceId", args.workspaceId)
-			.eq("sourceKind", "committed")
-			.eq("moveView.cohortId", args.moveView?.cohortId)
-			.eq("moveView.view", args.moveView?.view)
-			.eq("archiveOperationId", undefined)
-			.eq("docKind", valueKind === null ? "field" : "value")
-			.eq("fieldPath", plan.fieldPath);
-		if (valueKind !== null) builder = builder.eq("valueKind", valueKind);
-		builder = builder.eq("restrictedScopeNodeId", args.scopeNodeId);
-		if (plan.op === "eq")
-			builder = builder.eq(
-				valueKind === "string" ? "stringValue" : valueKind === "number" ? "numberValue" : "booleanValue",
-				plan.value,
-			);
-		return files_index_range_apply(builder, args.bounds);
-	};
-	const docs = ctx.db.query("files_metadata_docs");
-	if (valueKind === null) return docs.withIndex("by_org_ws_source_archive_docKind_field_scope_tree", range);
-	if (valueKind === "string") return docs.withIndex("by_org_ws_source_archive_docKind_field_string_scope_tree", range);
-	if (valueKind === "boolean")
-		return docs.withIndex("by_org_ws_source_archive_docKind_field_boolean_scope_tree", range);
-	return docs.withIndex("by_org_ws_source_archive_docKind_field_number_scope_tree", range);
+	const prefix = files_metadata_saved_prefix(args, args.moveView ?? {}, args.plan, args.scopeNodeId);
+	const index =
+		args.scopeNodeId === undefined
+			? "by_org_ws_source_archive_docKind_field_value_tree"
+			: "by_org_ws_source_archive_docKind_field_scope_value_tree";
+	return ctx.db
+		.query("files_metadata_docs")
+		.withIndex(index, (q) => files_index_range_apply(q, [...prefix, ...args.bounds]));
 }
 
 /**
@@ -1349,30 +1146,31 @@ export const get_field_read_source = internalQuery({
 });
 
 function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
+	const typed = files_metadata_typed_fields(doc);
 	switch (doc.valueKind) {
 		case "string":
 			return {
 				fieldPath: doc.fieldPath,
 				valueKind: "string" as const,
-				stringValue: doc.stringValue,
+				stringValue: typed.stringValue,
 			};
 		case "number":
 			return {
 				fieldPath: doc.fieldPath,
 				valueKind: "number" as const,
-				numberValue: doc.numberValue,
+				numberValue: typed.numberValue,
 			};
 		case "boolean":
 			return {
 				fieldPath: doc.fieldPath,
 				valueKind: "boolean" as const,
-				booleanValue: doc.booleanValue,
+				booleanValue: typed.booleanValue,
 			};
 		case "maybe_date":
 			return {
 				fieldPath: doc.fieldPath,
 				valueKind: "maybe_date" as const,
-				numberValue: doc.numberValue,
+				numberValue: typed.numberValue,
 			};
 		default: {
 			const errorMessage = "metadataDoc.valueKind is not set";

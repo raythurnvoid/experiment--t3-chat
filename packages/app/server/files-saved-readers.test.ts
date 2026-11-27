@@ -112,7 +112,7 @@ test("metadata reads merge normal and selected facts before and after the switch
 			await ctx.db.insert("files_metadata_docs", {
 				...fields,
 				moveView: { cohortId: f.cohortId, view: "after" },
-				...(doc.docKind === "value" ? { stringValue: "new" } : { sortDisplayValue: "new" }),
+				...(doc.docKind === "value" ? { searchValue: "new" } : { sortDisplayValue: "new" }),
 			});
 		}
 	});

@@ -376,7 +376,7 @@ describe("frontmatter index", () => {
 			"value frontmatter.title",
 		]);
 		// One character more than a search value can have, so search stays exact.
-		expect(docs.find((doc) => doc.docKind === "value")?.stringValue).toBe(longValue.slice(0, 1025));
+		expect(docs.find((doc) => doc.docKind === "value")?.searchValue).toBe(longValue.slice(0, 1025));
 		expect(Math.max(...docs.map((doc) => getDocumentSize(doc))), "largest index doc").toBeLessThan(8 * 1024);
 	});
 });

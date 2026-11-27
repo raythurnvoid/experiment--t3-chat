@@ -320,7 +320,7 @@ describe("data_import.create_upload_targets", () => {
 				.collect(),
 		);
 		const stamps = Object.fromEntries(
-			metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
+			metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.searchValue]),
 		);
 		expect(stamps).toEqual({ "metadata.source": "import", "metadata.original-name": "video.mp4" });
 	});

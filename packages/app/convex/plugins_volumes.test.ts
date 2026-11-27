@@ -263,8 +263,8 @@ async function create_volume_fixture() {
 				treePath: path,
 				fieldPath: "metadata.status",
 				docKind,
-				valueKind: "string",
-				stringValue: "published",
+				valueKind: docKind === "value" ? "string" : undefined,
+				searchValue: docKind === "value" ? "published" : undefined,
 				restrictedScopeNodeId: null,
 			});
 		}

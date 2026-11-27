@@ -311,7 +311,7 @@ describe("Move owner parent resolution", () => {
 				accessNodeId: null,
 			});
 			expect(siblingBefore.plain.length).toBeGreaterThan(0);
-			expect(siblingBefore.metadata.map((row) => [row.docKind, row.fieldPath, row.stringValue])).toEqual([
+			expect(siblingBefore.metadata.map((row) => [row.docKind, row.fieldPath, row.searchValue])).toEqual([
 				["field", "metadata.marker", undefined],
 				["value", "metadata.marker", "sibling"],
 			]);

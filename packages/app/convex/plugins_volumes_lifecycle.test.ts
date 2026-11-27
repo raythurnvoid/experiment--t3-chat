@@ -203,7 +203,7 @@ async function seed_generation(
 			fieldPath: "metadata.source",
 			docKind: "value",
 			valueKind: "string",
-			stringValue: "records",
+			searchValue: "records",
 		});
 		await ctx.db.insert("file_stats", {
 			organizationId: args.organizationId,

@@ -870,7 +870,9 @@ async function db_stage_pending_scope(
 			if (current && (!item || item.afterProposal))
 				await ctx.db.insert("files_metadata_docs", {
 					...fields,
-					searchValue: fields.stringValue ?? fields.numberValue ?? fields.booleanValue,
+					stringValue: undefined,
+					numberValue: undefined,
+					booleanValue: undefined,
 					moveView: after,
 					path: path ?? row.path,
 					treePath: saved?.treePath ?? path ?? row.treePath,

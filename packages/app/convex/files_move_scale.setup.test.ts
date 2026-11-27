@@ -274,7 +274,7 @@ export async function expect_moved_markers(
 							isRestrictedScopeRoot: node.restrictedScopeNodeId === node._id,
 							sortDisplayValue: node.name,
 						});
-					else expect(doc.stringValue, "every marker value survives Move").toBe(node.name);
+					else expect(doc.searchValue, "every marker value survives Move").toBe(node.name);
 				}
 			}
 		});
@@ -311,9 +311,7 @@ export function metadata_payload(doc: Metadata) {
 		fieldPath: doc.fieldPath,
 		docKind: doc.docKind,
 		valueKind: doc.valueKind,
-		stringValue: doc.stringValue,
-		numberValue: doc.numberValue,
-		booleanValue: doc.booleanValue,
+		searchValue: doc.searchValue,
 		entryIndex: doc.entryIndex,
 		sortValue: doc.sortValue,
 		sortDisplayValue: doc.sortDisplayValue,

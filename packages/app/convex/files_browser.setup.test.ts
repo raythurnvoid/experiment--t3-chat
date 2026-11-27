@@ -541,7 +541,7 @@ export async function node_metadata(args: {
 			.collect(),
 	);
 	return Object.fromEntries(
-		docs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
+		docs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.searchValue]),
 	);
 }
 

@@ -1,4 +1,3 @@
-import { files_metadata_folder_range_fits } from "./files-metadata-index.ts";
 // The pending overlay: derived docs that copy what each user's drafts change, so agent reads and
 // draft views can page them with indexes. Only the flush below, its jobs
 // (`convex/files_pending_overlay.ts`) and data deletion write them.
@@ -17,6 +16,7 @@ import { files_metadata_folder_range_fits } from "./files-metadata-index.ts";
 // `server/files-visible-resolve.ts`).
 
 import { compareValues, ConvexError, v, type Infer, type Value } from "convex/values";
+import { files_metadata_typed_fields, files_metadata_folder_range_fits } from "./files-metadata-index.ts";
 import { validate } from "convex-helpers/validators";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { PaginationResult, TransactionMetrics, WithoutSystemFields } from "convex/server";
@@ -176,14 +176,14 @@ const SOURCE_FIELDS: Record<string, string[]> = {
 		"docKind",
 		"fieldPath",
 		"valueKind",
-		"stringValue",
+		"searchValue",
 	],
 };
 
 /**
  * Metadata fields that place fields copy. A patch of other fields marks nothing.
  */
-const METADATA_VALUE_FIELDS = ["docKind", "fieldPath", "valueKind", "stringValue", "numberValue", "booleanValue"];
+const METADATA_VALUE_FIELDS = ["docKind", "fieldPath", "valueKind", "searchValue"];
 
 /**
  * Proposal fields the overlay reads: the reader reads `pendingMove` and `pendingArchive`; places
@@ -2353,9 +2353,7 @@ export async function files_pending_overlay_db_stage_owner_fields(
 					docKind: doc.docKind,
 					fieldPath: doc.fieldPath,
 					valueKind: doc.valueKind,
-					stringValue: doc.stringValue,
-					numberValue: doc.numberValue,
-					booleanValue: doc.booleanValue,
+					...files_metadata_typed_fields(doc),
 					parent: place.parent,
 					ownerTreePath: place.ownerTreePath,
 					isVisible: place.isVisible,
@@ -3573,6 +3571,7 @@ async function read_list_page(
 		 */
 		plan?: Infer<typeof files_metadata_search_plan_validator>;
 		metadataScopeLabel?: string;
+		metadataMount?: boolean;
 		order: "asc" | "desc";
 		kind?: "file" | "folder";
 		lowercaseExtension?: string;
@@ -3653,7 +3652,7 @@ async function read_list_page(
 		: savedSources;
 	if (indexView?.migrationDirection === "to_normal") indexSources.reverse();
 	const scope = JSON.stringify([
-		...(args.mode === "metadata" ? ["metadata-typed-v2"] : []),
+		...(args.mode === "metadata" ? ["metadata-value-v2"] : []),
 		args.organizationId,
 		args.workspaceId,
 		args.visibilityUserId,
@@ -3693,14 +3692,25 @@ async function read_list_page(
 	const by_time = (areaTop: boolean) => timeWindow !== null && (timeWindow.from !== null || areaTop);
 	// The Move view's places name every node of the cohort, so the frames read in that view.
 	const viewStream = savedSources.find((source) => source.kind === "cohort") ?? savedSources[0]!;
-	const checkFolder =
-		args.cursor === null &&
-		args.mode === "metadata" &&
-		(plan?.op === "eq" || plan?.op === "exists") &&
-		(args.folderPath !== "/" || args.metadataScopeLabel !== undefined);
+	const checkFolder = args.cursor === null && args.mode === "metadata" && (plan?.op === "eq" || plan?.op === "exists");
+	const long_bound = (child?: string) => {
+		const root = args.metadataScopeLabel ?? args.folderPath;
+		const path = child ? root.replace(/\/$/, "") + "/" + child.slice(args.folderPath.length).replace(/^\//, "") : root;
+		const hint =
+			child || (args.folderPath === "/" && !args.metadataMount)
+				? "Try a shorter value or search a smaller folder."
+				: "Try a shorter value or a higher folder.";
+		return Result({
+			_nay: {
+				name: "metadata_bound_too_long",
+				message: `The field, value and folder path are too long together to search only ${path}. ${hint} You can also check individual files.`,
+			},
+		});
+	};
 	const folder_refusal = (
-		start: { treePath: string; scopeNodeId: Id<"files_nodes"> | null } | null,
+		start: { treePath: string; scopeNodeId: Id<"files_nodes"> | null; kind?: "file" | "folder" } | null,
 		ownerTreePath?: string | null,
+		child?: string,
 	) => {
 		if (!checkFolder) return null;
 		const source = (stream: files_SavedStream | files_IndexStream) => (stream.kind === "cohort" ? stream : {});
@@ -3712,14 +3722,7 @@ async function read_list_page(
 				? { treePath: ownerTreePath, userId: args.visibilityUserId, sources: savedSources.map(source) }
 				: null,
 		);
-		if (!fits)
-			return Result({
-				_nay: {
-					name: "metadata_bound_too_long",
-					message: `The field, value and folder path are too long together to search only ${args.metadataScopeLabel ?? args.folderPath}. Use a shorter value, a higher folder, or the workspace root.`,
-				},
-			});
-		return null;
+		return fits ? null : long_bound(child);
 	};
 	const open_walk = async (movedIn: ReturnType<typeof moved_in_args>) => {
 		const opened = await ctx.runQuery(internal.files_visible.internal_get_walk_start, {
@@ -3727,10 +3730,20 @@ async function read_list_page(
 			...movedIn,
 			savedStream: viewStream,
 		});
-		if (opened._nay || !opened._yay.root) return opened;
-		return folder_refusal(opened._yay.start, movedIn.movedIn ? null : opened._yay.ownerTreePath) ?? opened;
+		if (opened._nay || !opened._yay.root || (!movedIn.movedIn && args.folderPath === "/" && !args.metadataMount))
+			return opened;
+		return (
+			folder_refusal(
+				opened._yay.start,
+				movedIn.movedIn ? null : opened._yay.ownerTreePath,
+				movedIn.movedIn?.ownerTreePath.replace(/\/$/, ""),
+			) ?? opened
+		);
 	};
-	const startOpened = timeWindow?.from === null || checkFolder ? await open_walk({}) : null;
+	const startOpened =
+		timeWindow?.from === null || (checkFolder && (args.folderPath !== "/" || args.metadataMount))
+			? await open_walk({})
+			: null;
 	if (startOpened?._nay) return startOpened;
 	const startByTime = by_time(startOpened?._yay.areaTop ?? false);
 
@@ -4004,21 +4017,13 @@ async function read_list_page(
 							savedStream,
 							frame,
 							withRows: args.mode === "subtree",
+							...(checkFolder ? { metadataBound: { plan: plan!, sources: indexSources } } : {}),
 						}),
 					);
-					// Check readable children when the walk finds them, even if another match fills page one.
-					if (checkFolder)
-						for (const boundary of yay.boundaries) {
-							if (boundary.status !== "readable" && boundary.status !== "former_readable") continue;
-							const refusal = folder_refusal({
-								treePath: boundary.node.treePath,
-								scopeNodeId: boundary.node._id,
-							});
-							if (refusal) {
-								failed = refusal;
-								throw stopped;
-							}
-						}
+					if ("longBoundPath" in yay && typeof yay.longBoundPath === "string") {
+						failed = long_bound(yay.longBoundPath);
+						throw stopped;
+					}
 					return {
 						...yay,
 						items: yay.boundaries.map(({ key, ...boundary }) => ({ key, value: boundary })),

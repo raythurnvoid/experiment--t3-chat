@@ -27,6 +27,9 @@ import { files_pending_overlay_list } from "./files-pending-overlay.ts";
 import { files_metadata_read_full_page } from "./files-metadata-read.ts";
 
 const SUPPORTED_METADATA_KINDS = new Set(["frontmatter", "metadata"]);
+const SEARCH_USAGE =
+	"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
+	"Use prefix and range at the workspace root. Use eq or exists in folders and mounts. For long keys, check mounted files with meta get <path>. For workspace files, search at the root and filter paths with grep.\n";
 
 type MetaCommandSearchFormat = "paths" | "json";
 type MetaCommandGetFormat = "text" | "json";
@@ -497,8 +500,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stdout: "",
 				stderr:
 					"meta: expected subcommand search or get\n" +
-					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
-					"Use prefix and range at the workspace root. Use eq or exists in folders and mounts. For a long value or folder path, search from a higher folder or the workspace root and filter paths with grep.\n" +
+					SEARCH_USAGE +
 					"Usage: meta get <path> [--format text|json] [--field <field>] [--cursor CURSOR]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
@@ -578,10 +580,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr:
-					`${parsed._nay.message}\n` +
-					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
-					"Use prefix and range at the workspace root. Use eq or exists in folders and mounts. For a long value or folder path, search from a higher folder or the workspace root and filter paths with grep.\n",
+				stderr: `${parsed._nay.message}\n${SEARCH_USAGE}`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -676,7 +675,8 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			subject: { kind: "user", userId: scope.ctxData.userId, plugin: null },
 			overlayUserId: scope.fs.overlayUserId,
 			folderPath: path ?? "/",
-			metadataScopeLabel: path || scope.fs.readOnlySource ? bash_normalize_path(scopeShellPath) : undefined,
+			metadataScopeLabel: scope.renderShellPath(scope.dbFilesPath),
+			metadataMount: !!scope.fs.readOnlySource,
 			mode: "metadata",
 			plan: parsed._yay.plan,
 			order: "asc",
@@ -693,12 +693,16 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			cursor,
 		});
 		if (listed._nay) {
-			if (listed._nay.name === "metadata_bound_too_long")
+			if (listed._nay.name === "metadata_bound_too_long") {
+				let hint = "Try the workspace root and filter the paths with grep, or use meta get <path> for one file.";
+				if (scope.fs.readOnlySource) hint = "Use meta get <path> for a file in this mount.";
+				else if (!path) hint = "Search a smaller folder or use meta get <path> for a file.";
 				return {
 					stdout: "",
-					stderr: `meta search: ${listed._nay.message} At the root, filter the paths with grep.\n`,
+					stderr: `meta search: ${listed._nay.message} ${hint}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
+			}
 			// The root checks give this name: `requireRoot` above for `prefix` and `range`, and the walk's
 			// own start for `eq` and `exists` at the root. Say how to fix each one.
 			//

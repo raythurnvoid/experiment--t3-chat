@@ -1,4 +1,5 @@
 // Saved writes queue copied dates and search fields. Draft content and paths stay exact.
+import { files_metadata_typed_fields } from "../server/files-metadata-index.ts";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -356,7 +357,7 @@ describe("files_pending_overlay saved places", () => {
 				)
 				.collect(),
 		);
-		const expected = source.map(field_payload).sort();
+		const expected = source.map((doc) => field_payload({ ...doc, ...files_metadata_typed_fields(doc) })).sort();
 		let published = false;
 		for (let step = 0; step < 100 && (await saved_job(f, node._id)); step++) {
 			await f.run_job("saved_places", node._id);

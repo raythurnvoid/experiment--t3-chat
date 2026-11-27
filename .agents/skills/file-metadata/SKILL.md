@@ -55,6 +55,13 @@ range search over dates works. Value docs carry `entryIndex`, the key's position
 Properties reads the ordered full map, so saving does not reorder the dialog's lines.
 Frontmatter docs leave `entryIndex` unset.
 
+Saved and draft value docs and queued metadata candidates store the scalar in `searchValue`.
+Field docs omit both `valueKind` and `searchValue`. Saved searches use two indexes.
+`by_org_ws_source_archive_docKind_field_value_tree` orders by kind, value and tree path.
+`by_org_ws_source_archive_docKind_field_scope_value_tree` adds the restricted area between kind and value.
+Existence searches bind both missing fields before seeking the folder path. Private place rows
+and returned matches keep their separate string, number and boolean fields.
+
 Saved metadata writes commit the full map and request indexing in the same transaction. The full
 map is readable at once. `files_index.ts` captures that map and the source head, then builds text,
 frontmatter and metadata indexes in pages. A later write replaces only the waiting request; the
@@ -657,8 +664,11 @@ The doors sit in the search box region of `convex/files_metadata.ts`, except `se
   read itself refuses a caller who cannot open the root. Bash `meta search` allows `prefix` and
   `range` only at a workspace root. Mounts share a stored tree across versions. Use `eq` or
   `exists` there, including at the mount root. Before the first page, Bash checks the encoded
-  index bound for the requested folder or mount. At 2,500 bytes or more, it names the folder and
-  refuses the search. Use a shorter value or search higher in the tree. For workspace files,
+  index bounds for the requested folder or mount and each readable restricted child found on
+  page one, even when the search starts at the workspace root. A restricted file has its own
+  upper bound. If either end reaches 2,500 bytes, Bash names the visible path that exceeds the limit and
+  refuses the search. Use a shorter value or search higher in the same tree. In a mount,
+  `meta get <path>` reads one item's metadata. For workspace files,
   search from the workspace root and filter paths with `grep`.
   The search box and public search also check folders found while building page one. The public
   route returns HTTP 400 with the folder name and ways to narrow the search. Later pages keep

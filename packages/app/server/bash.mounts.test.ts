@@ -1469,6 +1469,12 @@ describe("bash_run_command", () => {
 
 		test("mount metadata reads require physical bounds that isolate the requested folder", async () => {
 			const { runner, run } = await create_review_runner();
+			for (const command of ["meta", "meta search --bad-option"]) {
+				const help = await run(command);
+				expect(help.exitCode).toBe(2);
+				expect(help.output, "both help paths explain how to check a mounted file").toContain("meta get <path>");
+				expect(help.output).toContain("check mounted files");
+			}
 			const base = "/.plugins/review";
 			const where = (value: string | number | boolean) => JSON.stringify({ eq: ["metadata.source", value] });
 			// This pinned review has 109 bytes of key fields around the equality value.
@@ -1481,6 +1487,8 @@ describe("bash_run_command", () => {
 				const result = await run(`meta search --where '${where(value)}'`);
 				expect(result.exitCode, result.output).toBe(2);
 				expect(result.output).toContain(`too long together to search only ${base}.`);
+				expect(result.output).toContain("meta get <path>");
+				expect(result.output).not.toContain("workspace root");
 			}
 			const names = Array<string>(6).fill("界".repeat(150));
 			const path = names.join("/");

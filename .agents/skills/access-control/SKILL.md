@@ -1548,7 +1548,7 @@ read a row under a folder the caller cannot open. Code: `server/files-tree-walk.
   so it loses the field at once. A Move of a former root drops it at the new place.
 - Each frame reads two kinds of streams, each one internal query with one `.paginate()`: the rows of
   its area (`by_org_ws_scope_archive_*` on `files_nodes`, `by_view_scope_archive_*` on Move places,
-  the `_scope_tree` metadata indexes) and its boundaries. Only the top frame is read (depth first).
+  the metadata index scoped to that area) and its boundaries. Only the top frame is read (depth first).
   At a readable boundary the walk enters a new frame. At a locked one it lists the locked row and a
   "Permission denied" path, and reads nothing under it. A locked former root's old area stays closed,
   with no line.

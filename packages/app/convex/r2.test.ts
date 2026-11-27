@@ -2076,7 +2076,7 @@ describe("r2 asset content", () => {
 		const metadataValues = Object.fromEntries(
 			docs.metadataDocs
 				.filter((doc) => doc.docKind === "value" && doc.fieldPath.startsWith("metadata."))
-				.map((doc) => [doc.fieldPath, doc.stringValue ?? doc.numberValue]),
+				.map((doc) => [doc.fieldPath, doc.searchValue]),
 		);
 		expect(metadataValues).toEqual({
 			"metadata.source": "upload",

@@ -4,15 +4,24 @@ import { files_metadata_folder_range_fits, files_metadata_saved_prefix } from ".
 const tenant = { organizationId: "o", workspaceId: "w" };
 const plan = { op: "exists", fieldPath: "f" } as const;
 
-test("existence binds the original typed field index at its exact area boundary", () => {
+test("existence counts its missing kind and value at the exact saved area boundary", () => {
 	const fields = files_metadata_saved_prefix(tenant, {}, plan, null);
-	expect(fields.at(-1)).toEqual(["eq", "restrictedScopeNodeId", null]);
-	// 3+3 tenant, 11 source, 3 missing tags, 7 doc kind, 3 field, 1 null area.
-	const path = "/" + "x".repeat(2464) + "/";
+	expect(fields.slice(-3)).toEqual([
+		["eq", "valueKind", undefined],
+		["eq", "restrictedScopeNodeId", null],
+		["eq", "searchValue", undefined],
+	]);
+	// 3+3 tenant, 11 source, 3 missing tags, 7 doc kind, 3 field, 3 missing/null fields.
+	const path = "/" + "x".repeat(2462) + "/";
 	const fits = (treePath: string) =>
 		files_metadata_folder_range_fits(tenant, plan, { start: { treePath, scopeNodeId: null }, sources: [{}] }, null);
 	expect(fits(path)).toBe(true);
 	expect(fits("/x" + path.slice(1))).toBe(false);
+	const file = { treePath: path.slice(0, -1), scopeNodeId: null, kind: "file" as const };
+	expect(
+		files_metadata_folder_range_fits(tenant, plan, { start: file, sources: [{}] }, null),
+		"the exclusive end of a single file range must also fit",
+	).toBe(false);
 });
 
 test("the first page measures each actual saved area, Move view and owner path", () => {

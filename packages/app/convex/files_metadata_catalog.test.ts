@@ -115,9 +115,9 @@ function metadata_doc(
 		...base,
 		docKind: "value" as const,
 		valueKind: fields.valueKind,
-		...(fields.valueKind === "string" ? { stringValue: fields.stringValue ?? "" } : {}),
-		...(fields.valueKind === "number" ? { numberValue: 1 } : {}),
-		...(fields.valueKind === "boolean" ? { booleanValue: true } : {}),
+		...(fields.valueKind === "string" ? { searchValue: fields.stringValue ?? "" } : {}),
+		...(fields.valueKind === "number" ? { searchValue: 1 } : {}),
+		...(fields.valueKind === "boolean" ? { searchValue: true } : {}),
 	};
 }
 

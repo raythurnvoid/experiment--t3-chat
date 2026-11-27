@@ -433,7 +433,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				fieldPath: "frontmatter.cleanup",
 				docKind: "value",
 				valueKind: "string",
-				stringValue: args.tag,
+				searchValue: args.tag,
 			}),
 			ctx.db.insert("files_yjs_updates", {
 				organizationId: args.organizationId,
@@ -529,7 +529,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					fieldPath: "frontmatter.cleanup",
 					docKind: "value",
 					valueKind: "string",
-					stringValue: `pending-${args.tag}`,
+					searchValue: `pending-${args.tag}`,
 				}),
 			]);
 		}
@@ -1001,7 +1001,7 @@ async function review_seed_all_workspace_content(
 			fieldPath: "metadata.source",
 			docKind: "value",
 			valueKind: "string",
-			stringValue: "records",
+			searchValue: "records",
 		});
 		await ctx.db.insert("file_stats", { ...volumeScope, fileNodeId, lineCount: 0, wordCount: 1, charCount: 2 });
 		await ctx.db.insert("plugins_workspace_installation_secrets", {

@@ -607,8 +607,8 @@ test("public Move seals unselected pending scope before the switch and keeps eac
 			originals[index]!.plain.map((doc) => doc.plainTextChunk),
 		);
 		expect(final.plain.every((doc) => doc.moveView === undefined)).toBe(true);
-		expect(final.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.stringValue])).toEqual(
-			originals[index]!.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.stringValue]),
+		expect(final.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.searchValue])).toEqual(
+			originals[index]!.metadata.map((doc) => [doc.fieldPath, doc.docKind, doc.searchValue]),
 		);
 		expect(
 			await f.t.run((ctx) => ctx.db.get("files_pending_updates", proposal._id)),

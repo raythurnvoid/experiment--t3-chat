@@ -1859,7 +1859,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		// A mount file indexes no frontmatter. Its only entry is the stamp that records where the
 		// file came from.
 		expect(docs.metadataDocs.map((doc) => doc.fieldPath)).toEqual(["metadata.source", "metadata.source"]);
-		expect(docs.metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("github-mount");
+		expect(docs.metadataDocs.find((doc) => doc.docKind === "value")?.searchValue).toBe("github-mount");
 		expect(docs.yjsSnapshots).toEqual([]);
 		expect(docs.yjsLastSequences).toEqual([]);
 	});
@@ -1894,7 +1894,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 				.collect(),
 		);
 		expect(metadataDocs.map((doc) => doc.fieldPath)).toEqual(["metadata.source", "metadata.source"]);
-		expect(metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("plugin-source");
+		expect(metadataDocs.find((doc) => doc.docKind === "value")?.searchValue).toBe("plugin-source");
 	});
 
 	test("grep-style line matching maps to raw source line numbers", async () => {

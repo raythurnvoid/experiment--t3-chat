@@ -28,36 +28,7 @@ import {
 import { files_pending_update_index_revision, type files_VisibleEntry } from "../shared/files.ts";
 
 export function files_metadata_value_doc_payload(value: files_metadata_Value) {
-	switch (value.valueKind) {
-		case "string":
-			return {
-				docKind: "value" as const,
-				valueKind: "string" as const,
-				stringValue: value.value,
-				searchValue: value.value,
-			};
-		case "number":
-			return {
-				docKind: "value" as const,
-				valueKind: "number" as const,
-				numberValue: value.value,
-				searchValue: value.value,
-			};
-		case "boolean":
-			return {
-				docKind: "value" as const,
-				valueKind: "boolean" as const,
-				booleanValue: value.value,
-				searchValue: value.value,
-			};
-		case "maybe_date":
-			return {
-				docKind: "value" as const,
-				valueKind: "maybe_date" as const,
-				numberValue: value.value,
-				searchValue: value.value,
-			};
-	}
+	return { docKind: "value" as const, valueKind: value.valueKind, searchValue: value.value };
 }
 
 /**

@@ -2773,7 +2773,7 @@ describe("public files API", () => {
 		});
 		expect(
 			Object.fromEntries(
-				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.searchValue]),
 			),
 		).toEqual({ "metadata.source": "api" });
 	});

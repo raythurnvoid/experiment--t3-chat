@@ -79,7 +79,7 @@ async function read_content(ctx: QueryCtx, nodeId: Id<"files_nodes">) {
 			.sort(),
 		values: metadata
 			.filter((row) => row.docKind === "value")
-			.map((row) => [row.fieldPath, row.stringValue])
+			.map((row) => [row.fieldPath, row.searchValue])
 			.sort(),
 		hasAfterCopy: copies.some((row) => row.moveView?.view === "after"),
 	};
