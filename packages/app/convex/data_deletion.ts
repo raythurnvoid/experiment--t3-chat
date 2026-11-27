@@ -1401,7 +1401,7 @@ async function db_purge_organization_workspace_content_batch(
 	if (deletedMetadataMaps > 0) return { done: false, deletedCount: deletedMetadataMaps };
 	const metadataDocs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
@@ -1412,7 +1412,7 @@ async function db_purge_organization_workspace_content_batch(
 
 	const plainTextChunks = await ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);

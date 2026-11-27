@@ -5,6 +5,7 @@ import {
 	files_move_content_STEP_MAX_PAGES as STEP_MAX_PAGES,
 	type files_move_content_Context as Context,
 	files_move_content_db_current as db_current,
+	files_move_content_db_saved_chunks as db_saved_chunks,
 	files_move_content_phase_cursor as phase_cursor,
 	files_move_content_changes_saved_content as changes_saved_content,
 	files_move_content_retained_state_ids as retained_state_ids,
@@ -210,16 +211,7 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 							.eq("moveView.cohortId", undefined)
 							.eq("moveView.view", undefined),
 					)
-			: ctx.db
-					.query(table)
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", scope.organizationId)
-							.eq("workspaceId", scope.workspaceId)
-							.eq("fileNodeId", content.nodeId)
-							.eq("moveView.cohortId", undefined)
-							.eq("moveView.view", undefined),
-					);
+			: db_saved_chunks(ctx, table, scope, content.nodeId);
 	const source_updates = () =>
 		logOwnerId
 			? ctx.db
@@ -283,16 +275,10 @@ async function db_stage_page(ctx: MutationCtx, args: Context, step: StageStep) {
 	if (phase === "sources") {
 		if (part < 2) {
 			const table = part === 0 ? "files_text_chunks" : "files_plain_text_chunks";
-			const page = await source_chunks(table).paginate({ cursor, numItems: PAGE_SIZE });
-			for (const row of page.page) await ctx.db.patch(table, row._id, { moveView: beforeTag });
-			return await db_progress(
-				ctx,
-				content,
-				"sources",
-				page.isDone ? part + 1 : part,
-				page.isDone ? null : page.continueCursor,
-				true,
-			);
+			// Tagging removes these rows from the range, so each step starts at its first untagged row.
+			const rows = await source_chunks(table).take(PAGE_SIZE);
+			for (const row of rows) await ctx.db.patch(table, row._id, { moveView: beforeTag });
+			return await db_progress(ctx, content, "sources", rows.length < PAGE_SIZE ? part + 1 : part, null, false);
 		}
 		const sourceUpdates = source_updates();
 		if (!sourceUpdates) return await db_progress(ctx, content, "text", 0, null, false);

@@ -303,8 +303,12 @@ export async function files_purge_db_drain_node_batch(
 		await Promise.all([
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.take(DRAIN_BATCH_SIZE),
 			ctx.db
@@ -319,8 +323,12 @@ export async function files_purge_db_drain_node_batch(
 				.take(DRAIN_BATCH_SIZE),
 			ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.take(DRAIN_BATCH_SIZE),
 			ctx.db

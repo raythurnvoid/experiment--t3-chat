@@ -1249,10 +1249,11 @@ test("public Move leaves unrelated drafts under an unchanged anchor in place", a
 								.collect()
 						: await ctx.db
 								.query("files_metadata_docs")
-								.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+								.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 									q
 										.eq("organizationId", db.organizationId)
 										.eq("workspaceId", db.workspaceId)
+										.eq("sourceKind", "committed")
 										.eq("fileNodeId", target.id)
 										.eq("moveView.cohortId", view ? cohortId : undefined)
 										.eq("moveView.view", view),

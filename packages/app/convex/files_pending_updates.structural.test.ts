@@ -1130,10 +1130,11 @@ describe("apply_file_pending_move", () => {
 
 			const plainTextChunk = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", seeded.nodeId)
 						.eq("moveView.cohortId", undefined)
 						.eq("moveView.view", undefined),
@@ -1148,10 +1149,11 @@ describe("apply_file_pending_move", () => {
 			expect(await ctx.db.get("files_metadata_docs", metadataDocId)).toBeNull();
 			const metadataDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", seeded.nodeId)
 						.eq("moveView.cohortId", undefined)
 						.eq("moveView.view", undefined)
@@ -1296,10 +1298,11 @@ describe("apply_file_pending_move", () => {
 
 			const childChunk = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", seeded.nodeId)
 						.eq("moveView.cohortId", undefined)
 						.eq("moveView.view", undefined),

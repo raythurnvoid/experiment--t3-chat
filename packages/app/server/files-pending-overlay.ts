@@ -2638,10 +2638,11 @@ export async function files_pending_overlay_db_follow_saved_scope(
 			? []
 			: await ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 						q
 							.eq("organizationId", savedNode.organizationId)
 							.eq("workspaceId", savedNode.workspaceId)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", savedNode._id)
 							.eq("moveView.cohortId", undefined)
 							.eq("moveView.view", undefined),

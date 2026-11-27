@@ -25,8 +25,8 @@ import {
 } from "./setup.test.ts";
 
 // Round up the settled corpus measurements. Lower both limits when storage falls.
-const BUDGET_TOTAL = 90;
-const BUDGET_PER_BYTE = 36;
+const BUDGET_TOTAL = 85;
+const BUDGET_PER_BYTE = 33;
 
 beforeEach(() => {
 	vi.useFakeTimers({ now: Date.UTC(2026, 10, 27) });

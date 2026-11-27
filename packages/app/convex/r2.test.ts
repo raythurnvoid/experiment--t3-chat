@@ -2045,10 +2045,11 @@ describe("r2 asset content", () => {
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", upload._yay.nodeId),
 				)
 				.collect();
@@ -2156,10 +2157,11 @@ describe("r2 asset content", () => {
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", upload._yay.nodeId),
 				)
 				.collect();

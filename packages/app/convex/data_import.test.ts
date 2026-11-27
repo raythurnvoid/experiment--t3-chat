@@ -310,10 +310,11 @@ describe("data_import.create_upload_targets", () => {
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", created._yay[0]!.nodeId),
 				)
 				.collect(),

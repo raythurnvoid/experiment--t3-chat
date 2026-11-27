@@ -2231,10 +2231,11 @@ describe("files_nodes.create_upload_node", () => {
 					.collect(),
 				ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 						q
 							.eq("organizationId", db.organizationId)
 							.eq("workspaceId", db.workspaceId)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", upload._yay.nodeId),
 					)
 					.collect(),

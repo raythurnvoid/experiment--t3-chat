@@ -141,21 +141,29 @@ export async function plugins_volumes_db_drain_batch(
 	}
 
 	// Keep the volume until every file scope table is empty.
-	for (const tableName of ["files_plain_text_chunks", "files_text_chunks"] as const) {
-		const docs = await ctx.db
-			.query(tableName)
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id),
-			)
-			.take(batchSize);
-		if (docs.length > 0) {
-			for (const doc of docs) await ctx.db.delete(tableName, doc._id);
-			return { done: false, deletedCount: docs.length };
-		}
+	const plain = await ctx.db
+		.query("files_plain_text_chunks")
+		.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+			q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id),
+		)
+		.take(batchSize);
+	if (plain.length > 0) {
+		for (const doc of plain) await ctx.db.delete("files_plain_text_chunks", doc._id);
+		return { done: false, deletedCount: plain.length };
+	}
+	const text = await ctx.db
+		.query("files_text_chunks")
+		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id),
+		)
+		.take(batchSize);
+	if (text.length > 0) {
+		for (const doc of text) await ctx.db.delete("files_text_chunks", doc._id);
+		return { done: false, deletedCount: text.length };
 	}
 	const metadata = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q.eq("organizationId", volume.organizationId).eq("workspaceId", volume._id),
 		)
 		.take(batchSize);

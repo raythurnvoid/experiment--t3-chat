@@ -200,10 +200,11 @@ async function stage_state(s: Awaited<ReturnType<typeof ready_stage>>) {
 				.collect(),
 			plainChunks: await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("organizationId", scope.organizationId)
 						.eq("workspaceId", scope.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", content.nodeId),
 				)
 				.collect(),

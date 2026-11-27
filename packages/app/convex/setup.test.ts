@@ -1085,18 +1085,29 @@ export function test_spy_move_ranges() {
 		) => {
 			const rows = [];
 			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				const saved =
+					table === "files_text_chunks"
+						? await ctx.db
+								.query(table)
+								.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+									q
+										.eq("organizationId", scope.organizationId)
+										.eq("workspaceId", scope.workspaceId)
+										.eq("fileNodeId", content.nodeId),
+								)
+								.collect()
+						: await ctx.db
+								.query(table)
+								.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+									q
+										.eq("organizationId", scope.organizationId)
+										.eq("workspaceId", scope.workspaceId)
+										.eq("sourceKind", "committed")
+										.eq("fileNodeId", content.nodeId),
+								)
+								.collect();
 				rows.push(
-					...(await ctx.db
-						.query(table)
-						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-							q
-								.eq("organizationId", scope.organizationId)
-								.eq("workspaceId", scope.workspaceId)
-								.eq("fileNodeId", content.nodeId)
-								.eq("moveView.cohortId", tag?.cohortId)
-								.eq("moveView.view", tag?.view),
-						)
-						.collect()),
+					...saved.filter((row) => row.moveView?.cohortId === tag?.cohortId && row.moveView?.view === tag?.view),
 					...(await ctx.db
 						.query(table)
 						.withIndex("by_pendingUpdate_chunkIndex", (q) =>

@@ -4979,14 +4979,6 @@ const app_convex_schema = defineSchema({
 			"moveView.view",
 			"fieldPath",
 		])
-		.index("by_organization_workspace_fileNode_fieldPath", [
-			"organizationId",
-			"workspaceId",
-			"fileNodeId",
-			"moveView.cohortId",
-			"moveView.view",
-			"fieldPath",
-		])
 		.index("by_organization_workspace_target_fieldPath", [
 			"organizationId",
 			"workspaceId",
@@ -5940,14 +5932,6 @@ const app_convex_schema = defineSchema({
 			"moveView.cohortId",
 			"moveView.view",
 			"yjsSequence",
-			"chunkIndex",
-		])
-		.index("by_organization_workspace_fileNode_chunkIndex", [
-			"organizationId",
-			"workspaceId",
-			"fileNodeId",
-			"moveView.cohortId",
-			"moveView.view",
 			"chunkIndex",
 		])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "moveView.cohortId", "moveView.view", "chunkIndex"])

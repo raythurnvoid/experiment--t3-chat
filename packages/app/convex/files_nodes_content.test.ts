@@ -626,8 +626,12 @@ describe("copy_transfer_file", () => {
 		await t.run(async (ctx) => {
 			const metadata = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", copiedId),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", copiedId),
 				)
 				.collect();
 			expect(metadata.filter((entry) => entry.docKind === "value").map((entry) => entry.fieldPath)).toEqual(

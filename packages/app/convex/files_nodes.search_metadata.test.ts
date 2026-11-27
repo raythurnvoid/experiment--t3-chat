@@ -1891,8 +1891,12 @@ describe("folder table sort fields", () => {
 			if (!node) throw new Error("Expected the node");
 			const docs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", node.organizationId).eq("workspaceId", node.workspaceId).eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.collect();
 			return {
@@ -2278,10 +2282,11 @@ describe("list_tree_children_sorted", () => {
 		await t.run(async (ctx) => {
 			const fieldDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", ids.get("map.md")!)
 						.eq("moveView.cohortId", undefined)
 						.eq("moveView.view", undefined)
@@ -2489,10 +2494,11 @@ describe("list_tree_children_sorted", () => {
 		await t.run(async (ctx) => {
 			const fieldDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileId)
 						.eq("moveView.cohortId", undefined)
 						.eq("moveView.view", undefined)

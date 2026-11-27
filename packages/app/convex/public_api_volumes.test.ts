@@ -702,8 +702,12 @@ describe("volumes stage, write, and publish", () => {
 				.join(""),
 			metadata: await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", f.owner.organizationId).eq("workspaceId", note.workspaceId).eq("fileNodeId", note._id),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", f.owner.organizationId)
+						.eq("workspaceId", note.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", note._id),
 				)
 				.collect(),
 		}));

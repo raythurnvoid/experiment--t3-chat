@@ -1370,8 +1370,12 @@ export async function files_nodes_db_delete_subtree_batch(
 		const remainingPlainTextChunks = args.batchSize - deletedCount;
 		let plainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id),
 			)
 			.take(remainingPlainTextChunks);
 		if (plainTextChunks.length === 0) {
@@ -1439,8 +1443,12 @@ export async function files_nodes_db_delete_subtree_batch(
 		const remainingMetadataDocs = args.batchSize - deletedCount;
 		let metadataDocs = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id),
 			)
 			.take(remainingMetadataDocs);
 		if (metadataDocs.length === 0) {
@@ -1573,8 +1581,12 @@ export async function files_nodes_db_hard_delete_node(
 		Promise.all([
 			ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", node._id),
 				)
 				.collect(),
 			ctx.db
@@ -1615,8 +1627,12 @@ export async function files_nodes_db_hard_delete_node(
 		Promise.all([
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", node._id),
 				)
 				.collect(),
 			ctx.db

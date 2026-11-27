@@ -57,6 +57,37 @@ export async function files_move_content_db_current(ctx: MutationCtx, args: file
 	return entered._nay ? entered : current;
 }
 
+export function files_move_content_db_saved_chunks(
+	ctx: MutationCtx,
+	table: "files_text_chunks" | "files_plain_text_chunks",
+	scope: Pick<Doc<"files_move_cohorts">, "organizationId" | "workspaceId">,
+	nodeId: Id<"files_nodes">,
+	tag?: { cohortId: Id<"files_move_cohorts">; view: "before" | "after" },
+) {
+	return table === "files_plain_text_chunks"
+		? ctx.db
+				.query(table)
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId)
+						.eq("moveView.cohortId", tag?.cohortId)
+						.eq("moveView.view", tag?.view),
+				)
+		: ctx.db
+				.query(table)
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q
+						.eq("organizationId", scope.organizationId)
+						.eq("workspaceId", scope.workspaceId)
+						.eq("fileNodeId", nodeId)
+						.eq("moveView.cohortId", tag?.cohortId)
+						.eq("moveView.view", tag?.view),
+				);
+}
+
 export function files_move_content_phase_cursor(value: string | null) {
 	if (!value) return { part: 0, cursor: null as string | null };
 	const separator = value.indexOf("|");
@@ -378,16 +409,13 @@ async function db_cleanup_part_page(
 					: "files_metadata_docs";
 	const query =
 		kind === 0 || kind === 1
-			? ctx.db
-					.query(table as "files_text_chunks" | "files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", scope.organizationId)
-							.eq("workspaceId", scope.workspaceId)
-							.eq("fileNodeId", content.nodeId)
-							.eq("moveView.cohortId", content.cohortId)
-							.eq("moveView.view", view),
-					)
+			? files_move_content_db_saved_chunks(
+					ctx,
+					kind === 0 ? "files_text_chunks" : "files_plain_text_chunks",
+					scope,
+					content.nodeId,
+					{ cohortId: content.cohortId, view },
+				)
 			: kind === 2
 				? ctx.db
 						.query("files_yjs_updates")

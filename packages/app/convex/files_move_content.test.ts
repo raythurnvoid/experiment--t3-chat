@@ -323,10 +323,11 @@ test("Move keeps other source versions and cleans an older published index", asy
 			).not.toBeNull();
 		const plain = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("organizationId", f.db.organizationId)
 					.eq("workspaceId", f.db.workspaceId)
+					.eq("sourceKind", "committed")
 					.eq("fileNodeId", f.nodeId)
 					.eq("moveView.cohortId", undefined)
 					.eq("moveView.view", undefined),
@@ -338,6 +339,39 @@ test("Move keeps other source versions and cleans an older published index", asy
 		).toEqual(["accepted text"]);
 	});
 	expect(await f.chunks()).toBe("accepted text");
+});
+
+test("Move resumes saved search tagging from an old cursor", async () => {
+	const f = await fixture();
+	expect(await f.t.action((ctx) => files_move_content_action_prepare(ctx, f.prepareContext))).toEqual({ _yay: null });
+	const tag = { cohortId: f.cohortId, view: "before" as const };
+	const ids = await f.t.run(async (ctx) => {
+		const row = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", f.db.organizationId)
+					.eq("workspaceId", f.db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", f.nodeId),
+			)
+			.first();
+		if (!row || row.sourceKind !== "committed") throw new Error("Expected a saved search chunk");
+		const { _id, _creationTime, ...fields } = row;
+		const tagged = await ctx.db.insert("files_plain_text_chunks", { ...fields, moveView: tag });
+		await ctx.db.patch("files_move_cohort_content", f.context.contentId, {
+			phase: "sources",
+			phaseCursor: "1|old index cursor",
+		});
+		return [tagged, _id];
+	});
+	await expect(
+		test_run_with_flush(f.t, (ctx) => files_move_content_db_stage(ctx, f.context)),
+		"staging resumes with an old search cursor",
+	).resolves.toHaveProperty("_yay");
+	await f.t.run(async (ctx) => {
+		for (const id of ids) expect((await ctx.db.get("files_plain_text_chunks", id))?.moveView).toEqual(tag);
+	});
 });
 
 test("staging preserves saved content, then publishes exact partial content and quota once", async () => {

@@ -250,10 +250,11 @@ export async function expect_moved_markers(
 				expect(node.moveCohortId).toBeUndefined();
 				const metadata = await ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 						q
 							.eq("organizationId", fixture.db.organizationId)
 							.eq("workspaceId", fixture.db.workspaceId)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", nodeId),
 					)
 					.collect();
@@ -287,10 +288,11 @@ export async function read_metadata(fixture: Fixture, nodeId: Id<"files_nodes">)
 		const page = await fixture.t.run((ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", fixture.db.organizationId)
 						.eq("workspaceId", fixture.db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", nodeId),
 				)
 				.paginate({ cursor, numItems: 16 }),

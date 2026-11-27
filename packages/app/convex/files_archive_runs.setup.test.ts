@@ -418,8 +418,12 @@ export async function add_metadata_docs(args: { f: Fixture; fileNodeId: Id<"file
 	await f.t.run(async (ctx) => {
 		const metadata = (await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", f.db.organizationId).eq("workspaceId", f.db.workspaceId).eq("fileNodeId", fileNodeId),
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", f.db.organizationId)
+					.eq("workspaceId", f.db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", fileNodeId),
 			)
 			.first())!;
 		const { _id, _creationTime, ...fields } = metadata;

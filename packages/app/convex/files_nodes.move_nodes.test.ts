@@ -2185,10 +2185,11 @@ test("create_text_node seeds initial Yjs content on the server", async () => {
 				.collect(),
 			ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),

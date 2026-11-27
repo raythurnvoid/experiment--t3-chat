@@ -5212,8 +5212,12 @@ function read_restore_write_surfaces(args: {
 			.collect();
 		const chunks = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
 			)
 			.collect();
 		return {

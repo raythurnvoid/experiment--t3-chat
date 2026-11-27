@@ -1766,19 +1766,21 @@ describe("external/system mount text materialization (Phase D)", () => {
 					.collect(),
 				ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", created._yay.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", created._yay.nodeId),
 					)
 					.collect(),
@@ -1882,10 +1884,11 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", created._yay.nodeId),
 				)
 				.collect(),
@@ -2138,8 +2141,12 @@ describe("producer shape pairs", () => {
 			}
 			return await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", node.organizationId).eq("workspaceId", node.workspaceId).eq("fileNodeId", node._id),
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", node.organizationId)
+						.eq("workspaceId", node.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", node._id),
 				)
 				.collect();
 		});
@@ -2351,8 +2358,12 @@ describe("plain text file stats and delete-all", () => {
 				(
 					await ctx.db
 						.query("files_plain_text_chunks")
-						.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-							q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+						.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+							q
+								.eq("organizationId", db.organizationId)
+								.eq("workspaceId", db.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", nodeId),
 						)
 						.collect()
 				).length,
@@ -2402,8 +2413,12 @@ describe("plain text file stats and delete-all", () => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			const chunks = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.collect();
 			const stats = node?.statsId ? await ctx.db.get("file_stats", node.statsId) : null;
@@ -3854,8 +3869,12 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			// Committed chunks were replaced with the repaired plain text.
 			const chunks = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
+				.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", nodeId),
 				)
 				.collect();
 			expect(chunks.length).toBeGreaterThan(0);

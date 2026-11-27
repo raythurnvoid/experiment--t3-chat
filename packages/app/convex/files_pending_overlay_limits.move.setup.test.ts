@@ -93,8 +93,12 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		for (let index = 0; index < 51; index++) users.push(await add_member(ctx, db, `clerk_move_budget_${index}`));
 		const metadata = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", db.organizationId)
+					.eq("workspaceId", db.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", heavyId),
 			)
 			.collect();
 		return { heavy, project, target, drafts, shared, light, links, users, metadata };
@@ -283,8 +287,12 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		return args.dense
 			? ((await ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+					.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", heavyId),
 					)
 					.collect()) as Metadata[])
 			: [];
@@ -417,8 +425,12 @@ export const measure_paged_move = async (args: { owners: number; keys: number; l
 		const metadata = (await t.run((ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", heavyId),
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", heavyId),
 				)
 				.collect(),
 		)) as Metadata[];

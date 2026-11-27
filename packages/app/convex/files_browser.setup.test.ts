@@ -531,8 +531,12 @@ export async function node_metadata(args: {
 	const docs = await t.run((ctx) =>
 		ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.workspaceId).eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", fixture.organizationId)
+					.eq("workspaceId", fixture.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
 			)
 			.collect(),
 	);

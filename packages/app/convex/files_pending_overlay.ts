@@ -655,8 +655,19 @@ async function db_run_saved_scope_job(
 	}
 
 	const cursor = job.cursor
-		? (JSON.parse(job.cursor) as { phase: number; page: string | null; rerun?: boolean; metadataOnly?: boolean })
+		? (JSON.parse(job.cursor) as {
+				phase: number;
+				page: string | null;
+				rerun?: boolean;
+				metadataOnly?: boolean;
+				sequenceIndex?: boolean;
+			})
 		: { phase: 0, page: null };
+	// Restart a chunk page saved on the old index. Scope patches only write changed values.
+	if (cursor.phase === 1 && !cursor.sequenceIndex) {
+		cursor.page = null;
+		cursor.sequenceIndex = true;
+	}
 	// Index publication changes these ranges. Its finish step wakes this job from a fresh page.
 	if (await files_saved_index_db_is_publishing(ctx.db, node._id)) {
 		await ctx.db.patch("files_pending_overlay_jobs", job._id, {
@@ -674,10 +685,11 @@ async function db_run_saved_scope_job(
 	if (cursor.phase === 1) {
 		const page = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("organizationId", node.organizationId)
 					.eq("workspaceId", node.workspaceId)
+					.eq("sourceKind", "committed")
 					.eq("fileNodeId", node._id)
 					.eq("moveView.cohortId", undefined)
 					.eq("moveView.view", undefined),

@@ -773,14 +773,22 @@ async function db_delete_exact_file(ctx: MutationCtx, node: Doc<"files_nodes">) 
 			.collect(),
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("fileNodeId", node._id),
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id),
 			)
 			.collect(),
 		ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
-				q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("fileNodeId", node._id),
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", scope.organizationId)
+					.eq("workspaceId", scope.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", node._id),
 			)
 			.collect(),
 		ctx.db
